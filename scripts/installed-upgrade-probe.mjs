@@ -66,7 +66,7 @@ async function verify(label) {
     await page.goto("http://127.0.0.1:28193/?session=" + encodeURIComponent(evidence.id), { waitUntil: "domcontentloaded", timeout: 60000 });
     const skip = page.getByRole("button", { name: /^(Skip guide|跳过引导)$/ });
     if (await skip.isVisible()) await skip.click();
-    await page.getByText(marker, { exact: true }).waitFor({ timeout: 60000 });
+    await page.locator("#chat-scroll-container").getByText(marker, { exact: true }).waitFor({ timeout: 60000 });
     await page.screenshot({ path: ".verification/nsis-upgrade/" + label + ".png", animations: "disabled" });
     console.log(JSON.stringify({ label, sessionId: evidence.id, messageVisible: true }));
   } finally {
