@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $repo = 'kexijiang/pi-desktop'
-$baseline = 'v0.5.11-beta.19'
+$baseline = $env:PIORA_QA_BASELINE
 $target = $env:PIORA_QA_TARGET
-if ($env:GITHUB_ACTIONS -ne 'true' -or $target -notmatch '^v0\.5\.11-beta\.\d+$') {
+if ($env:GITHUB_ACTIONS -ne 'true' -or $target -notmatch '^v0\.5\.11-beta\.\d+$' -or $baseline -notmatch '^v0\.5\.11-beta\.\d+$') {
   throw 'Run this verification on an isolated Windows Actions runner with a published beta tag'
 }
 $root = Join-Path $env:RUNNER_TEMP 'piora-installed-upgrade'

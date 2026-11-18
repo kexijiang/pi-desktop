@@ -3,6 +3,10 @@ name: Windows installation acceptance
 on:
   workflow_dispatch:
     inputs:
+      baseline_tag:
+        description: Published older Piora beta installation
+        type: string
+        default: v0.5.11-beta.19
       new_tag:
         description: Published Piora beta installer to test
         type: string
@@ -28,6 +32,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          PIORA_QA_BASELINE: ${{ inputs.baseline_tag }}
           PIORA_QA_TARGET: ${{ inputs.new_tag }}
         run: ./scripts/installed-upgrade-acceptance.ps1
       - name: Re-run subagents on the upgraded installation
