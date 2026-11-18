@@ -36,6 +36,7 @@ public static class SetupControls {
   [DllImport("user32")] static extern int GetDlgCtrlID(IntPtr window);
   [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder text, int size);
   [DllImport("user32", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wp, StringBuilder lp, uint flags, uint ms, out IntPtr result);
+  [DllImport("user32", EntryPoint = "SendMessageTimeoutW")] static extern IntPtr SendNumber(IntPtr window, uint message, IntPtr wp, IntPtr lp, uint flags, uint ms, out IntPtr result);
   [DllImport("user32")] static extern bool PostMessage(IntPtr window, uint msg, IntPtr wp, IntPtr lp);
 
   public sealed class Control {
@@ -72,6 +73,12 @@ public static class SetupControls {
   public static bool Click(Control button) {
     return IsWindowVisible(button.Handle) && IsWindowEnabled(button.Handle)
       && PostMessage(GetParent(button.Handle), 0x0111, (IntPtr)button.Id, button.Handle);
+  }
+
+  public static bool Uncheck(Control checkbox) {
+    IntPtr state;
+    if (SendNumber(checkbox.Handle, 0x00F1, IntPtr.Zero, IntPtr.Zero, 2, 1000, out state) == IntPtr.Zero) return false;
+    return SendNumber(checkbox.Handle, 0x00F0, IntPtr.Zero, IntPtr.Zero, 2, 1000, out state) != IntPtr.Zero && state == IntPtr.Zero;
   }
 }
 '@
@@ -233,7 +240,9 @@ try {
     if ($button) { return @{ button = $button; launch = ($visible | Where-Object { $_.Class -eq 'Button' -and ($_.Text -replace '&') -match '^Run Piora|^运行 Piora' } | Select-Object -First 1) } }
   } 240
   if ($finish.button) {
-    if ($finish.launch) { Click-Control $finish.launch }
+    if ($finish.launch -and ![SetupControls]::Uncheck($finish.launch)) {
+      throw 'Could not disable the installer finish-page auto-launch'
+    }
     Click-Control $finish.button
   }
   if (!$setup.WaitForExit(45000) -or $setup.ExitCode -ne 0 -or (Get-AppVersion) -ne $target.Substring(1)) {
@@ -242,6 +251,10 @@ try {
   $installedHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
   if ($installedHash -eq $originalHash) { throw 'The installer reported success without replacing the binary' }
   Add-Evidence 'in-place-upgrade' @{ directory = $install; from = $baseline; to = (Get-AppVersion); sha256 = $installedHash }
+  Start-Sleep -Milliseconds 700
+  if (Get-Process Piora -ErrorAction SilentlyContinue | Where-Object Path -eq $exe) {
+    throw 'Installer left an unexpected auto-launched process before the isolated upgrade probe'
+  }
   $newApp = Start-App 'after'
   Add-Evidence 'same-profile-chat-visible-after-upgrade' @{ version = (Get-AppVersion) }
   Close-App $newApp
@@ -251,6 +264,7 @@ finally {
   foreach ($proc in $processes) {
     if (!$proc.HasExited) { Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue }
   }
+  Get-Process Piora -ErrorAction SilentlyContinue | Where-Object Path -eq $exe | Stop-Process -ErrorAction SilentlyContinue
   @{ status = $(if ($completed) { 'passed' } else { 'failed' }); baseline = $baseline; target = $target; checks = $checks } |
     ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $evidence 'upgrade-result.json') -Encoding utf8
 }
