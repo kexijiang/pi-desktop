@@ -22,11 +22,19 @@ jobs:
     env:
       QA_TAG: v0.5.11-beta.22
     steps:
-      - name: Check out the exact published test harness
+      - name: Check out the Windows acceptance driver
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: v0.5.11-beta.22
+          ref: 2b01e92c6bf02f7161466d34e9023bb298ef630a
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify that only the acceptance driver differs from the released source
+        shell: pwsh
+        run: |
+          $changed = @(git diff --name-only $env:QA_TAG HEAD)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compare the test driver with the release tag' }
+          $allowed = @('changelog.d/desktop-layout-qa-widths.internal.md', 'lib/desktop-e2e.test.mjs', 'scripts/desktop-e2e/harness.mjs', 'scripts/desktop-e2e/scenarios/worktree-chat-layout.mjs', 'scripts/desktop-e2e/workflow-model-fixture.mjs')
+          if (Compare-Object ($allowed | Sort-Object) ($changed | Sort-Object)) { throw 'Unexpected changes compared with the released source' }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 22.19.0
