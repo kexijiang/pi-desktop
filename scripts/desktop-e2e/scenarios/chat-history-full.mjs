@@ -123,12 +123,18 @@ export const chatHistoryFull = {
     });
     const scrollToOldest = async () => {
       await scroll().hover();
-      await page.mouse.wheel(0, -1_000_000);
-      await page.waitForFunction(() => {
-        const viewport = document.querySelector(".chat-scroll-container");
-        const oldest = viewport?.querySelector('[data-chat-entry-id="00000001"]');
-        return viewport && viewport.scrollTop <= 1 && oldest && oldest.getBoundingClientRect().top < viewport.getBoundingClientRect().bottom;
-      });
+      await waitUntil(async () => {
+        const visible = await scroll().evaluate(viewport => {
+          const oldest = viewport.querySelector('[data-chat-entry-id="00000001"]');
+          const heading = viewport.querySelector('[data-chat-entry-id="00000002"] h1');
+          if (!oldest || !heading || viewport.scrollTop > 1) return false;
+          const bounds = viewport.getBoundingClientRect();
+          const row = oldest.getBoundingClientRect();
+          return row.top < bounds.bottom && row.bottom > bounds.top;
+        });
+        if (!visible) await page.mouse.wheel(0, -1_000_000);
+        return visible;
+      }, "the oldest question and its Markdown reply to render");
       await assertNoPagination();
     };
     await step("prepare-history-endpoints", async () => {
