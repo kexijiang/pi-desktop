@@ -23,7 +23,9 @@ import { isMissingSessionFileError, resolveSessionDetailSource } from "@/lib/ses
 import { purgeExpiredTrash, trashSession } from "@/lib/session-trash";
 import { notifyDesktopAgentSessionClosed } from "@/lib/desktop-browser-agent";
 import { fileRevision } from "@/lib/jsonl-file-index";
-import { decodeHistoryCursor, readHistoryAnchor, readSessionPage, SessionHistoryPageError } from "@/lib/session-read-repository";
+import {
+  buildSessionTranscript, decodeHistoryCursor, readHistoryAnchor, readSessionPage, readSessionTranscript, SessionHistoryPageError,
+} from "@/lib/session-read-repository";
 
 const MAX_PROJECTED_TREE_DEPTH = 200;
 const MAX_SESSION_RESPONSE_CACHE_BYTES = 48 * 1024 * 1024;
@@ -237,16 +239,16 @@ function pruneSessionResponseCache(cache: Map<string, SessionResponseCacheEntry>
   }
 }
 
-async function loadHistoryPageResponse(id: string, path: string, query: URLSearchParams, request: Request): Promise<Response> {
-  const cursor = decodeHistoryCursor(query.get("older"));
-  const leafId = readHistoryAnchor(query, "leafId");
-  const around = readHistoryAnchor(query, "around");
+async function loadHistoryResponse(id: string, path: string, query: URLSearchParams, request: Request, transcript: boolean): Promise<Response> {
+  const cursor = transcript ? undefined : decodeHistoryCursor(query.get("older"));
+  const leafId = transcript ? undefined : readHistoryAnchor(query, "leafId");
+  const around = transcript ? undefined : readHistoryAnchor(query, "around");
   if (cursor && (leafId || around)) throw new SessionHistoryPageError(400, "History cursor and anchor cannot be combined");
   const info = await stat(path);
   const pendingModel = readPendingSessionModel(id);
   const running = Boolean(getRpcSession(id)?.isRunning());
   const signature = [fileRevision(info), pendingModel?.revision, running].join(":");
-  const projection = "paged-v2:" + JSON.stringify([query.get("older"), leafId, around]);
+  const projection = transcript ? "transcript-v1" : "paged-v2:" + JSON.stringify([query.get("older"), leafId, around]);
   const etag = sessionResponseEtag(id, signature, projection);
   const headers = { "cache-control": "private, no-cache", etag, "content-type": "application/json; charset=utf-8" };
   if (matchesEtag(request.headers.get("if-none-match"), etag)) return new Response(null, { status: 304, headers });
@@ -255,7 +257,9 @@ async function loadHistoryPageResponse(id: string, path: string, query: URLSearc
   const key = path + "\0" + projection;
   let entry = cache.get(key);
   if (!entry || entry.signature !== signature) {
-    const promise = readSessionPage(path, info.mtime.toISOString(), { cursor, leafId, around }).then(async result => {
+    const modified = info.mtime.toISOString();
+    const history = transcript ? readSessionTranscript(path, modified) : readSessionPage(path, modified, { cursor, leafId, around });
+    const promise = history.then(async result => {
       if (fileRevision(await stat(path)) !== fileRevision(info)) throw new SessionHistoryPageError(409, "History changed; refresh the conversation");
       if (pendingModel && !running) result.context.model = { provider: pendingModel.provider, modelId: pendingModel.modelId };
       if (result.info) result.info.id = id;
@@ -363,8 +367,23 @@ export async function GET(
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
     const includeTree = searchParams.has("includeTree");
+    const view = searchParams.get("view");
+    const transcript = view === "transcript" && !includeTree;
+    if (transcript) {
+      const live = getRpcSession(id);
+      // The running manager can be ahead of disk, and keeps a stable snapshot
+      // even when new messages are appended during the HTTP request.
+      const manager = source.kind === "memory" ? source.manager
+        : live?.isAlive() && live.isRunning() ? live.inner.sessionManager : null;
+      if (manager) {
+        const modified = manager.getLeafEntry()?.timestamp ?? manager.getHeader()?.timestamp ?? new Date().toISOString();
+        const history = buildSessionTranscript(manager, source.filePath, modified);
+        return NextResponse.json({ sessionId: id, filePath: source.filePath, tree: [], ...history },
+          { headers: { "cache-control": "private, no-store" } });
+      }
+    }
     if (source.kind === "memory") {
-      if (searchParams.get("view") === "chat" && !includeTree && !searchParams.has("older")) {
+      if (view === "chat" && !includeTree && !searchParams.has("older")) {
         const context = buildSessionContext(source.manager.getEntries() as never, source.manager.getLeafId(), { deferThinking: true, deferToolResultImages: true });
         if (context.messages.length === 0) {
           return NextResponse.json({
@@ -394,11 +413,11 @@ export async function GET(
 
     let response: Awaited<ReturnType<typeof loadCachedSessionResponse>>;
     try {
-      if (searchParams.get("view") === "chat" && !includeTree) {
-        try { return await loadHistoryPageResponse(id, source.filePath, searchParams, req); }
+      if (transcript || view === "chat" && !includeTree) {
+        try { return await loadHistoryResponse(id, source.filePath, searchParams, req, transcript); }
         catch (error) {
           if (!(error instanceof SessionHistoryPageError) || error.status !== 409 || searchParams.has("older")) throw error;
-          return await loadHistoryPageResponse(id, source.filePath, searchParams, req);
+          return await loadHistoryResponse(id, source.filePath, searchParams, req, transcript);
         }
       }
       response = await loadCachedSessionResponse(

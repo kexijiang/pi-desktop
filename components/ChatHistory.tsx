@@ -16,7 +16,7 @@ import { type ModelChangeNotice as ModelChange } from "@/lib/model-change-notice
 import type { TaskTiming } from "@/lib/task-timing";
 import type { ChatCommandView } from "@/lib/chat-command-types";
 
-export interface ChatHistoryHandle { revealEntry(id: string): void; cancelNavigation(): void; captureAnchor(): void }
+export interface ChatHistoryHandle { revealEntry(id: string): void; cancelNavigation(): void }
 type MessageProps = ComponentProps<typeof MessageView>;
 interface Props extends Pick<MessageProps, "modelNames" | "cwd" | "onOpenFile" | "onFork" | "onNavigate" | "onEditContent" | "onEditFailed" | "onRetry" | "retryDisabled" | "sessionId" | "onOpenAutomation" | "onOpenCommandExecution"> {
   visible?: boolean;
@@ -124,7 +124,6 @@ function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelC
     }
   }, [keys, entryRows]);
   useImperativeHandle(handleRef, () => ({
-    captureAnchor() { list.current?.captureAnchor(); },
     revealEntry(id) {
       const key = entryRows.get(id);
       const group = entryGroups.get(id);

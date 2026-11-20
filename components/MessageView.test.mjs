@@ -21,7 +21,14 @@ const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 const { VirtualRowStateContext } = await jiti.import("./VirtualRowState");
 const { createVirtualRowState } = await jiti.import("@/lib/virtual-row-state");
 const messageImageSource = readFileSync(new URL("./MessageImage.tsx", import.meta.url), "utf8");
-const messageViewSource = readFileSync(new URL("./MessageView.tsx", import.meta.url), "utf8");
+const userMessageViewSource = readFileSync(new URL("./message-view/UserMessageView.tsx", import.meta.url), "utf8");
+const messageViewSource = [
+  readFileSync(new URL("./MessageView.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("./message-view/shared.ts", import.meta.url), "utf8"),
+  userMessageViewSource,
+  readFileSync(new URL("./message-view/ToolCallBlock.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("./message-view/CustomMessageViews.tsx", import.meta.url), "utf8"),
+].join("\n");
 const userMessageTextSource = readFileSync(new URL("./UserMessageText.tsx", import.meta.url), "utf8");
 const commandViewSource = readFileSync(new URL("./CommandExecutionView.tsx", import.meta.url), "utf8");
 const commandLogSource = readFileSync(new URL("./CommandLogViewer.tsx", import.meta.url), "utf8");
@@ -269,9 +276,8 @@ test("renders user messages as escaped plain text and keeps assistant Markdown",
   };
   const html = renderMessage(message);
   const history = renderMessage(message, { mode: "history" });
-  const userSource = messageViewSource.slice(
-    messageViewSource.indexOf("function UserMessageView"),
-    messageViewSource.indexOf("function AssistantMessageView"),
+  const userSource = userMessageViewSource.slice(
+    userMessageViewSource.indexOf("function UserMessageView"),
   );
   const textBlockSource = messageViewSource.slice(
     messageViewSource.indexOf("function TextBlock"),

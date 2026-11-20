@@ -214,7 +214,6 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
 
   const {
     nestedCallsStore, loading, sessionHydrating, error, retrySessionLoad, messages, entryIds, modelChanges, streamState, replyHistorySettling, activeLeafId, switchHistoryBranch, forkHistoryQuestion,
-    historyPage, loadEarlierHistory, loadNewestHistory,
     toolPermission, permissionSaving, handleToolPermission, toolReviews,
     agentRunning, backgroundSubagents, bashRunning, pendingBash, modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, thinkingLevel,
     retryInfo, contextUsage, systemPromptBinding, systemPromptSelection, systemPromptSaving, forkingEntryId,
@@ -469,30 +468,25 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
   const historyRef = useRef<ChatHistoryHandle>(null);
   const [highlightedEntryId, setHighlightedEntryId] = useState<string | null>(null);
   const [pendingHistoryFocus, setPendingHistoryFocus] = useState<string | null>(null);
-  const [earlierLoading, setEarlierLoading] = useState(false);
-  const [earlierError, setEarlierError] = useState(false);
-  const readingEarlier = historyPage?.focused === true;
   const handledFocusEntryRef = useRef<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const focusHistoryEntry = useCallback(async (id: string) => {
+  const focusHistoryEntry = useCallback((id: string) => {
+    if (!entryIds.includes(id)) return false;
     pauseHistoryFollow();
-    if (!entryIds.includes(id) && (sessionBusy || !historyPage || !await loadEarlierHistory(id))) return false;
     setPendingHistoryFocus(id);
     return true;
-  }, [entryIds, historyPage, loadEarlierHistory, pauseHistoryFollow, sessionBusy]);
+  }, [entryIds, pauseHistoryFollow]);
   useEffect(() => {
     onHistoryControlsChange?.({ busy: sessionBusy || agentPhase?.kind === "stopping" || isCompacting || sessionReadOnly || deletingMessage || preparingRetry,
-      entryIds, leafId: activeLeafId, switchBranch: switchHistoryBranch, forkQuestion: forkHistoryQuestion, focusEntry: focusHistoryEntry, canLoadEarlier: Boolean(historyPage) });
-  }, [activeLeafId, agentPhase?.kind, deletingMessage, entryIds, focusHistoryEntry, forkHistoryQuestion, historyPage, isCompacting, onHistoryControlsChange, preparingRetry, sessionBusy, sessionReadOnly, switchHistoryBranch]);
+      entryIds, leafId: activeLeafId, switchBranch: switchHistoryBranch, forkQuestion: forkHistoryQuestion, focusEntry: focusHistoryEntry });
+  }, [activeLeafId, agentPhase?.kind, deletingMessage, entryIds, focusHistoryEntry, forkHistoryQuestion, isCompacting, onHistoryControlsChange, preparingRetry, sessionBusy, sessionReadOnly, switchHistoryBranch]);
   useEffect(() => () => onHistoryControlsChange?.(null), [onHistoryControlsChange]);
   useEffect(() => {
-    if (!focusEntryId || sessionReadOnly || sessionBusy) return;
+    if (!focusEntryId) return;
     const focusKey = (session?.id ?? "new") + ":" + focusEntryId;
     if (handledFocusEntryRef.current === focusKey) return;
-    void focusHistoryEntry(focusEntryId).then(found => {
-      if (found) handledFocusEntryRef.current = focusKey;
-    });
-  }, [focusEntryId, focusHistoryEntry, session?.id, sessionBusy, sessionReadOnly]);
+    if (focusHistoryEntry(focusEntryId)) handledFocusEntryRef.current = focusKey;
+  }, [focusEntryId, focusHistoryEntry, session?.id]);
   useEffect(() => {
     if (!pendingHistoryFocus || historyVisible || !visible) return;
     if (!entryIds.includes(pendingHistoryFocus)) return;
@@ -500,19 +494,6 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
     setHighlightedEntryId(pendingHistoryFocus);
     setPendingHistoryFocus(null);
   }, [entryIds, historyVisible, pendingHistoryFocus, visible]);
-  const loadOlder = useCallback(async () => {
-    if (earlierLoading || sessionBusy) return;
-    setEarlierLoading(true);
-    setEarlierError(false);
-    pauseHistoryFollow();
-    try { setEarlierError(!await loadEarlierHistory(undefined, () => historyRef.current?.captureAnchor())); }
-    finally { setEarlierLoading(false); }
-  }, [earlierLoading, loadEarlierHistory, pauseHistoryFollow, sessionBusy]);
-  const returnToNewest = useCallback(async () => {
-    await loadNewestHistory();
-    setEarlierError(false);
-    handleScrollToBottom();
-  }, [handleScrollToBottom, loadNewestHistory]);
   useEffect(() => {
     if (!highlightedEntryId) return;
     const timer = window.setTimeout(() => setHighlightedEntryId(null), 4_000);
@@ -884,15 +865,6 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
                 <div className="session-history-status session-loading-indicator" role="status">{t("chat.loadingSession")}</div>
               ) : null}
               <ExtensionWidgets widgets={aboveEditorWidgets} />
-              {historyPage?.older || readingEarlier ? <div className="flex items-center justify-center gap-3 py-2 text-sm text-text-muted" aria-busy={earlierLoading}>
-                {historyPage?.older ? <button type="button" className="cursor-pointer underline" disabled={earlierLoading || sessionBusy || sessionReadOnly} onClick={() => void loadOlder()}>
-                  {t("history.loadEarlier")}
-                </button> : null}
-                {readingEarlier ? <button type="button" className="cursor-pointer underline" disabled={sessionBusy || sessionReadOnly} onClick={() => void returnToNewest()}>
-                  {t("history.returnToNewest")}
-                </button> : null}
-                {earlierError ? <span role="status">{t("history.loadError")}</span> : null}
-              </div> : null}
 
             {messages.length > 0 || !loading && !error ? <ChatHistory
               visible={visible}

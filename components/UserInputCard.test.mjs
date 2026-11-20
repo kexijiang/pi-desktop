@@ -6,7 +6,7 @@ const [card, styles, chat, rpc] = await Promise.all([
   readFile(new URL("./UserInputCard.tsx", import.meta.url), "utf8"),
   readFile(new URL("./UserInputCard.module.css", import.meta.url), "utf8"),
   readFile(new URL("./ChatWindow.tsx", import.meta.url), "utf8"),
-  readFile(new URL("../lib/rpc-manager.ts", import.meta.url), "utf8"),
+  readFile(new URL("../lib/rpc/extension-ui-bridge.ts", import.meta.url), "utf8"),
 ]);
 
 test("structured input card supports choices, text, cancellation, and keyboard submission", () => {

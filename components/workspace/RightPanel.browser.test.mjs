@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const { webpack } = require('next/dist/compiled/webpack/webpack.js');
 const repo = path.resolve(import.meta.dirname, '../..');
 
-test('workspace menu hides the native browser through layout changes and restores the same page', { timeout: 120000 }, async () => {
+test('workspace menus and renderer dialogs suspend the native browser and restore the same page', { timeout: 120000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'piora-tool-menu-'));
   let browser;
   try {
@@ -92,6 +92,69 @@ createRoot(document.getElementById('root')).render(<App/>);`);
       await page.getByRole('button', { name: 'Toggle panel', exact: true }).click(); await menu.waitFor({ state: 'hidden' });
       await page.getByRole('button', { name: 'Toggle panel', exact: true }).click(); await nativeVisible(true);
       assert.equal(await menu.count(), 0, 'reopening the panel cannot restore a stale menu');
+
+      const actionsBeforeDialogs = await page.evaluate(() => window.nativeActions);
+      await page.evaluate(() => {
+        window.finishShow = undefined;
+        window.delayNextShow = true;
+        window.dispatchEvent(new Event('resize'));
+      });
+      await page.waitForFunction(() => typeof window.finishShow === 'function');
+      await page.evaluate(() => {
+        const portal = document.createElement('div');
+        portal.id = 'dialog-portal';
+        portal.innerHTML = '<div role="dialog" aria-modal="true" style="position:fixed;top:0;left:0;width:80px;height:20px">Settings</div>';
+        document.body.append(portal);
+      });
+      await nativeVisible(false);
+      assert.ok(await page.evaluate(() => window.nativeViewports.at(-1).width > 0), 'temporary suspension retains the measured browser bounds');
+      const afterDialog = await page.evaluate(() => {
+        const dialog = document.createElement('dialog');
+        dialog.id = 'confirmation';
+        dialog.textContent = 'Confirmation';
+        document.body.append(dialog);
+        dialog.showModal();
+        document.getElementById('dialog-portal').hidden = true;
+        window.finishShow();
+        return window.nativeViewports.length;
+      });
+      await page.setViewportSize({ width: 600, height: 720 });
+      await page.evaluate(() => window.emitNativeState());
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(index => window.nativeViewports.slice(index).some(call => call.visible), afterDialog), false,
+        'closing one modal and refreshing the viewport cannot cover another modal');
+      await page.evaluate(() => document.getElementById('confirmation').close());
+      await nativeVisible(true);
+      await page.evaluate(() => { document.getElementById('dialog-portal').hidden = false; });
+      await nativeVisible(false);
+      await page.evaluate(() => document.getElementById('dialog-portal').remove());
+      await nativeVisible(true);
+
+      await page.evaluate(() => {
+        const popup = document.createElement('div');
+        popup.id = 'anchored-popup';
+        popup.setAttribute('role', 'menu');
+        popup.setAttribute('popover', 'manual');
+        popup.style.cssText = 'position:fixed;inset:auto;top:0;left:0;margin:0;width:12px;height:12px';
+        document.body.append(popup);
+        popup.showPopover();
+      });
+      await page.locator('#anchored-popup').waitFor();
+      assert.equal(await page.evaluate(() => window.nativeVisible), true, 'a menu outside the browser leaves the native page visible');
+      await page.evaluate(() => {
+        const bounds = window.nativeViewports.findLast(item => item.visible);
+        const popup = document.getElementById('anchored-popup');
+        popup.style.left = `${bounds.x + 4}px`;
+        popup.style.top = `${bounds.y + 4}px`;
+      });
+      await nativeVisible(false);
+      await page.evaluate(() => document.getElementById('anchored-popup').hidePopover());
+      await nativeVisible(true);
+      await page.evaluate(() => document.getElementById('anchored-popup').showPopover());
+      await nativeVisible(false);
+      await page.evaluate(() => document.getElementById('anchored-popup').remove());
+      await nativeVisible(true);
+      assert.deepEqual(await page.evaluate(() => window.nativeActions), actionsBeforeDialogs, 'portals hide the existing view without starting browser navigation');
       assert.deepEqual(errors, []);
       await page.close();
     }

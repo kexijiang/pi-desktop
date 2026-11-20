@@ -19,11 +19,11 @@ import { usageDashboard } from './desktop-e2e/scenarios/usage-dashboard.mjs';
 import { subagents } from './desktop-e2e/scenarios/subagents.mjs';
 import { subagentsReal } from './desktop-e2e/scenarios/subagents-real.mjs';
 import { chatContextMenu } from './desktop-e2e/scenarios/chat-context-menu.mjs';
-import { chatHistoryPagination } from './desktop-e2e/scenarios/chat-history-pagination.mjs';
+import { chatHistoryFull } from './desktop-e2e/scenarios/chat-history-full.mjs';
 import { workspaceIssueFixes } from './desktop-e2e/scenarios/workspace-issue-fixes.mjs';
 import { worktreeChatLayout } from './desktop-e2e/scenarios/worktree-chat-layout.mjs';
 
-const scenarios = [companionScaling, settingsTheme, stopShell, stopBash, desktopExtensions, cordisExtensions, cordisCommunity, browserPersistence, browserLogin, browserUpload, browserSettings, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard, subagents, subagentsReal, chatContextMenu, chatHistoryPagination, workspaceIssueFixes, worktreeChatLayout];
+const scenarios = [companionScaling, settingsTheme, stopShell, stopBash, desktopExtensions, cordisExtensions, cordisCommunity, browserPersistence, browserLogin, browserUpload, browserSettings, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard, subagents, subagentsReal, chatContextMenu, chatHistoryFull, workspaceIssueFixes, worktreeChatLayout];
 
 export function parseOptions(args) {
   const options = { scenario: 'settings-theme' };
