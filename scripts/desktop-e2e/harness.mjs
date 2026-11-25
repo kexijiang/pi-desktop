@@ -40,9 +40,18 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   const env = isolatedEnvironment(process.env, paths);
   if (executable) {
     await mkdir(paths.profile, { recursive: true });
-    await writeFile(join(paths.profile, 'desktop-state.json'), JSON.stringify({ serverPort: paths.port }));
+    await writeFile(join(paths.profile, 'desktop-state.json'), JSON.stringify({
+      serverPort: paths.port,
+      ...(scenario?.skipOnboardingForFixture ? { updateSchedule: { enabled: false, time: '03:00' } } : {}),
+    }));
     env.PIORA_COMPANION_UI_TEST = '1';
     env.PIORA_COMPANION_UI_TEST_USER_DATA = paths.profile;
+    if (scenario?.skipOnboardingForFixture) {
+      env.LOCALAPPDATA = join(paths.profile, 'isolated-localappdata');
+      await mkdir(env.LOCALAPPDATA, { recursive: true });
+      await writeFile(join(paths.profile, 'update-source.json'), JSON.stringify({ schema: 1, source: 'internal' }));
+      report.updateFixture = 'Scheduled update disabled; unconfigured internal source avoids public update downloads';
+    }
     report.executable = executable;
     // The executable may be installed or extracted from a published installer.
     // Installation provenance is supplied by the caller's artifact verification.
@@ -51,7 +60,9 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
     report.application = 'development';
     env.PIORA_DESKTOP_DEV_NEXT_READY_TIMEOUT_MS = String(Math.min(300_000, Math.max(60_000, stepTimeoutMs)));
   }
-  const origin = `http://127.0.0.1:${appPort.port}`, debugging = `http://127.0.0.1:${debugLease.port}`;
+  let origin = `http://127.0.0.1:${appPort.port}`;
+  const debugging = `http://127.0.0.1:${debugLease.port}`;
+  const ownedAppPorts = new Set([appPort.port]);
   report.origin = origin;
   report.debugging = debugging;
   report.credentials = 'not-copied-or-injected';
@@ -66,7 +77,8 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   const start = (script, packaged = false) => {
     signal.throwIfAborted();
     const handle = startProcess(packaged ? executable : process.execPath,
-      packaged ? [`--remote-debugging-port=${paths.debugPort}`] : [join(root, script)], {
+      packaged ? [`--remote-debugging-port=${paths.debugPort}`,
+        ...(env.PIORA_PERF_ELECTRON_NETLOG ? ['--log-net-log=' + env.PIORA_PERF_ELECTRON_NETLOG] : [])] : [join(root, script)], {
         cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'],
         // Win32 SW_HIDE also hides the packaged GUI. Its WebContentsViews attach only to a visible host.
         windowsHide: !packaged,
@@ -83,7 +95,8 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   await Promise.all([appPort.release(), debugLease.release()]); leased = false;
   // This runs after stopProcess (reverse cleanup order), even when startup failed.
   const checkPorts = async () => {
-    await waitUntil(async () => !await portOpen(appPort.port) && !await portOpen(debugLease.port), { timeoutMs: 10_000, label: 'test ports to close' });
+    await waitUntil(async () => (await Promise.all([...ownedAppPorts, debugLease.port].map(async selectedPort => !await portOpen(selectedPort))))
+      .every(Boolean), { timeoutMs: 10_000, label: 'test ports to close' });
   };
   // start() registers termination after this check, so reverse cleanup stops first.
   registerCleanup(checkPorts);
@@ -109,12 +122,36 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
     page = await waitUntil(() => {
       checkAlive();
       if (!browser.isConnected()) throw new Error('Electron disconnected before its application window opened');
-      return browser.contexts().flatMap(context => context.pages()).find(candidate => candidate.url().startsWith(origin + '/'));
+      const candidates = browser.contexts().flatMap(context => context.pages());
+      return candidates.find(candidate => candidate.url().startsWith(origin + '/'))
+        ?? (executable ? candidates.find(candidate => /^http:\/\/127\.0\.0\.1:\d+\/(?:[?#].*)?$/.test(candidate.url())) : undefined);
     }, { signal, timeoutMs: 600_000, label: 'Piora application window' });
+    if (executable) {
+      const connectedUrl = new URL(page.url());
+      if (origin !== connectedUrl.origin) {
+        report.requestedOrigin ??= origin;
+        origin = report.origin = connectedUrl.origin;
+        ownedAppPorts.add(Number(connectedUrl.port));
+      }
+    }
     await page.bringToFront();
     page.setDefaultTimeout(stepTimeoutMs);
     page.setDefaultNavigationTimeout(stepTimeoutMs);
     page.on('pageerror', error => pageErrors.push(error.message));
+    if (scenario?.skipOnboardingForFixture) {
+      const storage = () => localStorage.setItem('piora-first-run-onboarding:v1', JSON.stringify({
+        version: 1, status: 'dismissed', step: 'model',
+      }));
+      await page.addInitScript(storage);
+      await page.evaluate(storage);
+      page.on('console', message => {
+        if (message.type() === 'error') log.write('[perf browser console] ' + message.text() + '\n');
+      });
+      page.on('requestfailed', request => {
+        const failed = new URL(request.url());
+        if (failed.pathname.startsWith('/_next/')) log.write('[perf chunk failed] ' + failed.pathname + ' ' + request.failure()?.errorText + '\n');
+      });
+    }
     ready = async () => {
       checkAlive();
       await abortable(() => page.locator('.app-shell').waitFor({ state: 'visible', timeout: 600_000 }), signal);
@@ -123,6 +160,7 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
         checkAlive();
         const skip = page.getByRole('button', { name: /^(Skip guide|跳过引导)$/ });
         if (await skip.isVisible()) { await skip.click(); return false; }
+        if (scenario?.skipOnboardingForFixture) return page.locator('.desktop-titlebar-sidebar-toggle').isVisible();
         // The onboarding panel loads asynchronously after the shell/settings button.
         // Wait for its persisted decision so a late modal cannot cover the scenario.
         const onboarded = await page.evaluate(() => {
@@ -149,7 +187,7 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   };
   await connect();
   return {
-    page, origin, pageErrors, paths,
+    page, origin, pageErrors, paths, packaged: Boolean(executable),
     getBrowser: () => browser,
     // Restart only this run's owned process tree, retaining its isolated profile.
     restart: async ({ graceful = false } = {}) => {
