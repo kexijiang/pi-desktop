@@ -287,8 +287,8 @@ async function run({ page, origin, getBrowser, directory, step, waitUntil, reloa
     if (await panel.getAttribute('aria-expanded') !== 'true') await panel.click();
     if (await tool(name).isVisible()) await tool(name).click();
     else {
-      await page.getByRole('button', { name: /^(Open tool|打开工具)$/ }).click();
-      await page.getByRole('menuitem').filter({
+      await page.locator('#file-panel').getByRole('button', { name: /^(Open tool|打开工具)$/ }).click();
+      await page.getByRole('menu').getByRole('menuitem').filter({
         has: page.getByText(toolNames[name], { exact: true }),
       }).click();
     }
@@ -376,7 +376,7 @@ async function run({ page, origin, getBrowser, directory, step, waitUntil, reloa
     if (options.firstTimeoutMs) {
       let retried = false;
       const readiness = await bounded(async () => {
-        const retry = surface(name).getByRole('button', { name: /^(Retry|重试)$/ });
+        const retry = surface(name).locator('.session-history-status').getByRole('button', { name: /^(Retry|重试)$/ });
         if (!retried && await retry.isVisible()) { retried = true; await retry.click(); }
         return await send.isEnabled();
       }, options.firstTimeoutMs);
@@ -488,6 +488,7 @@ async function run({ page, origin, getBrowser, directory, step, waitUntil, reloa
       await select('Lane 1');
       await select('Lane 2');
     });
+    if (await panel.getAttribute('aria-expanded') === 'true') await panel.click();
     const baselineMarker = await startPrompt('Lane 1', true);
     await stage('baseline', async () => {
       assert.equal(await panel.getAttribute('aria-expanded'), 'false');

@@ -110,6 +110,13 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   let browser, page, ready;
   const pageErrors = [];
   const connectOnce = async () => {
+    if (executable && scenario?.skipOnboardingForFixture) {
+      await waitUntil(async () => {
+        checkAlive();
+        const startup = await readFile(join(paths.profile, 'logs', 'piora.log'), 'utf8').catch(() => '');
+        return startup.includes('"stage":"composer-interactive"');
+      }, { signal, timeoutMs: 300_000, label: 'Packaged renderer startup handoff' });
+    }
     await waitUntil(async () => {
       checkAlive();
       try { return (await fetch(`${debugging}/json/version`, { signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]) })).ok; }
@@ -213,9 +220,9 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
 }
 
 /** launch is injectable for lifecycle tests; the CLI always uses the real Electron adapter. */
-export async function runDesktopScenario({ root, scenario, timeoutMs = 600_000, stepTimeoutMs = 30_000,
+export async function runDesktopScenario({ root, scenario, verificationRoot, timeoutMs = 600_000, stepTimeoutMs = 30_000,
   signal: externalSignal, failAt, port, debugPort, electronDist, executable, launch = launchDesktop, cleanupTimeoutMs = 15_000 }) {
-  const parent = join(root, '.verification');
+  const parent = verificationRoot ? resolve(verificationRoot) : join(root, '.verification');
   await mkdir(parent, { recursive: true });
   const releaseLock = await acquireRunLock(join(parent, 'desktop-e2e.lock'));
   const cleanup = [];

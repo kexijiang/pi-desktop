@@ -16,6 +16,7 @@ const result = await runDesktopScenario({
   stepTimeoutMs: 180_000,
   electronDist: process.env.PIORA_PERF_ELECTRON_DIST,
   executable,
+  verificationRoot: process.env.PIORA_PERF_VERIFICATION_ROOT,
 });
 console.log(JSON.stringify({
   directory: result.directory, origin: result.report.origin, status: result.report.status,

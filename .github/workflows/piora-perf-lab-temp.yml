@@ -1,7 +1,6 @@
 name: Temporary Piora packaged performance lab
 
 on:
-  create:
   push:
     branches: [codex/piora-performance-lab-20261125]
 
@@ -11,7 +10,6 @@ permissions:
 
 jobs:
   packaged-lab:
-    if: github.ref == 'refs/heads/codex/piora-performance-lab-20261125'
     name: Packaged performance (${{ matrix.variant }})
     runs-on: windows-latest
     timeout-minutes: 35
@@ -22,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          fetch-depth: 2
+          fetch-depth: 6
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:

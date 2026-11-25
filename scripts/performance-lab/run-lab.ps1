@@ -4,7 +4,8 @@ $summary = Join-Path $base '.verification\lab-summary'
 $raw = Join-Path $base '.verification\lab-raw'
 $null = New-Item -ItemType Directory -Path $summary,$raw -Force
 $expectedCommit = 'e83d503267698800b8e1cfa987024d7c7c10a9ad'
-if ((git rev-parse HEAD^).Trim() -ne $expectedCommit) { throw 'Harness must be directly based on the packaged commit' }
+git merge-base --is-ancestor $expectedCommit HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Harness must descend from the exact packaged commit' }
 $hostInfo = [ordered]@{
   testedPackageSource = $expectedCommit
   sourceWorkflowRun = 45574358646
