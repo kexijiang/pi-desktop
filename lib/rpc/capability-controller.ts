@@ -7,7 +7,6 @@ import {
   projectToolSelection,
   type ProjectToolSettingsRecord,
 } from "../project-tool-settings";
-import type { RemoteSessionPolicy } from "../remote-session-policy";
 import {
   appendSessionCapabilityPolicy,
   buildSessionCapabilitiesState,
@@ -30,7 +29,7 @@ import type { AgentEvent } from "./types";
 
 export interface CapabilityControllerHost {
   readonly runtimeProfile: AgentRuntimeProfile;
-  readonly remotePolicy: RemoteSessionPolicy;
+  readonly notesOnly: boolean;
   getInner: () => AgentSessionLike;
   isAlive: () => boolean;
   isRunning: () => boolean;
@@ -74,7 +73,7 @@ export class SessionCapabilityController {
     })), host.runtimeProfile), ...this.nativeMcp?.resourceCatalog() ?? []];
     this.capabilityPolicy = options.policy
       ?? restoreSessionCapabilityPolicy(inner.sessionManager.getEntries(), this.capabilityCatalog, host.runtimeProfile);
-    this.toolNameCeiling = host.remotePolicy === "notes"
+    this.toolNameCeiling = host.notesOnly
       ? new Set<string>()
       : options.toolNameCeiling
         ? new Set(options.toolNameCeiling)
@@ -102,7 +101,7 @@ export class SessionCapabilityController {
   }
 
   isToolAllowedByCapability(name: string): boolean {
-    if (!this.host.isAlive() || this.host.remotePolicy === "notes") return false;
+    if (!this.host.isAlive() || this.host.notesOnly) return false;
     const permissionParent = this.host.getPermissionParent();
     if (permissionParent && !permissionParent.isToolAllowedByCapability(name)) return false;
     const sideChatMeta = this.host.getSideChatMeta?.();
@@ -124,7 +123,7 @@ export class SessionCapabilityController {
   }
 
   isMcpResourceServerAllowed(server: string): boolean {
-    return this.host.isAlive() && this.host.remotePolicy !== "notes" && this.host.runtimeProfile === "normal"
+    return this.host.isAlive() && !this.host.notesOnly && this.host.runtimeProfile === "normal"
       && this.capabilityPolicy.enabledCapabilityIds.includes(nativeMcpResourceCapabilityId(server));
   }
 
@@ -150,7 +149,7 @@ export class SessionCapabilityController {
   }
 
   private automaticWorkflowToolNames(): string[] {
-    if (this.host.runtimeProfile !== "normal" || this.host.remotePolicy === "notes") return [];
+    if (this.host.runtimeProfile !== "normal" || this.host.notesOnly) return [];
     if (this.host.getPermissionParent()) return [];
     const sideChatMeta = this.host.getSideChatMeta?.();
     if (sideChatMeta) {

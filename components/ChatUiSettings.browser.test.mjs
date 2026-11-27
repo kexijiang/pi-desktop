@@ -23,8 +23,29 @@ test("chat settings keep editable status libraries, searchable prompts and theme
       import{I18nProvider}from'@/hooks/useI18n';import{useFocusTrap}from'@/hooks/useFocusTrap';
       import{registerAbortHandler,useGlobalKeyboardShortcuts}from'@/hooks/useKeyboardShortcuts';
       import{RunningStatusSettings}from'@/components/RunningStatusSettings';import{SystemPromptSelector}from'@/components/SystemPromptSelector';import{ArchivedChatsSettings}from'@/components/ArchivedChatsSettings';import{ChatInput}from'@/components/ChatInput';
+      import { TrashSettings } from "@/components/TrashSettings";
       function Picker(){const ref=useRef(null);const[closed,setClosed]=useState(0);const[value,setValue]=useState('all');useFocusTrap(ref,true,{onEscape:()=>setClosed(n=>n+1)});return <div ref={ref} role="dialog" aria-label="下拉菜单测试"><label>项目<select aria-label="项目选择" value={value} onChange={e=>setValue(e.target.value)}><optgroup label="项目"><option value="all">所有项目</option><option value="piora">Piora</option><option value="disabled" disabled>不可用项目</option>{Array.from({length:35},(_,i)=><option key={i} value={'item-'+i}>{i===3?'很长的项目名称'.repeat(10):'项目 '+i}</option>)}</optgroup></select></label><select aria-label="禁用选择" disabled><option>禁用</option></select><select aria-label="多选列表" multiple><option>A</option><option>B</option></select><output data-testid="selection">{value}</output><output data-testid="closed">{closed}</output></div>}
-      function App(){const[selection,setSelection]=useState({mode:'default'});const[aborts,setAborts]=useState(0);useGlobalKeyboardShortcuts();useEffect(()=>{registerAbortHandler(()=>setAborts(n=>n+1));return()=>registerAbortHandler(null)},[]);return <><output data-testid="aborts">{aborts}</output>{location.pathname==='/selects'?<Picker/>:location.pathname==='/archived'?<ArchivedChatsSettings onChanged={()=>{}}/>:<><RunningStatusSettings cwd="C:/fixture/project"/><ChatInput cwd="C:/fixture/project" isStreaming={false} onSend={()=>true} onAbort={()=>setAborts(n=>n+1)} toolbarControl={<SystemPromptSelector selection={selection} onChange={setSelection}/>}/><output data-testid="prompt">{selection.mode==='template'?selection.templateId:'default'}</output></>}</>}
+      function App() {
+        const [selection, setSelection] = useState({ mode: "default" });
+        const [aborts, setAborts] = useState(0);
+        const abort = () => setAborts(count => count + 1);
+        useGlobalKeyboardShortcuts();
+        useEffect(() => { registerAbortHandler(abort); return () => registerAbortHandler(null); }, []);
+        let view;
+        switch (location.pathname) {
+          case "/selects": view = <Picker/>; break;
+          case "/archived": view = <ArchivedChatsSettings onChanged={() => {}}/>; break;
+          case "/trash": view = <TrashSettings embedded/>; break;
+          default:
+            view = <>
+              <RunningStatusSettings cwd="C:/fixture/project"/>
+              <ChatInput cwd="C:/fixture/project" isStreaming={false} onSend={() => true} onAbort={abort}
+                toolbarControl={<SystemPromptSelector selection={selection} onChange={setSelection}/>}/>
+              <output data-testid="prompt">{selection.mode === "template" ? selection.templateId : "default"}</output>
+            </>;
+        }
+        return <><output data-testid="aborts">{aborts}</output>{view}</>;
+      }
       createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nProvider>);
     `);
     const compiler = webpack({ mode: "development", target: "web", devtool: false, entry: path.join(directory, "entry.tsx"), output: { path: directory, filename: "bundle.js", publicPath: "http://chat-ui.test/" }, resolve: { extensions: [".tsx", ".ts", ".js"], modules: [path.join(repo, "node_modules")], alias: { "@": repo, "./ModelProviderIcon": path.join(directory, "icons.tsx") } }, module: { rules: [{ test: /\.tsx?$/, exclude: /node_modules/, use: path.join(directory, "loader.cjs") }, { test: /\.css$/, use: path.join(directory, "css.cjs") }] } });
@@ -36,6 +57,8 @@ test("chat settings keep editable status libraries, searchable prompts and theme
     }
     const artifacts = path.resolve(process.env.PIORA_CHAT_UI_ARTIFACTS || path.join(repo, ".verification", "chat-ui-20261114")); await mkdir(artifacts, { recursive: true });
     const generated = Array.from({ length: 50 }, (_, index) => `模型文案 ${index + 1}`);
+    const trashItem = { id: "fixture-trash", title: "长会话标题".repeat(22), cwd: "C:/fixture/" + "long-project-directory/".repeat(12), count: 3, expiresAt: Date.now() + 86_400_000 };
+    let restoreRequests = 0;
     let mode = "fail", generateCalls = 0, expectedPrompt = ""; const releaseGeneration = Promise.withResolvers();
     browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : "chromium", headless: true });
     const page = await browser.newPage({ viewport: { width: 1000, height: 950 } }); const errors = [];
@@ -54,6 +77,12 @@ test("chat settings keep editable status libraries, searchable prompts and theme
       }
       if (pathname === "/api/sessions") return route.fulfill({ json: [] });
       if (pathname === "/api/sessions/flags") return route.fulfill({ json: {} });
+      if (pathname === "/api/sessions/trash") return route.fulfill({ json: { sessions: [trashItem] } });
+      if (pathname === "/api/sessions/fixture-trash/restore") {
+        assert.equal(route.request().method(), "POST");
+        restoreRequests++;
+        return route.fulfill({ json: { restored: true } });
+      }
       if (pathname.startsWith("/api/")) return route.fulfill({ json: { available: false } });
       if (pathname.endsWith(".js")) return route.fulfill({ contentType: "text/javascript", body: await readFile(path.join(directory, path.basename(pathname))) });
       if (pathname === "/meme-panel") return route.fulfill({ contentType: "text/html", body: extendMemePanel('<!doctype html><html><body><h1>表情包</h1><script>async function apiPost(){return {ok:true,sendGear:"auto",sendMode:"auto",packId:"fixture",packs:[{id:"fixture",name:"测试图库"}],enabledPacks:["fixture"]}}async function load(){}function notice(){}</script></body></html>') });
@@ -134,6 +163,26 @@ test("chat settings keep editable status libraries, searchable prompts and theme
     const archive = page.getByRole("combobox"); await archive.waitFor();
     assert.equal(await archive.evaluate(element => getComputedStyle(element).appearance), "base-select");
     await archive.click(); await page.screenshot({ path: path.join(artifacts, "archived-select.png") });
+    await page.goto("http://chat-ui.test/trash");
+    const restore = page.getByRole("button", { name: "恢复", exact: true });
+    await restore.waitFor();
+    for (const width of [1000, 700, 390]) {
+      await page.setViewportSize({ width, height: 750 });
+      const fit = await restore.evaluate(button => {
+        const rect = button.getBoundingClientRect();
+        const row = button.closest("article").getBoundingClientRect();
+        const label = document.createRange();
+        label.selectNodeContents(button);
+        const style = getComputedStyle(button);
+        const minimum = label.getBoundingClientRect().width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+        return rect.width + 1 >= minimum && rect.right <= row.right + 1 && rect.right <= innerWidth;
+      });
+      assert.equal(fit, true, `the Restore control fits the label at ${width}px`);
+    }
+    await restore.press("Enter");
+    await page.getByRole("status").filter({ hasText: "已恢复" }).waitFor();
+    await restore.waitFor({ state: "hidden" });
+    assert.equal(restoreRequests, 1);
     await page.goto("http://chat-ui.test/meme-panel");
     await page.locator("#piora-pack option").waitFor({ state: "attached" });
     assert.equal(await page.locator("select").count(), 3);

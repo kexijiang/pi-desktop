@@ -175,6 +175,17 @@
   padding: 8px 12px 8px 14px;
 }
 
+.trashRow {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.trashRow small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row + .row {
   border-top: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
 }
@@ -274,6 +285,6 @@
 @media (max-width: 520px) {
   .header { align-items: stretch; flex-direction: column; }
   .deleteAllButton { align-self: flex-start; }
-  .row { grid-template-columns: minmax(0, 1fr) 28px; }
-  .unarchiveButton { grid-column: 1 / -1; justify-self: stretch; }
+  .row:not(.trashRow) { grid-template-columns: minmax(0, 1fr) 28px; }
+  .row:not(.trashRow) .unarchiveButton { grid-column: 1 / -1; justify-self: stretch; }
 }

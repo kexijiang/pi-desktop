@@ -14,8 +14,7 @@ import { PromptInputEnrichment } from "../prompt-input-enrichment";
 import type { PromptMaterialReference } from "../prompt-material-format";
 import { buildPromptWithMaterials, resolvePromptMaterialReferences } from "../prompt-materials";
 import { beginPromptRun, finishPromptRun, type PromptRunIdentity } from "../prompt-run-registry";
-import { RemoteContentProjection } from "../remote-content";
-import { assertRemotePolicyCommand, readRemoteSessionPolicy, type RemoteSessionPolicy } from "../remote-session-policy";
+import { assertNotesSessionCommand, isLegacyNotesSession } from "../notes-session";
 import { getRoom, listRooms } from "../room-store";
 import { notifyRunningChange, scheduleRunningChange } from "../rpc-running-status";
 import { compactTaskActivityText } from "../rpc-task-activity";
@@ -100,8 +99,7 @@ export class AgentSessionWrapper {
   private readonly queueTracker: SessionQueueTracker;
   private readonly activity = new SessionActivityTracker();
   private readonly systemPromptReloader: SystemPromptReloader;
-  readonly remotePolicy: RemoteSessionPolicy;
-  private readonly remoteContent = new RemoteContentProjection();
+  readonly notesOnly: boolean;
   private listeners: EventListener[] = [];
   private promptRunning = false;
   // Synchronous admission guard shared by UI and routed prompts. The guard is
@@ -157,7 +155,7 @@ export class AgentSessionWrapper {
     this.permissionParent = capabilityOptions.subagentParent;
     this.nativeMcp = capabilityOptions.nativeMcp;
     this.sideChatMeta = capabilityOptions.sideChatMeta ?? readSideChatMetaFromEntries(inner.sessionManager.getEntries());
-    this.remotePolicy = readRemoteSessionPolicy(inner.sessionManager.getEntries());
+    this.notesOnly = isLegacyNotesSession(inner.sessionManager.getEntries());
     this.cachedSessionTitle = inner.sessionManager.getSessionName()?.trim() || null;
     this._projectRoot = capabilityOptions.projectRoot ?? inner.sessionManager.getCwd();
 
@@ -189,7 +187,7 @@ export class AgentSessionWrapper {
 
     this.capabilities = new SessionCapabilityController({
       runtimeProfile: this.runtimeProfile,
-      remotePolicy: this.remotePolicy,
+      notesOnly: this.notesOnly,
       getInner: () => this.inner,
       isAlive: () => this._alive,
       isRunning: () => this.isRunning(),
@@ -319,7 +317,7 @@ export class AgentSessionWrapper {
   }
 
   async executeChatCommand(commandId: string, message: string, onPhase: (phase: ChatCommandPhase) => void = () => {}, activity?: { execute(): Promise<void>; source?: SessionMessageSourceKind }): Promise<void> {
-    assertRemotePolicyCommand(this.remotePolicy, { type: "prompt", message });
+    assertNotesSessionCommand(this.notesOnly, { type: "prompt", message });
     await this.waitForExtensionsBound();
     if (!this._alive || this.stopping) throw new Error("Command cancelled");
     this.assertWorkflowExtensionCommand(message);
@@ -394,13 +392,6 @@ export class AgentSessionWrapper {
         return materials.length ? buildPromptWithMaterials(enriched, materials) : enriched;
       }, () => this.inner.prompt(message, { source: "rpc", streamingBehavior: options.delivery, ...(options.images?.length ? { images: options.images } : {}) })),
     });
-  }
-
-  getRemoteContentSnapshot() {
-    const runId = this.activePromptRun?.runId ?? null;
-    this.remoteContent.resetForRun(runId);
-    const snapshot = this.remoteContent.snapshot();
-    return { ...snapshot, sessionId: this.sessionId, runId, running: runId !== null };
   }
 
   isToolAllowedByCapability(name: string): boolean { return this.capabilities.isToolAllowedByCapability(name); }
@@ -539,7 +530,7 @@ export class AgentSessionWrapper {
   }
 
   start(): void {
-    if (!this.permissionParent && !this.sideChatMeta && this.runtimeProfile === "normal" && this.remotePolicy !== "notes") {
+    if (!this.permissionParent && !this.sideChatMeta && this.runtimeProfile === "normal" && !this.notesOnly) {
       if (!registeredSessionStarter) throw new Error("RPC session starter is not registered.");
       this.subagents = new SubagentRuntime(this.sessionId, this.cwd, createSubagentDriver(this, registeredSessionStarter));
       this.onDestroy(bindSubagentRuntime(this.subagents));
@@ -554,7 +545,6 @@ export class AgentSessionWrapper {
       if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end")
         && (event.message as { role?: string } | undefined)?.role === "system") return;
       this.streamingMetrics.update(event);
-      this.remoteContent.update(event);
       if (event.type === "message_start" && (event.message as { role?: string } | undefined)?.role === "user") {
         this.promptInputEnrichment.apply(event.message as { content?: unknown });
       }
@@ -733,7 +723,7 @@ export class AgentSessionWrapper {
   private assertWorkflowSession(): void {
     if (
       this.runtimeProfile !== "normal"
-      || this.remotePolicy === "notes"
+      || this.notesOnly
       || this.isSideConversation()
       || listRooms(this.sessionId).some(room => room.members.some(member => member.binding.sessionId === this.sessionId))
     ) {
@@ -866,7 +856,6 @@ export class AgentSessionWrapper {
       ...(this.runtimeProfile === "normal" ? { workflow: readWorkflowSnapshot(this.sessionId) } : {}),
       ...(view === "full" ? { stats: summarizeLiveSessionStats(this.inner.sessionManager) } : {}),
       runtimeProfile: this.runtimeProfile,
-      remotePolicy: this.remotePolicy,
       sessionFile: this.inner.sessionFile ?? "",
       activeTools: Array.from(this.runtimeToolCalls, ([id, tool]) => ({ id, name: tool.toolName })),
       pendingApproval: this.uiBridge.hasPendingApproval(),
@@ -986,7 +975,7 @@ export class AgentSessionWrapper {
   }
 
   async send(command: SessionRpcCommand): Promise<unknown> {
-    const type = authorizeSessionCommand(this.sessionId, this.remotePolicy, command);
+    const type = authorizeSessionCommand(this.sessionId, this.notesOnly, command);
     this.resetIdleTimer();
     this.capabilities.flushPendingProjectCapabilitySettings();
     const abortGeneration = this.abortGeneration;

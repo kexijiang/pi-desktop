@@ -9,7 +9,6 @@ import { startRpcSession, type AgentSessionWrapper } from "./rpc-manager";
 import { invalidateSessionListCache } from "./session-reader";
 import type { SessionCapabilitiesState, SessionCapabilitySelection } from "./session-capabilities";
 import type { SystemPromptSelection } from "./system-prompt-types";
-import type { RemoteSessionReservation } from "./remote-session-creation";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -20,8 +19,6 @@ export function parseSessionThinkingLevel(value: unknown): ThinkingLevel | undef
 }
 
 export interface CreateSessionInput {
-  reservation?: RemoteSessionReservation;
-  remotePolicy?: "agent" | "notes";
   cwd: string;
   initialModel?: { provider: string; modelId: string };
   thinkingLevel?: ThinkingLevel;
@@ -42,7 +39,7 @@ export interface CreatedSession {
   capabilities: SessionCapabilitiesState;
 }
 
-/** Shared creation boundary for the Piora UI and versioned remote API. */
+/** Create a new conversation for the Piora UI. */
 export async function createSession(input: CreateSessionInput): Promise<CreatedSession> {
   const cwd = resolve(input.cwd);
   let isDirectory = false;
@@ -50,10 +47,8 @@ export async function createSession(input: CreateSessionInput): Promise<CreatedS
   if (!isDirectory) throw new Error(`Directory does not exist: ${cwd}`);
 
   const runtimeProfile = input.runtimeProfile ?? getAgentRuntimeProfile();
-  const { session, realSessionId } = await startRpcSession(input.reservation?.sessionId ?? `__new__${randomUUID()}`, "", cwd, {
-    ...(input.reservation ? { preparedSessionFile: input.reservation.sessionFile } : {}),
+  const { session, realSessionId } = await startRpcSession(`__new__${randomUUID()}`, "", cwd, {
     ...(input.toolNames ? { toolNames: input.toolNames } : {}),
-    ...(input.remotePolicy ? { remotePolicy: input.remotePolicy } : {}),
     ...(input.capabilitySelection ? { capabilitySelection: input.capabilitySelection } : {}),
     ...(input.systemPromptSelection ? { systemPromptSelection: input.systemPromptSelection } : {}),
     ...(input.initialModel ? { initialModel: input.initialModel } : {}),
@@ -62,7 +57,6 @@ export async function createSession(input: CreateSessionInput): Promise<CreatedS
   });
   try {
     if (input.name?.trim()) await session.send({ type: "set_session_name", name: input.name.trim().slice(0, 200) });
-    if (input.remotePolicy) session.persistSessionFile();
 
     allowFileRoot(cwd);
     invalidateSessionListCache();

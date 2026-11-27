@@ -1129,7 +1129,7 @@ team:<roomId>:<teamRunId>:<taskId>:<purpose>:<attempt>
 为支持精确取消，必须给 Router 新增：
 
 ```ts
-cancelCommand(commandId: string, principal?: SessionRoutePrincipal): Promise<AbortReceipt>
+cancelCommand(commandId: string): Promise<AbortReceipt>
 ```
 
 - queued/accepted：从对应 `SessionInboxRegistry` 精确移除并写 `command_cancelled`；
@@ -1888,10 +1888,9 @@ UI 的诊断视图可导出一个不含正文的 run manifest。调试日志统�
 
 1. v2 Room migration fixtures；
 2. legacy manual task 保留；
-3. remote control scope 检查；
-4. 打包路径；
-5. 性能、容量、隐私和删除测试；
-6. 文档和 release notes。
+3. 打包路径；
+4. 性能、容量、隐私和删除测试；
+5. 文档和 release notes。
 
 ## 23. 测试矩阵
 
@@ -2104,7 +2103,6 @@ Fake Agent 黄金路径必须连续 20 次全部通过。指定真实模型的 S
 - path traversal、symlink escape、非 allow-listed cwd 和伪造 artifact path 全部 fail closed；
 - dirty worktree、用户已有未提交改动和非 Team 创建的 branch 不得被自动删除、覆盖、reset 或强制 merge；
 - Room/run 删除只清理其拥有且已证明 ownership 的 blob、snapshot、outbox 和 managed worktree；共享 Session 和用户文件保持不变；
-- 远程控制入口必须与本地 UI 使用同一授权、revision 和稳定错误边界，不能绕过 review/evidence gate；
 - 任一安全/数据损坏用例失败均属于发布阻断，不接受“低概率”或“重试可恢复”作为豁免理由。
 
 ### 23.9 UI 和人工探索验收清单
