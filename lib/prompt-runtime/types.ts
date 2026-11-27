@@ -50,7 +50,7 @@ export const DEFAULT_RUNTIME_PROMPT_SETTINGS: RuntimePromptSettings = {
     subagents: true,
     ssh: true,
     harmony: false,
-    computer: false,
+    computer: true,
     room: false,
     meme: false,
   },
