@@ -34,15 +34,15 @@ import{I18nProvider}from'@/hooks/useI18n';import{useWorkflow}from'@/hooks/useWor
 import{WorkflowPanel}from'@/components/WorkflowPanel';import{WorkflowModePicker}from'@/components/WorkflowModePicker';
 import{LaboratorySettings}from'@/components/LaboratorySettings';import{useLaboratorySettings}from'@/hooks/useLaboratorySettings';
 import{AppTooltip}from'@/components/AppTooltip';
-function App(){const[sid,setSid]=React.useState('one'),[choice,setChoice]=React.useState({mode:'agent',turnBudget:10}),[modeDisabled,setModeDisabled]=React.useState(false);
+function App(){const[sid,setSid]=React.useState('one'),[choice,setChoice]=React.useState({mode:'agent',turnBudget:10}),[modeDisabled,setModeDisabled]=React.useState(false),[running,setRunning]=React.useState(false);
 const lab=useLaboratorySettings();window.lab=lab;
 React.useEffect(()=>{(window.laboratoryTrace??=[]).push({ready:lab.ready,error:lab.error,saving:lab.saving})},[lab.ready,lab.error,lab.saving]);
 const execute=React.useCallback(async action=>{const res=await fetch('/api/agent/'+sid+'/workflow',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(action)});const data=await res.json();if(!res.ok)throw new Error(data.error);return data.snapshot},[sid]);
-const state=useWorkflow(sid,true,false,execute);window.state=state;
+const state=useWorkflow(sid,true,running,execute);window.state=state;window.setWorkflowRunning=setRunning;
 return <><AppTooltip/><div style={{maxHeight:180,overflow:'auto'}}><LaboratorySettings/></div><output id="lab-state">{String(lab.planGoalEnabled)}</output><button id="switch" onClick={()=>setSid(sid==='one'?'two':'one')}>Switch chat</button><button id="refresh" onClick={()=>state.refresh()}>Refresh</button>
 <div id="mode-fixture" style={{marginTop:120}}>{lab.planGoalEnabled&&<WorkflowModePicker value={choice} onChange={setChoice} disabled={modeDisabled}/>}</div><output id="choice">{JSON.stringify(choice)}</output>
 <label><input id="disable-mode-picker" type="checkbox" checked={modeDisabled} onChange={event=>setModeDisabled(event.target.checked)}/>Disable mode picker</label>
-<div id="workflow-area" style={{position:'fixed',bottom:60,left:16,right:16}}><WorkflowPanel snapshot={state.snapshot} busy={state.busy} running={false} enabled={lab.planGoalEnabled} error={state.error} onAction={state.act} onRefresh={state.refresh} onRequestRevision={()=>document.getElementById('composer')?.focus()}/><textarea aria-label="Message" id="composer" style={{width:'100%',height:40,boxSizing:'border-box'}}/></div></>}
+<div id="workflow-area" style={{position:'fixed',bottom:60,left:16,right:16}}><WorkflowPanel snapshot={state.snapshot} busy={state.busy} running={running} enabled={lab.planGoalEnabled} error={state.error} onAction={state.act} onRefresh={state.refresh} onRequestRevision={()=>document.getElementById('composer')?.focus()}/><textarea aria-label="Message" id="composer" style={{width:'100%',height:40,boxSizing:'border-box'}}/></div></>}
 createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nProvider>);`);
     const compiler = webpack({ mode: "development", target: "web", devtool: false, entry: path.join(directory, "entry.tsx"), output: { path: directory, filename: "bundle.js", publicPath: "/" },
       resolve: { extensions: [".tsx", ".ts", ".js"], modules: [path.join(repo, "node_modules")], alias: { "@": repo } },
@@ -95,8 +95,8 @@ createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nPro
     let holdNextAction = false;
     let failNextAction = false;
     let reconcileFailedAction = false;
-    let failWorkflowReadsUntilRetry = false;
-    let workflowRetryReads = 0;
+    let failWorkflowReads = false;
+    let timeOutNextWorkflowReadFor = null;
     let laboratory = { planGoalEnabled: false };
     let holdLaboratoryRead = false;
     let failLaboratoryRead = true;
@@ -153,12 +153,10 @@ createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nPro
         if (action.action === "cancel") state.current.status = "cancelled";
         return route.fulfill({ json: { snapshot: state } });
       }
-      if (failWorkflowReadsUntilRetry) {
-        if (route.request().headers()["x-piora-workflow-retry"] !== "true") {
-          return route.fulfill({ status: 503, json: { error: "fixture workflow read failed" } });
-        }
-        workflowRetryReads++;
-        failWorkflowReadsUntilRetry = false;
+      if (failWorkflowReads) return route.fulfill({ status: 503, json: { error: "fixture workflow read failed" } });
+      if (sid === timeOutNextWorkflowReadFor) {
+        timeOutNextWorkflowReadFor = null;
+        return route.abort("timedout");
       }
       const captured = structuredClone(states[sid]);
       const afterFailedAction = reconcileFailedAction;
@@ -738,6 +736,28 @@ createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nPro
     assert.equal(await page.getByTestId("workflow-plan-approve").count(), 0);
     assert.equal(await page.getByTestId("workflow-plan-revise").count(), 0, "executing plans do not offer review actions");
 
+    const waitForFailedWorkflowRead = () => page.waitForResponse(response =>
+      response.url().endsWith("/api/agent/one/workflow") && response.request().method() === "GET" && response.status() === 503);
+    const assertWorkflowReadRecovers = async (lastSnapshot) => {
+      const failure = waitForFailedWorkflowRead();
+      failWorkflowReads = true;
+      await page.evaluate(() => window.state.refresh());
+      await (await failure).finished();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.evaluate(() => window.state.error), null, "a background read failure is silent after loading a usable snapshot");
+      assert.deepEqual(await page.evaluate(() => window.state.snapshot), lastSnapshot, "a failed read preserves the last usable workflow");
+      await (await waitForFailedWorkflowRead()).finished();
+      states.one.revision++;
+      failWorkflowReads = false;
+      await page.waitForFunction(revision => window.state.snapshot?.revision === revision, states.one.revision);
+      assert.equal(await page.evaluate(() => window.state.error), null, "the next revision arrives through automatic retry");
+    };
+    await page.evaluate(() => window.setWorkflowRunning(true));
+    await assertWorkflowReadRecovers(structuredClone(states.one));
+    assert.equal(await toggle.isVisible(), true, "background recovery preserves the executing plan strip");
+    assert.equal(await page.getByTestId("workflow-plan-approve").count(), 0);
+    await page.evaluate(() => window.setWorkflowRunning(false));
+
     states.one.current = { ...states.one.current, id: "plan-to-exit", status: "awaiting_approval", version: 1 };
     states.one.mode = "plan";
     states.one.revision++;
@@ -805,47 +825,19 @@ createRoot(document.getElementById('root')).render(<I18nProvider><App/></I18nPro
     await chooseDraft("goal");
     await assertNoWorkflowStrip("selecting a new Goal does not promote historical Plans into the current strip");
     assert.deepEqual(await page.evaluate(() => window.state.snapshot.history), retainedHistory, "hidden terminal details remain in the workflow history model");
-    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 30_000));
-    failWorkflowReadsUntilRetry = true;
-    const loadError = page.getByRole("alert").filter({ hasText: locale === "zh-CN" ? "无法加载工作流状态。" : "Workflow state could not be loaded." });
-    // A poll may already be in flight when the clock pauses. Keep failing
-    // background reads and retry refresh until that request has settled.
-    for (let attempt = 0; attempt < 50 && !(await loadError.isVisible()); attempt++) {
-      await page.evaluate(() => window.state.refresh());
-      await page.waitForTimeout(50);
-    }
-    await loadError.waitFor();
-    await assertNoWorkflowStrip("a history-only load failure displays its error without resurrecting the strip");
-    const retryWorkflow = loadError.getByRole("button");
-    await retryWorkflow.evaluate(button => {
-      const originalFetch = window.fetch;
-      let inRetryClick = false;
-      const begin = event => { if (event.isTrusted && button.contains(event.target)) inRetryClick = true; };
-      const end = () => { inRetryClick = false; };
-      document.addEventListener("click", begin, true);
-      window.addEventListener("click", end);
-      window.fetch = (input, init) => {
-        if (inRetryClick && typeof input === "string" && new URL(input, location.href).pathname.endsWith("/workflow")) {
-          const headers = new Headers(init?.headers);
-          headers.set("x-piora-workflow-retry", "true");
-          init = { ...init, headers };
-        }
-        return originalFetch.call(window, input, init);
-      };
-      window.restoreWorkflowRetryFixture = () => {
-        window.fetch = originalFetch;
-        document.removeEventListener("click", begin, true);
-        window.removeEventListener("click", end);
-      };
-    });
-    for (let attempt = 0; attempt < 10 && failWorkflowReadsUntilRetry; attempt++) {
-      if (await retryWorkflow.isVisible()) await retryWorkflow.click();
-      await page.waitForTimeout(100);
-    }
-    assert.equal(workflowRetryReads, 1, "only the explicit Retry can recover the workflow read");
-    await page.waitForFunction(() => window.state.error === null);
-    await page.evaluate(() => window.restoreWorkflowRetryFixture());
-    await page.clock.resume();
+    await assertWorkflowReadRecovers(structuredClone(states.one));
+    await assertNoWorkflowStrip("a history-only session recovers without resurrecting the previous strip");
+
+    timeOutNextWorkflowReadFor = "two";
+    const timedOut = page.waitForEvent("requestfailed", request => request.url().endsWith("/api/agent/two/workflow"));
+    await page.locator("#switch").click();
+    assert.match((await timedOut).failure()?.errorText ?? "", /TIMED_OUT/i);
+    assert.notEqual(await page.evaluate(() => window.state.snapshot?.sessionId), "one", "switching never shows another chat's workflow");
+    await page.waitForFunction(() => window.state.snapshot?.sessionId === "two");
+    assert.equal(await page.evaluate(() => window.state.error), null, "a timeout on first load retries even while idle");
+    await page.locator("#switch").click();
+    await page.waitForFunction(() => window.state.snapshot?.sessionId === "one");
+    await assertNoWorkflowStrip("returning after recovery preserves the history-only state");
 
     // The displayed workflow comes from the current run, independently of the
     // next message's mode and the Agent mode used during approved execution.
