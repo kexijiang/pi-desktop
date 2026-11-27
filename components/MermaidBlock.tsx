@@ -683,12 +683,12 @@ export function CodeBlock({ code, lang, headerAction }: CodeBlockProps) {
         language={lang || "text"}
         style={codeTheme}
         showLineNumbers
-        lineNumberStyle={{ color: "var(--text-dim)", fontStyle: "normal" }}
+        lineNumberStyle={{ color: "var(--text-muted)", fontSize: "var(--code-line-number-font-size)", lineHeight: "var(--editor-code-line-height)", fontStyle: "normal" }}
         customStyle={{
           margin: 0,
           padding: "11px 13px",
-          fontSize: "var(--text-sm)",
-          lineHeight: 1.62,
+          fontSize: "var(--code-font-size)",
+          lineHeight: "var(--editor-code-line-height)",
           fontFamily: "var(--font-code-family)",
           fontWeight: "var(--ui-font-weight)",
           borderRadius: 0,

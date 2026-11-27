@@ -3,7 +3,7 @@ export const IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 export const DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 
 export type DocumentPreviewKind = "pdf" | "docx";
-export type FileViewerKind = "text" | "image" | "audio" | "document";
+export type FileViewerKind = "text" | "image" | "audio" | "document" | "unsupported";
 
 export const IMAGE_EXT_TO_MIME: Record<string, string> = {
   png: "image/png",
@@ -87,5 +87,6 @@ export function getFileViewerKind(filePath: string): FileViewerKind {
   if (isImagePath(filePath)) return "image";
   if (isAudioPath(filePath)) return "audio";
   if (isDocumentPreviewPath(filePath)) return "document";
+  if (/^(?:pptx?|xlsx?|xlsm|doc|odt|ods|odp|zip|7z|rar|exe|dll|msi|bin)$/i.test(getFileExt(filePath))) return "unsupported";
   return "text";
 }

@@ -2,6 +2,7 @@ import type { Options as ReactMarkdownOptions } from "react-markdown";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { remarkShellCommands } from "./markdown/remark-shell-commands";
 
 const markdownSanitizeSchema = {
   ...defaultSchema,
@@ -280,7 +281,7 @@ function normalizeInlineLatexMath(line: string): string {
   );
 }
 
-export const markdownRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath];
+export const markdownRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath, remarkShellCommands];
 export const markdownPreviewRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath];
 
 // Raw HTML parsing and KaTeX are inserted on demand by useMarkdownRehypePlugins.

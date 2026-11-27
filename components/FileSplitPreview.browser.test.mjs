@@ -92,10 +92,43 @@ test("Markdown opens in preview, respects explicit modes and keeps split scrolli
     assert.equal(await page.getByRole("button", { name: "直接编辑文件", exact: true }).getAttribute("aria-pressed"), "true");
     assert.equal(await page.getByRole("button", { name: "预览", exact: true }).count(), 0);
 
+    // Both themes and larger code text use the same physical row height.
+    for (const dark of [false, true]) {
+      for (const size of [15, 20]) {
+        await page.evaluate(({ dark, size }) => {
+          document.documentElement.classList.toggle('dark', dark);
+          if (size === 15) document.documentElement.style.removeProperty('--code-font-size');
+          else document.documentElement.style.setProperty('--code-font-size', `${size}px`);
+        }, { dark, size });
+        await page.waitForFunction(size => {
+          const content = document.querySelector('.cm-content'), gutter = document.querySelector('.cm-lineNumbers');
+          if (!content || !gutter) return false;
+          const code = getComputedStyle(content), numbers = getComputedStyle(gutter);
+          return parseFloat(code.fontSize) >= size && parseFloat(numbers.fontSize) >= 13 && Math.abs(parseFloat(code.lineHeight) - size * 1.65) < 0.1;
+        }, size);
+        await page.waitForFunction(size => [...document.querySelectorAll('.cm-content .cm-line, .cm-lineNumbers .cm-gutterElement')]
+          .filter(node => node.textContent?.trim() && getComputedStyle(node).visibility !== 'hidden').slice(0, 8)
+          .every(node => Math.abs(node.getBoundingClientRect().height - size * 1.65) < 1), size);
+        const rows = await page.locator('.cm-content .cm-line, .cm-lineNumbers .cm-gutterElement').evaluateAll(elements => elements.filter(node => node.textContent?.trim() && getComputedStyle(node).visibility !== 'hidden').slice(0, 8).map(node => node.getBoundingClientRect().height));
+        assert.ok(rows.every(height => Math.abs(height - size * 1.65) < 1), `aligned ${size}px rows: ${rows}`);
+      }
+    }
+    await page.evaluate(() => document.documentElement.style.removeProperty('--code-font-size'));
+
     for (const [mode, label] of [["edit", "直接编辑文件"], ["source", "源代码"], ["diff", "Diff"]]) {
       await page.goto(`http://split-preview.test/?file=changes.md&mode=${mode}`);
       await page.waitForFunction(label => [...document.querySelectorAll("button")].some(button => button.getAttribute("aria-label") === label && button.getAttribute("aria-pressed") === "true"), label);
       assert.equal(await page.locator(".markdown-file-preview").count(), 0, `explicit ${mode} overrides the Markdown default`);
+      if (mode === 'source') {
+        await page.locator('.file-source-line-content').first().waitFor();
+        const metrics = await page.locator('.file-source-line').first().evaluate(row => {
+          const content = getComputedStyle(row.querySelector('.file-source-line-content'));
+          const number = getComputedStyle(row.querySelector('.react-syntax-highlighter-line-number'));
+          return { code: parseFloat(content.fontSize), number: parseFloat(number.fontSize), line: parseFloat(content.lineHeight), numberLine: parseFloat(number.lineHeight) };
+        });
+        assert.ok(metrics.code >= 15 && metrics.number >= 13);
+        assert.equal(metrics.line, metrics.numberLine);
+      }
     }
     assert.deepEqual(errors, []);
   } finally {

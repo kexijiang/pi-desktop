@@ -2433,6 +2433,7 @@ export const zhCNLocale: LocalePlugin = {
     "fileReference.choose": "选择要打开的文件",
     "fileReference.truncated": "搜索已达到数量上限，请使用更完整的文件路径定位。",
     "fileReference.readFailed": "文件读取失败：{error}",
+    "files.unsupportedPreview": "此文件不支持内置预览，可在系统文件管理器中定位或下载。",
     "browserPreferences.title": "浏览器",
     "browserPreferences.description": "选择内置浏览器新下载文件的保存位置，修改后立即生效。",
     "browserPreferences.directory": "下载位置",

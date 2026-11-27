@@ -558,6 +558,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
+  // Navigation tears down observation, not an already submitted message.
+  const viewMountedRef = useRef(true);
   const [toolReviews, setToolReviews] = useState<ToolReviewRecord[]>([]);
   const toolReviewsSessionRef = useRef<string | null>(session?.id ?? null);
   const acceptToolReviews = useCallback((incoming: ToolReviewRecord[]) => {
@@ -907,6 +909,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!isNew || !newSessionCwd || !sid || newSessionPromotedRef.current) return;
     newSessionPromotedRef.current = true;
+    if (!viewMountedRef.current) return;
     onSessionCreated?.({
       id: sid,
       path: "",
@@ -1037,6 +1040,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         resolve({ status, source: es });
       };
       const timeout = setTimeout(() => settle("timeout"), EVENT_STREAM_CONNECT_TIMEOUT_MS);
+      const close = es.close;
+      es.close = () => { close(); settle("closed"); };
 
       es.onmessage = (e) => {
         if (eventSourceRef.current !== es) return;
@@ -1068,7 +1073,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (eventSourceRef.current === es && agentRunningRef.current) {
             eventSourceRef.current = null;
             setTimeout(() => {
-              if (agentRunningRef.current && !eventSourceRef.current && sessionIdRef.current === sid) void connectEvents(sid);
+              if (viewMountedRef.current && agentRunningRef.current && !eventSourceRef.current && sessionIdRef.current === sid) void connectEvents(sid);
             }, 1000);
           }
         }
@@ -2183,6 +2188,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         submission.pending = false;
       }
     };
+    const observePrompt = async (sid: string) => {
+      if (!viewMountedRef.current) return;
+      try { await ensureEventsConnected(sid); }
+      catch (error) {
+        // Unmount closes the pending SSE handshake. The captured submission
+        // still belongs to sid and must reach the server after navigation.
+        if (viewMountedRef.current) throw error;
+      }
+    };
 
     try {
       // Commit original text and attachment bytes before starting network work.
@@ -2201,7 +2215,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           await savePendingPrompt({ ...recovery, scope: sid });
           if (!isCurrentPrompt()) return false;
           promoteNewSession(0, displayMessage.slice(0, 2_000));
-          await ensureEventsConnected(sid);
+          await observePrompt(sid);
           if (!isCurrentPrompt()) return false;
           preparingPromptRunIdRef.current = null;
           cancelPreparedPromptRef.current = null;
@@ -2209,18 +2223,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
       } else if (session) {
         sentSessionId = session.id;
-        await ensureEventsConnected(session.id);
+        await observePrompt(session.id);
         if (!isCurrentPrompt()) return false;
         preparingPromptRunIdRef.current = null;
         cancelPreparedPromptRef.current = null;
         await sendPrompt(session.id, promptMaterials);
       }
-      if (isCurrentPrompt() && isSlashCommandPrompt && sentSessionId) {
+      if (viewMountedRef.current && isCurrentPrompt() && isSlashCommandPrompt && sentSessionId) {
         void waitForPromptSettlement(sentSessionId, promptRunId);
       }
       return isCurrentPrompt() && promptRequestStarted;
     } catch (e) {
       if (!isCurrentPrompt()) return false;
+      if (!viewMountedRef.current) return false; // Durable recovery owns failure feedback on return.
       console.error("Failed to send message:", e);
       // A failed prompt POST is ambiguous: the server may have accepted it
       // before the response connection was lost. Keep SSE alive until the
@@ -3042,6 +3057,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   // Load session on mount
   useEffect(() => {
+    viewMountedRef.current = true;
     let disposed = false;
     if (session) {
       sessionIdRef.current = session.id;
@@ -3106,6 +3122,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }).catch((error) => { if (!disposed) setError(String(error)); });
     }
     return () => {
+      viewMountedRef.current = false;
       disposed = true;
       bashRecoveryIdRef.current += 1;
       sessionLoadAbortRef.current?.abort();

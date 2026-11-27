@@ -224,7 +224,8 @@
   padding: 8px 9px 24px 4px;
   box-sizing: border-box;
   font-family: var(--font-code-family);
-  font-size: var(--text-xs);
+  font-size: var(--code-line-number-font-size);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   line-height: var(--editor-code-line-height);
   text-align: right;
@@ -252,7 +253,7 @@
   color: var(--text);
   caret-color: var(--accent);
   font-family: var(--font-code-family);
-  font-size: var(--text-base);
+  font-size: var(--code-font-size);
   font-variant-ligatures: none;
   line-height: var(--editor-code-line-height);
   tab-size: 2;
