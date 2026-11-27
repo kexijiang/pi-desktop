@@ -28,7 +28,6 @@ export function RunChangesSummary({ snapshot, expanded, onToggle }: {
   return <div className={styles.wrapper} data-run-changes-summary>
     <div className={styles.pill}>
       <button type="button" className={styles.summary} aria-expanded={expanded} title={actionLabel} onClick={onToggle}>
-        <AliIcon name="git-commit" size={14} />
         <span>{label}</span>
         {totals.additions > 0 || totals.deletions > 0 ? <span className={styles.stats} title={t("files.runTextStats")}>
           {totals.additions > 0 && <span className={styles.additions}>+{totals.additions}</span>}

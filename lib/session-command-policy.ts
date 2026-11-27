@@ -1,6 +1,5 @@
 import type { AgentRuntimeProfile } from "./agent-runtime-profile";
-import type { RemoteSessionPolicy } from "./remote-session-policy";
-import { assertRemotePolicyCommand } from "./remote-session-policy";
+import { assertNotesSessionCommand } from "./notes-session";
 import { assertSessionNotMutating } from "./session-mutation";
 
 export type SessionRpcCommand = { type?: unknown } & Record<string, unknown>;
@@ -11,10 +10,10 @@ export function commandRequiresSession(type: string): boolean {
 
 export function authorizeSessionCommand(
   sessionId: string,
-  policy: RemoteSessionPolicy,
+  notesOnly: boolean,
   command: SessionRpcCommand,
 ): string {
-  assertRemotePolicyCommand(policy, command);
+  assertNotesSessionCommand(notesOnly, command);
   const type = typeof command.type === "string" ? command.type : "";
   if (commandRequiresSession(type)) assertSessionNotMutating(sessionId);
   return type;

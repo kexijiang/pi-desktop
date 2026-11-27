@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AliIcon } from "@/components/AliIcon";
+import settingsStyles from "@/components/settings/SettingsPrimitives.module.css";
 import type { ImportKind, ImportPreview, ImportSource } from "@/desktop/src/browser/contracts";
 import { errorText, openBrowserSettings, useBrowserCopy, type ToolsBridge } from "./shared";
 import styles from "./BrowserTools.module.css";
@@ -197,7 +198,7 @@ export function ProfileImport({
         </p>
       )}
       <fieldset
-        className={styles.options}
+        className={`${settingsStyles.sectionCard} ${styles.options}`}
         disabled={busy || previews.length > 0}
         aria-label={copy("导入内容", "Data to import")}
       >

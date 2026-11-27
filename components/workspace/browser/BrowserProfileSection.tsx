@@ -7,6 +7,7 @@ import type { BrowserTarget } from "@/desktop/src/browser/contracts";
 import { BrowserRecords } from "./BrowserRecords";
 import { ContactBook } from "./BrowserContacts";
 import { errorText, sectionLabels, useBrowserCopy, type BrowserSettingsPage, type ToolsBridge } from "./shared";
+import settingsStyles from "@/components/settings/SettingsPrimitives.module.css";
 import styles from "./BrowserTools.module.css";
 
 type Destination = BrowserSettingsPage | "import" | "privacy";
@@ -105,7 +106,7 @@ export function ProfileSettingsHome({
     setError("");
   };
   const links = (keys: Destination[]) => (
-    <div className={styles.navList}>
+    <div className={`${settingsStyles.sectionCard} ${styles.navList}`}>
       {keys.map((key) => (
         <button type="button" className={styles.navRow} key={key} onClick={() => open(key)}>
           <AliIcon name={icons[key]} size={17} />

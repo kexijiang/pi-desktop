@@ -64,13 +64,11 @@ Piora reuses Pi's AgentSession, models, tools, skills, prompts, extensions, Sett
 - Managed shared workspace or a custom shared directory inside a member project root.
 - Cross-project Session selection, @ mentions, message navigation, and responsive drawers.
 
-### 7. Sessions, projects, and remote control
+### 7. Sessions and projects
 
 - Project-bound Sessions plus projectless Chat backed by a managed Piora workspace.
 - Search, pin, rename, auto-name, archive, restore, duplicate, export, recoverable delete, independent fork, and in-session branch navigation.
 - Lazy history loading and reconciliation after refresh, visibility changes, or network recovery.
-- Local HTTP/SSE API for capability discovery, Session creation, messages, state, history, tools, steer, abort, events, and command status.
-- Bearer capability tokens, Session allowlists, revocation, rate limiting, bounded JSON, and idempotency keys.
 
 ### 8. Models, authentication, and vision
 

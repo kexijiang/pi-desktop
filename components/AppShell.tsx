@@ -21,6 +21,7 @@ import { RunChangesSummary } from "./workspace/RunChangesSummary";
 import { useRunFileChanges } from "./workspace/useRunFileChanges";
 import { AnswerLinkProvider } from "./AnswerLinkProvider";
 import { useAnswerLinkNavigation } from "@/hooks/useAnswerLinkNavigation";
+import { useBrowserPanelNavigation } from "@/hooks/useBrowserPanelNavigation";
 import type { RoomWorkspaceHandle } from "./RoomWorkspace";
 import type { SettingsKey } from "@/lib/settings-search";
 import { useTheme } from "@/hooks/useTheme";
@@ -305,6 +306,10 @@ export function AppShell() {
   // Keep the server and first client render identical. The persisted tab is
   // restored after hydration so React never has to replace this subtree.
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("home");
+  useBrowserPanelNavigation(
+    selectedRoom ? `room:${selectedRoom.id}:${roomPanelMember?.binding.sessionId ?? ""}` : `chat:${selectedSession?.id ?? `new:${sessionKey}`}`,
+    rightPanelTab, setRightPanelOpen,
+  );
   const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
   const [restoredSideChatTab, setRestoredSideChatTab] = useState<SideChatTabId | null>(null);
   const showAnswerBrowser = useCallback(() => { setRightPanelTab("browser"); setRightPanelOpen(true); }, []);

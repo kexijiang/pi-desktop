@@ -212,7 +212,6 @@ sequenceDiagram
 | **HarmonyOS 真机自动化** | 47 | `app/api/harmony/*`, `lib/harmony/`（含 `lib/harmony/manager/*` 6 个控制器）, `extensions/piora-harmony.ts`, `.harmony-worker` | `docs/harmony/architecture.md`, `docs/HARMONYOS_DEVICE_AUTOMATION.md` |
 | **Design-to-Harmony** | 18 | `app/api/design-to-harmony/*`, `lib/design-to-harmony/`, `components/workspace/design-to-harmony/` | `docs/DESIGN_TO_HARMONY_SPEC.md` |
 | **多代理 Rooms & Teams** | 16 | `app/api/rooms/*`, `lib/room-store.ts` + `lib/rooms/*`, `lib/room-*.ts`, `lib/team-*.ts`, `extensions/piora-room.ts` | `docs/AGENT_TEAM_RUNTIME_DESIGN.md`, `docs/multi-agent-collaboration.md` |
-| **Remote 远程控制与发现** | 17 | `app/api/remote/*`, `lib/remote-*.ts` | `proxy.ts`（独立 Bearer 能力边界） |
 | **Companion 桌宠与 3D** | 14 | `app/api/companion*`, `app/desktop-pet`, `app/companion-3d`, `lib/companion-pets.ts` + `lib/companion/*`, `desktop/src/dsh-pet-*` | `docs/COMPANION_AUTONOMY_DESIGN.md`, `docs/jinx-3d-companion.md` |
 | **SSH 远程连接** | 11 | `app/api/ssh/*`, `lib/ssh/`, `extensions/piora-ssh.ts` | — |
 | **定时任务 Automations** | 5 | `app/api/automations/*`, `lib/automation-*.ts`, `extensions/piora-automations.ts` | — |

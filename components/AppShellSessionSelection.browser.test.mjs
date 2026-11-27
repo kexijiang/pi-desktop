@@ -46,6 +46,7 @@ test("one project-session click keeps the chosen chat through cwd effects and de
 import React from 'react'; import {createRoot} from 'react-dom/client';
 import {GitToolsPopover} from "@/components/workspace/GitToolsPopover";
 import {SessionSidebar} from '@/components/SessionSidebar'; import {I18nProvider} from '@/hooks/useI18n';
+import {useBrowserPanelNavigation} from '@/hooks/useBrowserPanelNavigation';
 import {parseWorkspaceContinuity,workspaceContinuityStorageKey} from '@/lib/workspace-continuity';
 import {isProjectlessChatCwd} from '@/lib/projectless-chat-path';
 ${["getSelectionHistoryState", "replaceUrlWithoutNextNavigation"].map(name => helpers.get(name)).join("\n")}
@@ -63,7 +64,10 @@ function App(){
   const suppressCwdBumpRef=React.useRef(false),chatInputRef=React.useRef({focus(){}});
   const workspaceNavigationVersionRef=React.useRef(0);
   const [fileTabs,setFileTabs]=React.useState([]),[activeFileTabId,setActiveFileTabId]=React.useState(null);
-  const [,setRightPanelOpen]=React.useState(false),rightPanelTab='files',isMobile=false;
+  const [rightPanelOpen,setRightPanelOpen]=React.useState(false),[rightPanelTab,setRightPanelTab]=React.useState('files'),isMobile=false;
+  useBrowserPanelNavigation(selectedSession?.id??'new:'+sessionKey,rightPanelTab,setRightPanelOpen);
+  window.panel=()=>({open:rightPanelOpen,tab:rightPanelTab});
+  window.preparePanel=tab=>{setRightPanelTab(tab);setRightPanelOpen(true)};
   const [,setSettingsDialogOpen]=React.useState(false),[,setHistoryDialogOpen]=React.useState(false),[,setHistoryLocation]=React.useState(null);
   const [,setActiveTopPanel]=React.useState(null),[,setNewSessionInitialModel]=React.useState(null),[,setNewSessionInitialPrompt]=React.useState(null);
   const [,setFocusedEntryId]=React.useState(null),[,setSystemPrompt]=React.useState(null),[,setInitialSessionRestored]=React.useState(true),[,setSidebarOpen]=React.useState(true);
@@ -209,5 +213,25 @@ createRoot(document.getElementById('root')).render(<App/>);`);
   await page.waitForFunction(()=>window.navigation().id==='c');
   assert.equal(await page.getByRole('button',{name:'Git tools',exact:true}).count(),0);
   assert.equal(await page.locator('.project-worktree-section').count(),0);
+  // Browser visibility must not leak into another existing or newly created
+  // conversation. Preparing panel state does not perform the navigation.
+  await page.evaluate(()=>window.preparePanel('browser'));
+  await page.waitForFunction(()=>window.panel().open);
+  await page.getByRole('treeitem',{name:'Alpha existing chat',exact:true}).click();
+  await page.waitForFunction(()=>window.navigation().id==='a'&&!window.panel().open);
+  await page.evaluate(()=>window.preparePanel('browser'));
+  await page.waitForFunction(()=>window.panel().open);
+  await page.getByRole('button',{name:'New chat',exact:true}).first().click();
+  await page.waitForFunction(()=>window.navigation().id===null&&!window.panel().open);
+  // Manual reopening is still possible, including in a new conversation.
+  await page.evaluate(()=>window.preparePanel('browser'));
+  await page.waitForFunction(()=>window.panel().open);
+  await page.getByRole('button',{name:'New chat',exact:true}).first().click();
+  await page.waitForFunction(()=>!window.panel().open);
+  // The navigation policy is specific to the browser, not other workspace tools.
+  await page.evaluate(()=>window.preparePanel('files'));
+  await page.getByRole('treeitem',{name:'Beta existing chat',exact:true}).click();
+  await page.waitForFunction(()=>window.navigation().id==='b');
+  assert.deepEqual(await page.evaluate(()=>window.panel()),{open:true,tab:'files'});
   assert.deepEqual(errors,[]);
 });

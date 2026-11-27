@@ -28,7 +28,6 @@ import type {
   SessionMessageInput,
 } from "./session-message-types";
 import {
-  assertPrincipal,
   buildSteeringText,
   resolveRouterErrorCode,
   safeErrorMessage,
@@ -37,7 +36,6 @@ import {
   TERMINAL_STATUSES,
   validateSessionMessageInput,
   type SessionMessageRouterErrorCode,
-  type SessionRoutePrincipal,
 } from "./session-router/errors";
 import { ChatOperationRunner, type SessionAdmission } from "./session-router/chat-operation-runner";
 import {
@@ -49,7 +47,6 @@ import {
 export {
   SessionMessageRouterError,
   type SessionMessageRouterErrorCode,
-  type SessionRoutePrincipal,
 };
 
 interface RouterOptions {
@@ -160,6 +157,13 @@ export class SessionMessageRouter {
   private async restoreInbox(sessionId: string): Promise<void> {
     for (const command of await this.store.loadActiveCommands(sessionId)) {
       this.rememberCommand(command);
+      if (command.source === "remote") {
+        await this.transition(command, "interrupted", {
+          errorCode: "RUN_INTERRUPTED",
+          errorMessage: "Remote control has been removed.",
+        });
+        continue;
+      }
       if (command.workflowAction) {
         const live = getRpcSession(sessionId);
         if (command.runId && live?.isAlive() && live.getActivePromptRunId() === command.runId) {
@@ -319,11 +323,10 @@ export class SessionMessageRouter {
     };
   }
 
-  async dispatchSessionMessage(input: SessionMessageInput, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async dispatchSessionMessage(input: SessionMessageInput): Promise<DispatchReceipt> {
     validateSessionMessageInput(input, this.maxMessageBytes);
-    assertPrincipal(input, principal);
     if (input.delivery === "steer") {
-      return this.steerSession(input, principal);
+      return this.steerSession(input);
     }
     const key = submissionKey(input.targetSessionId, input.idempotencyKey);
     const pending = this.pendingSubmissions.get(key);
@@ -468,7 +471,7 @@ export class SessionMessageRouter {
 
   async dispatchManySessionMessages(
     inputs: SessionMessageInput[],
-    options: { maxConcurrency?: number; principal?: SessionRoutePrincipal } = {},
+    options: { maxConcurrency?: number } = {},
   ): Promise<DispatchReceipt[]> {
     const results: DispatchReceipt[] = [];
     const limit = Math.max(1, Math.min(this.maxConcurrency, Math.floor(options.maxConcurrency ?? this.maxConcurrency)));
@@ -476,7 +479,7 @@ export class SessionMessageRouter {
     const worker = async () => {
       while (next < inputs.length) {
         const index = next++;
-        try { results[index] = await this.dispatchSessionMessage(inputs[index], options.principal); }
+        try { results[index] = await this.dispatchSessionMessage(inputs[index]); }
         catch (error) {
           results[index] = {
             accepted: true,
@@ -492,10 +495,9 @@ export class SessionMessageRouter {
     return results;
   }
 
-  async steerSession(input: Omit<SessionMessageInput, "delivery">, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async steerSession(input: Omit<SessionMessageInput, "delivery">): Promise<DispatchReceipt> {
     const message = { ...input, delivery: "steer" as const };
     validateSessionMessageInput(message, this.maxMessageBytes);
-    assertPrincipal(message, principal);
     const existing = await this.store.queryByIdempotencyKey(input.targetSessionId, input.idempotencyKey);
     if (existing) {
       return {
@@ -594,10 +596,9 @@ export class SessionMessageRouter {
     return performQueuedInputAction(this.createQueueMutationHost(), sessionId, commandId, action, text, expectedRevision);
   }
 
-  async followUpSession(input: Omit<SessionMessageInput, "delivery">, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async followUpSession(input: Omit<SessionMessageInput, "delivery">): Promise<DispatchReceipt> {
     const message = { ...input, delivery: "steer" as const };
     validateSessionMessageInput(message, this.maxMessageBytes);
-    assertPrincipal(message, principal);
     const session = await this.getLiveSession(input.targetSessionId);
     await this.ensureLoaded(input.targetSessionId);
     if (!session.isRunning() || !session.getActivePromptRunId()) {
@@ -818,8 +819,7 @@ export class SessionMessageRouter {
     });
   }
 
-  async abortSessionRun(input: { targetSessionId: string; idempotencyKey?: string }, principal?: SessionRoutePrincipal): Promise<AbortReceipt> {
-    assertPrincipal({ targetSessionId: input.targetSessionId, content: "", source: "system", idempotencyKey: input.idempotencyKey ?? "abort" }, principal);
+  async abortSessionRun(input: { targetSessionId: string; idempotencyKey?: string }): Promise<AbortReceipt> {
     const session = getRpcSession(input.targetSessionId);
     const command = this.activeCommands.get(input.targetSessionId);
     if (!session?.isAlive()) {
@@ -842,9 +842,8 @@ export class SessionMessageRouter {
     };
   }
 
-  async cancelCommand(commandId: string, principal?: SessionRoutePrincipal): Promise<AbortReceipt> {
+  async cancelCommand(commandId: string): Promise<AbortReceipt> {
     const command = this.canonicalCommand(commandId);
-    assertPrincipal({ targetSessionId: command.targetSessionId, content: "", source: "system", idempotencyKey: command.idempotencyKey }, principal);
     const receipt = await this.cancelRecord(command);
     return { ...receipt, status: receipt.status === "cancelled" || receipt.status === "interrupted" ? receipt.status : "idle" };
   }
@@ -859,7 +858,6 @@ export class SessionMessageRouter {
 
   async cancelPromptSubmission(
     input: { targetSessionId: string; idempotencyKey: string; promptCommandId?: string },
-    principal?: SessionRoutePrincipal,
   ): Promise<PromptCancellationReceipt> {
     if (
       typeof input.targetSessionId !== "string"
@@ -872,7 +870,6 @@ export class SessionMessageRouter {
     ) {
       throw new SessionMessageRouterError("INVALID_SESSION_MESSAGE", "A bounded original submission identity is required.");
     }
-    assertPrincipal({ targetSessionId: input.targetSessionId, content: "", source: "ui", idempotencyKey: input.idempotencyKey }, principal);
     let command = await this.submissionCommand(input.targetSessionId, input.idempotencyKey);
     if (input.promptCommandId) {
       command = this.canonicalCommand(input.promptCommandId);
