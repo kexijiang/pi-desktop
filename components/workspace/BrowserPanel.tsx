@@ -318,12 +318,13 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, 
       width: Math.max(0, Math.floor(right) - Math.ceil(left)),
       height: Math.max(0, Math.floor(bottom) - Math.ceil(top)),
     };
-    const show = panelActiveRef.current && !deviceDragging && !resizingRef.current && visible && bounds.width > 0 && bounds.height > 0;
+    const show = panelActiveRef.current && readySession === sessionId && !deviceDragging && !resizingRef.current
+      && visible && bounds.width > 0 && bounds.height > 0;
     const covered = show && browserViewportCovered(element.ownerDocument, bounds);
     viewportLayoutRef.current = { bounds, covered };
     if (covered) viewportSyncRef.current?.suspend(bounds);
     else viewportSyncRef.current?.sync(bounds, show);
-  }, [deviceDragging, state?.url]);
+  }, [deviceDragging, readySession, sessionId, state?.url]);
 
   useLayoutEffect(() => {
     // WebContentsView lives above the renderer DOM and is not clipped by the

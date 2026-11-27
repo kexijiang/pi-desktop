@@ -1,6 +1,9 @@
 import type { BackgroundPreset } from "../backgrounds";
 import type { FlagshipPerformanceId } from "./flagship-performance-bus";
 
+/** Temporarily disable the two Piora flagship whale themes in the UI and registries. */
+export const FLAGSHIP_THEMES_ENABLED = false;
+
 export type FlagshipThemeId = "piora-whale-day" | "piora-whale-night";
 export type FlagshipVariant = "day" | "night";
 export type FlagshipPerformanceTrigger = "completed" | "review" | "idle";
@@ -183,3 +186,11 @@ export const FLAGSHIP_BACKGROUND_PRESETS: readonly BackgroundPreset[] = Object.f
     fallback: theme.fallback,
   })),
 );
+
+export const ENABLED_FLAGSHIP_THEMES: readonly FlagshipThemeDefinition[] = FLAGSHIP_THEMES_ENABLED
+  ? FLAGSHIP_THEMES
+  : Object.freeze([]);
+
+export const ENABLED_FLAGSHIP_BACKGROUND_PRESETS: readonly BackgroundPreset[] = FLAGSHIP_THEMES_ENABLED
+  ? FLAGSHIP_BACKGROUND_PRESETS
+  : Object.freeze([]);

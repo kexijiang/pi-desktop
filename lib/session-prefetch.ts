@@ -1,8 +1,10 @@
 import type { SessionInfo } from "./types";
-import { chatHistoryUrl } from "./chat-history-client";
+import { chatHistoryUrl, isSessionChatHistory, readChatHistorySnapshot, type ChatHistorySnapshot, type SessionData } from "./chat-history-client";
 
 const PREFETCH_TTL_MS = 30_000;
 const MAX_PREFETCH_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_RECENT_SESSION_COUNT = 10;
+const MAX_RECENT_SESSION_BYTES = 16 * 1024 * 1024;
 
 interface PrefetchEntry {
   sessionId: string;
@@ -14,17 +16,21 @@ interface PrefetchEntry {
   settled: boolean;
   cancelOnLeave: boolean;
   controller: AbortController;
-  promise: Promise<unknown | null>;
-  data?: unknown | null;
+  promise: Promise<ChatHistorySnapshot | null>;
+  snapshot?: ChatHistorySnapshot;
+  expiryTimer?: number;
 }
 
 const prefetchedSessions = new Map<string, PrefetchEntry>();
 let activePrefetch: PrefetchEntry | null = null;
 let cachedPrefetchBytes = 0;
+const recentSessions = new Map<string, ChatHistorySnapshot>();
+let recentSessionBytes = 0;
 
 function removePrefetch(entry: PrefetchEntry, abort = false): void {
   if (prefetchedSessions.get(entry.sessionId) !== entry) return;
   prefetchedSessions.delete(entry.sessionId);
+  if (entry.expiryTimer !== undefined) window.clearTimeout(entry.expiryTimer);
   cachedPrefetchBytes = Math.max(0, cachedPrefetchBytes - entry.byteLength);
   if (abort && !entry.settled) entry.controller.abort();
   if (activePrefetch === entry) activePrefetch = null;
@@ -55,6 +61,7 @@ function createPrefetch(
   }
   const createdAt = Date.now();
   const controller = new AbortController();
+  const retained = recentSessions.get(session.id);
   const entry: PrefetchEntry = {
     sessionId: session.id,
     modified: session.modified,
@@ -69,20 +76,18 @@ function createPrefetch(
   };
   entry.promise = fetch(chatHistoryUrl(session.id), {
     signal: controller.signal,
+    ...(retained?.etag ? { cache: "no-store", headers: { "If-None-Match": retained.etag } } : {}),
   })
       .then(async (response) => {
-        if (!response.ok) return null;
-        const raw = await response.text();
-        if (controller.signal.aborted) return null;
-        const data = JSON.parse(raw) as { sessionId?: string; info?: { id?: string; modified?: unknown }; context?: { messages?: unknown } };
-        if (!Array.isArray(data?.context?.messages) || data.info?.id && data.info.id !== session.id || data.sessionId && data.sessionId !== session.id) return null;
-        entry.byteLength = new Blob([raw]).size;
+        const snapshot = response.status === 304 ? retained : response.ok ? await readChatHistorySnapshot(response, controller.signal) : null;
+        if (controller.signal.aborted || !snapshot || !isSessionChatHistory(snapshot.data, session.id)) return null;
+        entry.byteLength = snapshot === retained ? 0 : snapshot.byteLength;
         cachedPrefetchBytes += entry.byteLength;
-        entry.data = data;
+        entry.snapshot = snapshot;
         // The sidebar may lag behind this response. Keep both versions until
         // the sidebar publishes a different one.
-        if (typeof data.info?.modified === "string") entry.modified = data.info.modified;
-        return data;
+        if (typeof snapshot.data.info?.modified === "string") entry.modified = snapshot.data.info.modified;
+        return snapshot;
       })
       .catch(() => null)
       .finally(() => {
@@ -96,7 +101,7 @@ function createPrefetch(
   void entry.promise.then((data) => {
     if (!data) removePrefetch(entry);
   });
-  window.setTimeout(() => {
+  entry.expiryTimer = window.setTimeout(() => {
     removePrefetch(entry, true);
   }, PREFETCH_TTL_MS);
   return entry;
@@ -107,6 +112,7 @@ export function prefetchSession(
   options: { keepOnMouseLeave?: boolean } = {},
 ): void {
   prunePrefetchedSessions();
+  if (recentSessions.has(session.id)) return;
   if (
     activePrefetch
     && activePrefetch.sessionId !== session.id
@@ -141,10 +147,15 @@ function matchesVersion(entry: PrefetchEntry, modified: string): boolean {
 
 export function takePrefetchedSession(
   session: Pick<SessionInfo, "id" | "modified">,
-): Promise<unknown | null> | null {
+): Promise<ChatHistorySnapshot | null> {
   prunePrefetchedSessions();
+  const recent = recentSessions.get(session.id);
+  if (recent) {
+    recentSessions.delete(session.id);
+    recentSessions.set(session.id, recent);
+  }
   const entry = prefetchedSessions.get(session.id);
-  if (!entry || !matchesVersion(entry, session.modified) || Date.now() - entry.createdAt >= PREFETCH_TTL_MS) {
+  if (!entry || (recent && entry.settled) || !matchesVersion(entry, session.modified)) {
     if (entry) removePrefetch(entry, true);
     return createPrefetch(session, false).promise;
   }
@@ -160,24 +171,49 @@ export function takePrefetchedSession(
  */
 export function peekPrefetchedSession(
   session: Pick<SessionInfo, "id" | "modified">,
-): unknown | null {
-  prunePrefetchedSessions();
+): SessionData | null {
   const entry = prefetchedSessions.get(session.id);
   if (
     !entry
     || !entry.settled
-    || !entry.data
+    || !entry.snapshot
     || !matchesVersion(entry, session.modified)
     || Date.now() - entry.createdAt >= PREFETCH_TTL_MS
   ) {
     return null;
   }
-  entry.lastAccessedAt = Date.now();
-  entry.cancelOnLeave = false;
-  return entry.data;
+  return entry.snapshot.data;
 }
 
 export function invalidatePrefetchedSession(sessionId: string): void {
   const entry = prefetchedSessions.get(sessionId);
   if (entry) removePrefetch(entry, true);
+}
+
+export function peekSessionHistory(session: Pick<SessionInfo, "id" | "modified">): SessionData | null {
+  return recentSessions.get(session.id)?.data ?? peekPrefetchedSession(session);
+}
+
+function removeRecentSession(sessionId: string): void {
+  const entry = recentSessions.get(sessionId);
+  if (!entry) return;
+  recentSessions.delete(sessionId);
+  recentSessionBytes -= entry.byteLength;
+}
+
+export function retainSessionHistory(sessionId: string, snapshot: ChatHistorySnapshot): void {
+  const prefetch = prefetchedSessions.get(sessionId);
+  if (prefetch?.snapshot === snapshot) removePrefetch(prefetch);
+  removeRecentSession(sessionId);
+  if (snapshot.byteLength > MAX_RECENT_SESSION_BYTES) return;
+  recentSessions.set(sessionId, snapshot);
+  recentSessionBytes += snapshot.byteLength;
+  while (recentSessions.size > MAX_RECENT_SESSION_COUNT || recentSessionBytes > MAX_RECENT_SESSION_BYTES) {
+    removeRecentSession(recentSessions.keys().next().value!);
+  }
+}
+
+export function forgetSessionHistory(sessionId: string): void {
+  invalidatePrefetchedSession(sessionId);
+  removeRecentSession(sessionId);
 }

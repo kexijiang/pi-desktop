@@ -3,13 +3,20 @@
 import { useLayoutEffect, useRef } from "react";
 
 /** A visible browser belongs to its conversation, not the next selection. */
-export function useBrowserPanelNavigation(scope: string, activeTab: string, setOpen: (open: boolean) => void) {
-  const previousScope = useRef(scope);
+export function useBrowserPanelNavigation(
+  scope: string,
+  activeTab: string,
+  setOpen: (open: boolean) => void,
+  layoutScope?: string,
+) {
+  const previous = useRef({ scope, layoutScope });
   useLayoutEffect(() => {
-    if (previousScope.current === scope) return;
-    previousScope.current = scope;
-    // Hide before paint; retained native tabs remain available when explicitly
-    // opening the browser again. Other workspace tools keep their own behavior.
-    if (activeTab === "browser") setOpen(false);
-  }, [scope, activeTab, setOpen]);
+    const before = previous.current;
+    previous.current = { scope, layoutScope };
+    // Different saved layouts already restore their own visibility. Within one
+    // layout, hide the browser when changing the room member or starting a draft.
+    if (before.scope !== scope && before.layoutScope === layoutScope && activeTab === "browser") {
+      setOpen(false);
+    }
+  }, [scope, layoutScope, activeTab, setOpen]);
 }

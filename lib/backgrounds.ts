@@ -1,6 +1,10 @@
 import characterManifestJson from "../public/themes/character-backgrounds/manifest.json";
 import manifestJson from "../public/themes/dream-backgrounds/manifest.json";
-import { FLAGSHIP_BACKGROUND_PRESETS, isFlagshipTheme } from "./appearance/flagship-themes";
+import {
+  ENABLED_FLAGSHIP_BACKGROUND_PRESETS,
+  FLAGSHIP_THEMES_ENABLED,
+  isFlagshipTheme,
+} from "./appearance/flagship-themes";
 import { CHARACTER_THEMES } from "./character-themes";
 import { getCharacterWallpaperRig } from "./character-wallpaper-rigs";
 
@@ -187,7 +191,7 @@ export const BACKGROUND_PRESETS = Object.freeze([
     ? [preset, { ...preset, id: GLACIER_MOTION_BACKGROUND_ID, nameKey: "background.preset.glacierMotion" }]
     : [preset]),
   ...CHARACTER_BACKGROUND_MANIFEST.presets,
-  ...FLAGSHIP_BACKGROUND_PRESETS,
+  ...ENABLED_FLAGSHIP_BACKGROUND_PRESETS,
 ]);
 
 const BACKGROUND_PREPAINT_PRESETS = JSON.stringify(Object.fromEntries(
@@ -210,7 +214,7 @@ export function getBackgroundPreset(id: string | null | undefined): BackgroundPr
 export type BackgroundMotionKind = "character" | "glacier" | "flagship";
 
 export function getBackgroundMotionKind(id: string | null | undefined): BackgroundMotionKind | undefined {
-  if (isFlagshipTheme(id)) return "flagship";
+  if (FLAGSHIP_THEMES_ENABLED && isFlagshipTheme(id)) return "flagship";
   if (id === GLACIER_MOTION_BACKGROUND_ID) return "glacier";
   return getCharacterWallpaperRig(id) ? "character" : undefined;
 }

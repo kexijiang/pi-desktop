@@ -58,7 +58,7 @@ test("run file changes settle after Stop, open exact diffs, and reset per run", 
           {snapshot && <RunChangesSummary key={snapshot.sessionId + ":" + snapshot.runId} snapshot={snapshot}
             expanded={expanded} onToggle={() => { setActive(!expanded); setMode("run"); setTab("files"); }} />}
           <div id="file-panel" style={{ height: 540, display: active ? "flex" : "none", flexDirection: "column" }}>
-            <RightPanel activeTab={tab} onActiveTabChange={setTab} active={active} maximized={false} onMaximizedChange={noop}
+            <RightPanel activeTab={tab} onActiveTabChange={setTab} openTools={['files']} onOpenToolsChange={noop} onCloseWorkflowTab={noop} active={active} maximized={false} onMaximizedChange={noop}
               onClosePanel={() => setActive(false)} cwd={null} refreshKey={0} fileNavMode={mode}
               onFileNavModeChange={setMode} runFileChanges={snapshot} fileTabs={[]} activeFileTabId={null}
               canReopenClosedFileTab={false} onSelectFileTab={noop} onCloseFileTab={noop} onCloseOtherFileTabs={noop}

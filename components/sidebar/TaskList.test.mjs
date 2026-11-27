@@ -90,7 +90,7 @@ test("delays hover prefetch, cancels it on leave, and retains a byte-bounded ver
   assert.match(sessionPrefetchSource, /!activePrefetch\.cancelOnLeave/);
   assert.match(sessionPrefetchSource, /controller\.abort\(\)/);
   assert.match(sessionPrefetchSource, /matchesVersion\(existing, session\.modified\)/);
-  assert.match(sessionPrefetchSource, /entry\.modified = data\.info\.modified/);
+  assert.match(sessionPrefetchSource, /entry\.modified = snapshot\.data\.info\.modified/);
   const takeFunction = sessionPrefetchSource.slice(sessionPrefetchSource.indexOf("export function takePrefetchedSession"));
   assert.match(takeFunction, /return entry\.promise/);
   assert.doesNotMatch(takeFunction.split("export function invalidatePrefetchedSession")[0], /prefetchedSessions\.delete\(session\.id\)/);
