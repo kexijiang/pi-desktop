@@ -10,8 +10,8 @@ import type { SelectedLineRange } from "./shared";
 
 const FILE_CODE_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
-  fontSize: "var(--text-base)",
-  lineHeight: 1.6,
+  fontSize: "var(--code-font-size)",
+  lineHeight: "var(--editor-code-line-height)",
 };
 
 const FILE_LINE_NUMBER_STYLE: CSSProperties = {
@@ -19,11 +19,11 @@ const FILE_LINE_NUMBER_STYLE: CSSProperties = {
   minWidth: "max(48px, calc(var(--text-xs) + 37px))",
   padding: "0 10px",
   textAlign: "right",
-  color: "var(--text-dim)",
+  color: "var(--text-muted)",
   background: "var(--file-panel-surface-panel, var(--bg-panel))",
   borderRight: "1px solid var(--border)",
   fontFamily: "var(--font-mono)",
-  fontSize: "var(--text-xs)",
+  fontSize: "var(--code-line-number-font-size)",
   fontStyle: "normal",
   fontVariantNumeric: "tabular-nums",
   lineHeight: "var(--editor-code-line-height)",

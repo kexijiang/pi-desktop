@@ -2374,6 +2374,7 @@ export const enLocale: LocalePlugin = {
     "fileReference.choose": "Choose a file to open",
     "fileReference.truncated": "The search reached its limit. Use a more complete path to locate the file.",
     "fileReference.readFailed": "Unable to read this file: {error}",
+    "files.unsupportedPreview": "This file cannot be previewed. Locate it in your system file manager or download it.",
     "browserPreferences.title": "Browser",
     "browserPreferences.description": "Choose where the built-in browser saves new downloads. Changes apply immediately.",
     "browserPreferences.directory": "Download location",

@@ -29,6 +29,12 @@ export const browserHome = {
       { type: "message", id: "user1", parentId: null, message: { role: "user", content: "Local browser home fixture", timestamp: Date.now() } },
       { type: "session_info", id: "info1", parentId: "user1", name: "Browser Home QA", timestamp },
     ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const emptyId = randomUUID();
+    await writeFile(join(sessions, `${timestamp.replaceAll(":", "-")}_${emptyId}.jsonl`), [
+      { type: "session", version: 3, id: emptyId, timestamp, cwd: project },
+      { type: "message", id: "user1", parentId: null, message: { role: "user", content: "Empty browser fixture", timestamp: Date.now() } },
+      { type: "session_info", id: "info1", parentId: "user1", name: "Browser Empty QA", timestamp },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
     const server = createServer((_request, response) => {
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.end("<!doctype html><title>Browser Home Test Site</title><h1>Local browser page</h1>");
@@ -38,7 +44,7 @@ export const browserHome = {
       server.close(error => error ? reject(error) : resolve());
       server.closeAllConnections();
     }));
-    fixture = { id, url: `http://127.0.0.1:${server.address().port}/homepage-fixture` };
+    fixture = { id, emptyId, url: `http://127.0.0.1:${server.address().port}/homepage-fixture` };
   },
   async run({ page, getBrowser, screenshot, step, waitUntil }) {
     const home = page.locator("[data-browser-home]");
@@ -87,13 +93,14 @@ export const browserHome = {
     });
 
     await step("open-a-website-in-the-current-tab", async () => {
-      const id = (await state()).activeTabId;
+      assert.equal((await state()).tabs.length, 0, "opening the browser home does not allocate a blank tab");
       await search.fill(fixture.url);
       await home.getByRole("button", { name: /^(Go or search the web|打开网址或搜索网页)$/ }).click();
       const site = await waitUntil(() => findSite(fixture.url), "local browser target");
       await site.getByRole("heading", { name: "Local browser page" }).waitFor();
       await home.waitFor({ state: "hidden" });
-      assert.equal((await state()).activeTabId, id);
+      assert.ok((await state()).activeTabId);
+      assert.equal((await state()).tabs.length, 1, "explicit navigation creates the first tab");
       assert.equal(await address.inputValue(), fixture.url);
     });
 
@@ -117,6 +124,21 @@ export const browserHome = {
       await home.waitFor({ state: "hidden" });
       assert.equal((await state()).activeTabId, fresh.activeTabId);
       assert.equal((await state()).url, fixture.url);
+    });
+
+    await step("session-switch-does-not-create-blank-tabs", async () => {
+      const original = await state();
+      await openChatBrowser(page, fixture.emptyId, waitUntil);
+      const empty = await state();
+      assert.equal(empty.tabs.length, 0);
+      assert.equal(empty.activeTabId, "");
+      assert.equal(empty.tabCount, original.tabCount);
+      await home.waitFor();
+      await openChatBrowser(page, fixture.id, waitUntil);
+      await waitUntil(async () => (await state()).activeTabId === original.activeTabId, "original session restores its browser tab");
+      assert.equal((await state()).url, original.url);
+      assert.equal((await state()).tabCount, original.tabCount);
+      await screenshot("browser-session-restored.png");
     });
 
     await step("search-the-web-using-a-keyword", async () => {

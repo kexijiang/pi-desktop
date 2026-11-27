@@ -151,7 +151,9 @@
   --text-md: 1.071rem;   /* ≈15px    聊天正文 */
   --text-lg: 1.214rem;   /* ≈17px    区块标题 */
   --text-xl: 1.429rem;   /* =20px    页面标题、空态主标题 */
-  --editor-code-line-height: 1.485714rem;
+  --code-font-size: max(15px, 1.071429rem);
+  --code-line-number-font-size: max(13px, 0.928571rem);
+  --editor-code-line-height: calc(var(--code-font-size) * 1.65);
   --chat-font-size: var(--ui-font-size);
   --chat-line-height: calc(var(--chat-font-size) * 1.65);
 }

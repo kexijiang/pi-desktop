@@ -848,10 +848,6 @@ export class DesktopBrowserManager {
       ?? this.tabs.find((tab) => tab.sessionId === sessionId);
   }
 
-  private ensureSession(sessionId: string): BrowserTab {
-    return this.activeTab(sessionId) ?? this.createTab("about:blank", false, sessionId);
-  }
-
   private getState(sessionId = this.displayedSessionId): DesktopBrowserState {
     const active = this.activeTab(sessionId);
     const contents = active ? this.liveContents(active) : undefined;
@@ -965,7 +961,8 @@ export class DesktopBrowserManager {
     const input = value as DesktopBrowserAction;
     if (input.action === "set_session") {
       this.displayedSessionId = normalizeBrowserSessionId(input.sessionId);
-      if (this.tabs.length < MAX_TABS) this.ensureSession(this.displayedSessionId);
+      // Selecting a conversation is read-only. Only explicit navigation or
+      // an agent browser action may create a tab for that conversation.
       this.updateVisibility();
       this.sendState();
       return;

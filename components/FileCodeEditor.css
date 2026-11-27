@@ -10,12 +10,12 @@ html.dark .piora-file-code-editor {
   --file-code-number: #85b8ef; --file-code-type: #e9be79; --file-code-function: #82c9f2;
   --file-code-property: #e8a478; --file-code-tag: #f28b93; --file-code-link: #8dbbfa; --file-code-invalid: #fa7777;
 }
-.piora-file-code-editor .cm-editor { height: 100%; background: color-mix(in srgb, var(--surface) 98%, var(--bg)); color: var(--text); font-family: var(--font-code-family); font-size: var(--text-base); }
+.piora-file-code-editor .cm-editor { height: 100%; background: color-mix(in srgb, var(--surface) 98%, var(--bg)); color: var(--text); font-family: var(--font-code-family); font-size: var(--code-font-size); }
 .piora-file-code-editor .cm-editor.cm-focused { outline: none; box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 72%, transparent); }
 .piora-file-code-editor .cm-scroller { overflow: auto; font-family: inherit; line-height: var(--editor-code-line-height); }
 .piora-file-code-editor .cm-content { min-height: 100%; padding: 8px 0 24px; caret-color: var(--accent); }
 .piora-file-code-editor .cm-line { padding: 0 16px 0 12px; }
-.piora-file-code-editor .cm-gutters { border-right: 1px solid var(--border-soft); background: color-mix(in srgb, var(--surface-muted) 78%, var(--surface)); color: var(--text-dim); font-family: var(--font-code-family); font-size: var(--text-xs); }
+.piora-file-code-editor .cm-gutters { border-right: 1px solid var(--border-soft); background: color-mix(in srgb, var(--surface-muted) 78%, var(--surface)); color: var(--text-muted); font-family: var(--font-code-family); font-size: var(--code-line-number-font-size); }
 .piora-file-code-editor .cm-activeLine { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .piora-file-code-editor .cm-activeLineGutter { background: color-mix(in srgb, var(--accent) 9%, var(--surface-muted)); color: var(--text-muted); }
 .piora-file-code-editor .cm-selectionBackground, .piora-file-code-editor.cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 25%, transparent); }

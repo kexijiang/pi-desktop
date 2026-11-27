@@ -103,6 +103,7 @@ function sendHarness(overrides = {}) {
   for (const name of new Set(send.match(/\b\w+Ref\b/g))) env[name] = { current: null };
   for (const name of new Set(send.match(/\bset[A-Z]\w+(?=\()/g))) env[name] = () => {};
   env.promptRunIdRef.current = 0;
+  env.viewMountedRef.current = true;
   env.sessionIdRef.current = "session";
   env.promptSettlementByRunRef.current = new Map(); env.promptSettlementPollByRunRef.current = new Map();
   env.entryIds = [];
@@ -1284,8 +1285,9 @@ test("visible termination precedes a stalled history reload and is idempotent", 
 test("cancelled preparation and replaced SSE connections cannot restart a prompt", () => {
   const sendSource = source.slice(source.indexOf("const handleSend"), source.indexOf("const executeBash ="));
   assert.match(sendSource, /await uploadPromptMaterialFiles\(materialFiles\)[\s\S]*?if \(!isCurrentPrompt\(\)\) return/);
-  assert.match(sendSource, /await ensureEventsConnected\(sid\);\s*if \(!isCurrentPrompt\(\)\) return/);
-  assert.match(sendSource, /await ensureEventsConnected\(session.id\);\s*if \(!isCurrentPrompt\(\)\) return/);
+  assert.match(sendSource, /await observePrompt\(sid\);\s*if \(!isCurrentPrompt\(\)\) return/);
+  assert.match(sendSource, /await observePrompt\(session.id\);\s*if \(!isCurrentPrompt\(\)\) return/);
+  assert.match(sendSource, /try \{ await ensureEventsConnected\(sid\); \}[\s\S]*?if \(viewMountedRef.current\) throw error/);
   assert.match(source, /if \(eventSourceRef.current !== es\) return/);
   assert.match(source, /if \(cancelledPromptRunIdRef.current === promptRunIdRef.current\) return/);
 });
@@ -1295,7 +1297,7 @@ test("keeps the first prompt as the new-session title and restores failed materi
     source.indexOf("  const handleSend = useCallback"),
     source.indexOf("  const executeBash = useCallback"),
   );
-  assert.ok(sendSource.indexOf("promoteNewSession(0, displayMessage.slice(0, 2_000))") < sendSource.indexOf("await ensureEventsConnected(sid)"));
+  assert.ok(sendSource.indexOf("promoteNewSession(0, displayMessage.slice(0, 2_000))") < sendSource.indexOf("await observePrompt(sid)"));
   assert.match(sendSource, /uploadPromptMaterialFiles\(materialFiles\)/);
   assert.match(sendSource, /await savePendingPrompt\(recovery\)/);
   assert.match(sendSource, /recoveryDraft/);
