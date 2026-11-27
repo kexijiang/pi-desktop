@@ -55,6 +55,11 @@ const runtime = Object.freeze({
     action: (action: import("./dsh-pet-types.js").DshPetAction) => ipcRenderer.invoke("pi:dsh-pet-action", action),
     preferences: (value: { autoStart?: boolean; syncTasks?: boolean }) => ipcRenderer.invoke("pi:dsh-pet-preferences", value),
   }),
+  desktopExtensions: Object.freeze({
+    list: () => ipcRenderer.invoke("pi:desktop-extension-list"),
+    action: (id, action) => ipcRenderer.invoke("pi:desktop-extension-action", id, action),
+    preferences: (id, value) => ipcRenderer.invoke("pi:desktop-extension-preferences", id, value),
+  } satisfies import("./desktop-extension-registry.js").DesktopExtensionsBridge),
   harmonyMirror: Object.freeze({
     open: serial => ipcRenderer.invoke("pi:harmony-window-open", serial),
     focus: () => ipcRenderer.invoke("pi:harmony-window-focus"),
@@ -218,6 +223,12 @@ const runtime = Object.freeze({
     ipcRenderer.on("pi:companion-motion-state", handler);
     return () => ipcRenderer.removeListener("pi:companion-motion-state", handler);
   },
+  setCompanionMovementArea(area: "screen" | "bottom-right"): Promise<boolean> {
+    return ipcRenderer.invoke("pi:companion-movement-area", area) as Promise<boolean>;
+  },
+  resizeCompanion(kind: "start" | "move" | "end", corner?: string): Promise<boolean> {
+    return ipcRenderer.invoke("pi:companion-resize", kind, corner) as Promise<boolean>;
+  },
   setCompanionHitTest(region: { x: number; y: number; width: number; height: number } | null): Promise<boolean> {
     return ipcRenderer.invoke("pi:companion-hit-test", region) as Promise<boolean>;
   },
@@ -240,6 +251,12 @@ const runtime = Object.freeze({
     return ipcRenderer.invoke("pi:harmony-runtime-picker", kind) as Promise<string | null>;
   },
   browser: Object.freeze({
+    tools(command: string, input: unknown) { return ipcRenderer.invoke("pi:browser-tools", command, input); },
+    onToolsEvent(listener: (event: unknown) => void) {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => listener(data);
+      ipcRenderer.on("pi:browser-tools-event", handler);
+      return () => ipcRenderer.removeListener("pi:browser-tools-event", handler);
+    },
     getState() {
       return ipcRenderer.invoke("pi:browser-get-state");
     },
@@ -249,6 +266,8 @@ const runtime = Object.freeze({
     setViewport(bounds: { x: number; y: number; width: number; height: number }, visible: boolean) {
       return ipcRenderer.invoke("pi:browser-viewport", bounds, visible) as Promise<boolean>;
     },
+    getPreferences() { return ipcRenderer.invoke("pi:browser-preferences"); },
+    setPreferences(input: { directory: string; askEachTime: boolean }) { return ipcRenderer.invoke("pi:browser-preferences", input); },
     importChromeBookmarks() {
       return ipcRenderer.invoke("pi:browser-import-chrome-bookmarks");
     },

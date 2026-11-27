@@ -14,13 +14,16 @@ export interface SessionCompletionAnnouncement {
 export function useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectRoots }: { selectedSessionId: string | null; refreshKey?: number; mutedProjectRoots: ReadonlySet<string> }) {
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [catalogComplete, setCatalogComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fallbackRunningSessionIds, setFallbackRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const [completionAnnouncement, setCompletionAnnouncement] = useState<SessionCompletionAnnouncement | null>(null);
   const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
-  const loadSessionsRequestIdRef = useRef(0);
+  const loadSessionsRequest = useRef<AbortController | null>(null);
   const runtimeState = useRunningTaskRuntimeState();
+  const subagentCounts = useMemo(() => new Map(runtimeState.snapshots.filter(snapshot => snapshot.runningSubagentCount)
+    .map(snapshot => [snapshot.id, snapshot.runningSubagentCount!])), [runtimeState.snapshots]);
   const runningSessionIds = useMemo(() => {
     if (!runtimeState.ready) return fallbackRunningSessionIds;
     return new Set(runtimeState.snapshots
@@ -29,30 +32,61 @@ export function useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectR
   }, [fallbackRunningSessionIds, runtimeState]);
 
   const loadSessions = useCallback(async (showLoading = false) => {
-    const requestId = ++loadSessionsRequestIdRef.current;
+    loadSessionsRequest.current?.abort();
+    const request = new AbortController();
+    loadSessionsRequest.current = request;
     try {
-      if (showLoading) setLoading(true);
-      const response = await fetch("/api/sessions");
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json() as { sessions: SessionInfo[]; runningSessionIds?: string[] };
-      if (loadSessionsRequestIdRef.current !== requestId) return;
-      setAllSessions(data.sessions);
-      setFallbackRunningSessionIds(new Set(data.runningSessionIds ?? []));
-      const existingIds = new Set(data.sessions.map((session) => session.id));
+      if (showLoading) {
+        setLoading(true);
+        setCatalogComplete(false);
+      }
+      const sessions = new Map<string, SessionInfo>();
+      let offset: number | null = 0;
+      let version: string | undefined;
+      let retried = false;
+      while (offset !== null) {
+        const query = new URLSearchParams({ view: "sidebar", offset: String(offset) });
+        if (version) query.set("version", version);
+        const response = await fetch("/api/sessions?" + query, { signal: request.signal });
+        if (response.status === 409 && !retried) {
+          retried = true;
+          version = undefined;
+          offset = 0;
+          sessions.clear();
+          continue;
+        }
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const data = await response.json() as { sessions: SessionInfo[]; runningSessionIds?: string[]; version?: string; nextOffset?: number | null };
+        if (request.signal.aborted) return;
+        version = data.version;
+        for (const session of data.sessions) sessions.set(session.id, session);
+        if (offset === 0) setFallbackRunningSessionIds(new Set(data.runningSessionIds ?? []));
+        if (offset === 0 && showLoading) {
+          setAllSessions([...sessions.values()]);
+          setLoading(false);
+        }
+        offset = typeof data.nextOffset === "number" && data.nextOffset > offset ? data.nextOffset : null;
+      }
+      if (request.signal.aborted) return;
+      setAllSessions([...sessions.values()]);
+      const existingIds = new Set(sessions.keys());
       setUnreadSessionIds((previous) => {
         if (previous.size === 0) return previous;
         const next = new Set([...previous].filter((id) => existingIds.has(id)));
         return next.size === previous.size ? previous : next;
       });
       setError(null);
+      setCatalogComplete(true);
     } catch (caught) {
-      if (loadSessionsRequestIdRef.current === requestId) setError(String(caught));
+      if (!request.signal.aborted) {
+        setCatalogComplete(false);
+        setError(String(caught));
+      }
     } finally {
-      // A background refresh can supersede the initial, loading-visible request
-      // (for example when a room member finishes while the sidebar mounts).
-      // Whichever request is newest owns settlement, even if it did not itself
-      // turn the loading indicator on.
-      if (loadSessionsRequestIdRef.current === requestId) setLoading(false);
+      if (loadSessionsRequest.current === request) {
+        loadSessionsRequest.current = null;
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -62,6 +96,7 @@ export function useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectR
     initialLoadDone.current = true;
     void loadSessions(first);
   }, [loadSessions, refreshKey]);
+  useEffect(() => () => { loadSessionsRequest.current?.abort(); loadSessionsRequest.current = null; }, []);
 
   useEffect(() => { saveUnreadSessionIds(unreadSessionIds); }, [unreadSessionIds]);
 
@@ -122,5 +157,5 @@ export function useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectR
     });
   }, []);
 
-  return { allSessions, loading, error, runningSessionIds, unreadSessionIds, completionAnnouncement, loadSessions, markSessionUnread };
+  return { allSessions, loading, catalogComplete, error, runningSessionIds, unreadSessionIds, completionAnnouncement, loadSessions, markSessionUnread, subagentCounts };
 }

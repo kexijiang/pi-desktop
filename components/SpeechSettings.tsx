@@ -233,11 +233,11 @@ export function SpeechSettings() {
         <div className={styles.toggleRow}>
           <div>
             <h3 data-settings-id="speech.toggle">{t("speech.toggle")}</h3>
-            <p>{t("speech.toggleDescription")}</p>
           </div>
           <button
             type="button"
             role="switch"
+            aria-label={t("speech.toggle")}
             aria-checked={status?.enabled ?? false}
             className={styles.switch}
             data-enabled={status?.enabled || undefined}
@@ -254,7 +254,6 @@ export function SpeechSettings() {
         <div className={styles.cardHeader}>
           <div>
             <h3 data-settings-id="speech.pack">{t("speech.packTitle")}</h3>
-            <p>{t("speech.packDescription")}</p>
           </div>
           <span className={status?.installed ? styles.ready : styles.notInstalled}>
             {status ? status.bundled ? t("speech.bundled") : status.installed ? t("speech.installed") : t("speech.notInstalled") : "—"}
@@ -290,14 +289,12 @@ export function SpeechSettings() {
         <p className={styles.networkNote}>{t(status?.bundled ? "speech.bundledHint" : "speech.networkNote")}</p>
       </section>
 
-      {!status?.bundled && <section className={styles.card}>
-        <div className={styles.cardHeader}>
+      {!status?.bundled && <details className={styles.card} data-settings-id="speech.manual">
+        <summary className={styles.cardHeader} style={{ cursor: "pointer", listStyle: "none" }}>
           <div>
-            <h3 data-settings-id="speech.manual">{t("speech.manualTitle")}</h3>
-            <p>{t("speech.manualDescription")}</p>
+            <h3>{t("speech.manualTitle")}</h3>
           </div>
-          <span className={styles.manualBadge}>{t("speech.manualAlwaysAvailable")}</span>
-        </div>
+        </summary>
         <div className={styles.downloadList}>
           {manual?.sources.map((source, index) => (
             <a key={source.name} href={source.url} target="_blank" rel="noreferrer" download={source.name}>
@@ -347,13 +344,12 @@ export function SpeechSettings() {
         ) : null}
         <p className={styles.networkNote}>{t("speech.manualIntegrity")}</p>
         <p className={styles.networkNote}>{t("speech.manualChecksumHelp")}</p>
-      </section>}
+      </details>}
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <div>
             <h3>{t("speech.environmentTitle")}</h3>
-            <p>{t("speech.environmentDescription")}</p>
           </div>
         </div>
         <div className={styles.factGrid}>
@@ -369,7 +365,6 @@ export function SpeechSettings() {
         <div className={styles.cardHeader}>
           <div>
             <h3 data-settings-id="speech.location">{t("speech.locationTitle")}</h3>
-            <p>{t("speech.locationDescription")}</p>
           </div>
         </div>
         <div className={styles.pathRow}>

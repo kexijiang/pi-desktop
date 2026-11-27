@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,6 +9,12 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
+  alias: {
+    "./SubagentTaskCard.module.css": fileURLToPath(new URL("../lib/css-module-test-stub.mjs", import.meta.url)),
+    "../SubagentTaskCard.module.css": fileURLToPath(new URL("../lib/css-module-test-stub.mjs", import.meta.url)),
+    "./ChatContentContextMenu.module.css": fileURLToPath(new URL("../lib/css-module-test-stub.mjs", import.meta.url)),
+    "./Workflow.module.css": fileURLToPath(new URL("../lib/css-module-test-stub.mjs", import.meta.url)),
+  },
 });
 const { MessageView, getAutomationToolCardDetails, getUserMessagePreview } = await jiti.import("./MessageView.tsx");
 // Import through the same tsconfig alias used by the component so Jiti reuses
@@ -16,7 +23,14 @@ const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 const { VirtualRowStateContext } = await jiti.import("./VirtualRowState");
 const { createVirtualRowState } = await jiti.import("@/lib/virtual-row-state");
 const messageImageSource = readFileSync(new URL("./MessageImage.tsx", import.meta.url), "utf8");
-const messageViewSource = readFileSync(new URL("./MessageView.tsx", import.meta.url), "utf8");
+const userMessageViewSource = readFileSync(new URL("./message-view/UserMessageView.tsx", import.meta.url), "utf8");
+const messageViewSource = [
+  readFileSync(new URL("./MessageView.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("./message-view/shared.ts", import.meta.url), "utf8"),
+  userMessageViewSource,
+  readFileSync(new URL("./message-view/ToolCallBlock.tsx", import.meta.url), "utf8"),
+  readFileSync(new URL("./message-view/CustomMessageViews.tsx", import.meta.url), "utf8"),
+].join("\n");
 const userMessageTextSource = readFileSync(new URL("./UserMessageText.tsx", import.meta.url), "utf8");
 const commandViewSource = readFileSync(new URL("./CommandExecutionView.tsx", import.meta.url), "utf8");
 const commandLogSource = readFileSync(new URL("./CommandLogViewer.tsx", import.meta.url), "utf8");
@@ -31,6 +45,18 @@ function renderMessage(message, props = {}) {
     ),
   );
 }
+
+test("delegation tools render an owned task card with its real completion status", () => {
+  const message = { role: "assistant", content: [{ type: "toolCall", toolCallId: "delegate-1", toolName: "Agent", input: { description: "Read the client" } }] };
+  const html = renderMessage(message, { sessionId: "parent", toolResults: new Map([["delegate-1", {
+    role: "toolResult", toolCallId: "delegate-1", content: [{ type: "text", text: "A bounded finding" }],
+    details: { subagent: { agentId: "agent_owned", agentType: "Explore", description: "Read the client", status: "completed", startedAt: 1000, endedAt: 4000, totalTokens: 123, totalToolUseCount: 2 } },
+  }]]) });
+  assert.match(html, /data-subagent-id="agent_owned"/);
+  assert.match(html, /data-subagent-status="completed"/);
+  assert.match(html, /Read the client/); assert.match(html, /Explore/); assert.match(html, /3s/);
+  assert.match(html, /aria-expanded="false"/);
+});
 
 test("command cards expose exit-code conflicts, warnings and unknown receipts without guessing from output zero", () => {
   const message = { role: "assistant", content: [{ type: "toolCall", toolCallId: "build", toolName: "bash", input: { command: "build; follow-up" } }] };
@@ -172,15 +198,16 @@ test("assistant messages omit repeated model and usage metadata", () => {
   }
 });
 
-test("failed shell rows open by default and respect explicit collapse", () => {
+test("failed shell rows stay collapsed until their details are explicitly opened", () => {
   const command = "npm run check -- --project ./packages/a/tsconfig.json\nnode ./scripts/verify.mjs --all";
   const message = { role: "assistant", content: [{ type: "toolCall", toolCallId: "shell", toolName: "powershell", input: { command } }] };
   const result = { role: "toolResult", toolCallId: "shell", toolName: "powershell", isError: true,
     content: [{ type: "text", text: "src/a.ts(4): error TS2322: wrong type\nCommand exited with code 2" }],
     details: { truncation: { truncated: true }, fullOutputPath: "C:\\Temp\\pi-powershell-a.log" } };
-  const defaultExpanded = renderMessage(message, { toolResults: new Map([["shell", result]]) });
-  assert.match(defaultExpanded, /command-execution-toggle" aria-expanded="true"/);
-  assert.match(defaultExpanded, /TS2322/);
+  const defaultCollapsed = renderMessage(message, { toolResults: new Map([["shell", result]]) });
+  assert.match(defaultCollapsed, /command-execution-toggle" aria-expanded="false"/);
+  assert.match(defaultCollapsed, /失败.*退出码 2/);
+  assert.doesNotMatch(defaultCollapsed, /TS2322/);
   const collapsedState = createVirtualRowState();
   collapsedState.set("command:shell", false);
   const collapsed = renderToStaticMarkup(React.createElement(I18nProvider, null,
@@ -196,6 +223,7 @@ test("failed shell rows open by default and respect explicit collapse", () => {
   rowState.set("command:shell", true);
   const expanded = renderToStaticMarkup(React.createElement(I18nProvider, null,
     React.createElement(VirtualRowStateContext.Provider, { value: rowState }, React.createElement(MessageView, { message, cwd: "F:\\Piora", toolResults: new Map([["shell", result]]) }))));
+  assert.match(expanded, /command-execution-toggle" aria-expanded="true"/);
   assert.match(expanded, /退出码 2/);
   assert.match(expanded, /错误摘录/);
   assert.match(expanded, /class="command-section-label">命令<\/span>/);
@@ -250,9 +278,8 @@ test("renders user messages as escaped plain text and keeps assistant Markdown",
   };
   const html = renderMessage(message);
   const history = renderMessage(message, { mode: "history" });
-  const userSource = messageViewSource.slice(
-    messageViewSource.indexOf("function UserMessageView"),
-    messageViewSource.indexOf("function AssistantMessageView"),
+  const userSource = userMessageViewSource.slice(
+    userMessageViewSource.indexOf("function UserMessageView"),
   );
   const textBlockSource = messageViewSource.slice(
     messageViewSource.indexOf("function TextBlock"),

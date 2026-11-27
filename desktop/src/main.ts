@@ -1,4 +1,8 @@
+import { readCompanionScale, writeCompanionScale } from "./desktop-state.js";
 import { DshMemeManager } from "./dsh-meme-manager.js";
+import { DesktopExtensionRegistry } from "./desktop-extension-registry.js";
+import type { DesktopAnalytics } from "./analytics-desktop.mjs" with { "resolution-mode": "import" };
+let desktopAnalytics: DesktopAnalytics | undefined;
 import { memeNetwork } from "./dsh-meme-install.js";
 import { randomBytes } from "node:crypto";
 import { preparePetRoot } from "./dsh-pet-paths.js";
@@ -7,6 +11,7 @@ import { DshPetManager } from "./dsh-pet-manager.js";
 import { createSmokeSessionProbe } from "./smoke-session-probe.js";
 import { SystemLauncher } from "./system-launcher";
 import { registerQuickAccessHandlers } from "./quick-access-ipc.js";
+import { recoverBackgroundLogin, cancelBackgroundLogin } from "./background-login.js";
 import { registerVaultHandlers } from "./credential-vault-ipc.js";
 import { ClipboardController, ClipboardDraftFlushError } from "./clipboard-controller.js";
 import { copyHarmonyMedia } from "./harmony-media-clipboard.js";
@@ -43,8 +48,8 @@ import {
 import { autoUpdater } from "electron-updater";
 import { ScheduledDesktopUpdater, parseUpdateSchedule, type UpdateSchedule } from "./update-schedule.js";
 import { readUpdateSchedule, writeUpdateSchedule } from "./desktop-state.js";
-import { readLastLaunchedVersion, writeLastLaunchedVersion } from "./desktop-state.js";
-import { createStartupDocument, isStartupDocumentUrl, loadStartupMedia, STARTUP_MEDIA_TIMEOUT_MS, STARTUP_CONTINUE_CHANNEL } from "./startup-scene.js";
+import { writeLastLaunchedVersion } from "./desktop-state.js";
+import { createStartupWindow } from "./startup-coordinator.js";
 import {
   companionFacingDirection,
   companionMotionPoint,
@@ -81,7 +86,7 @@ import { StandaloneServer, type ServerExit } from "./server-supervisor.js";
 import { fitBoundsToVisibleDisplays } from "./window-bounds.js";
 import { protectTransparentCompanion } from "./transparent-companion.js";
 import { guardCompanionWindow } from "./companion-window-guard.js";
-import { nativeCompanionPoint, validCompanionRectangle } from "./companion-motion.js";
+import { companionDragLeavesArea, companionMovementArea, isCompanionInsideArea, nativeCompanionPoint, validCompanionRectangle } from "./companion-motion.js";
 import {
   DesktopUpdateController,
   type DesktopUpdateState,
@@ -184,11 +189,14 @@ if (desktopDevelopmentRuntime) {
 
 let mainWindow: BrowserWindow | null = null;
 let dshPetProxy: PetProxySettings | undefined;
-let dshPet: DshPetManager | undefined;
+const desktopExtensions = new DesktopExtensionRegistry();
 let dshMeme: DshMemeManager | undefined;
 let dshMemePanel: BrowserWindow | undefined;
 let dshPetSettings: BrowserWindow | undefined;
 let harmonyWindows: HarmonyWindows | undefined;
+let companionScale = 1;
+let companionMovementAreaMode: "screen" | "bottom-right" = "screen";
+let companionResize: { corner: string; point: Electron.Point; bounds: Electron.Rectangle } | undefined;
 let companionWindow: BrowserWindow | null = null;
 let companionBubbleWindow: BrowserWindow | null = null;
 let companionPanelWindow: BrowserWindow | null = null;
@@ -231,6 +239,7 @@ let companionLastAutonomousMotionAt = 0;
 let companionDragState: {
   pointerStart: { x: number; y: number };
   startingBounds: Electron.Rectangle;
+  workArea: Electron.Rectangle;
 } | undefined;
 let companionShouldBeVisible = false;
 let companionAlwaysOnTop = true;
@@ -272,6 +281,7 @@ async function handleStandaloneMessage(message: unknown): Promise<unknown> {
     requestId?: unknown;
     sessionId?: unknown;
     params?: unknown;
+    tabId?: unknown;
     action?: unknown;
     value?: unknown;
   };
@@ -280,9 +290,9 @@ async function handleStandaloneMessage(message: unknown): Promise<unknown> {
       if (!dshMeme) throw new Error("DSH Meme desktop host unavailable");
       const input = candidate.value as { action?: string; path?: string; method?: string; body?: string; autoStart?: boolean };
       let value: unknown;
-      if (candidate.action === "status") value = dshMeme.status();
-      else if (candidate.action === "action" && typeof input?.action === "string") value = dshMeme.action(input.action);
-      else if (candidate.action === "preferences" && typeof input?.autoStart === "boolean") value = dshMeme.setAutoStart(input.autoStart);
+      if (candidate.action === "status") value = desktopExtensions.status("dsh-meme");
+      else if (candidate.action === "action" && typeof input?.action === "string") value = await desktopExtensions.action("dsh-meme", input.action);
+      else if (candidate.action === "preferences" && typeof input?.autoStart === "boolean") value = desktopExtensions.preferences("dsh-meme", { autoStart: input.autoStart });
       else if (candidate.action === "http" && typeof input?.path === "string" && (!input.method || ["GET", "POST"].includes(input.method))) value = await dshMeme.http(input.path, input.method, input.body);
       else throw new Error("Invalid meme bridge request");
       return { type: "pi-desktop:meme-response", requestId: candidate.requestId, ok: true, value };
@@ -322,7 +332,7 @@ async function handleStandaloneMessage(message: unknown): Promise<unknown> {
     }
   }
   if (candidate.type === "pi-desktop:browser-agent-cancel") {
-    if (typeof candidate.requestId === "string") desktopBrowserManager?.cancelAgentRequest(candidate.requestId);
+    if (typeof candidate.requestId === "string") { cancelBackgroundLogin(candidate.requestId); desktopBrowserManager?.cancelAgentRequest(candidate.requestId); }
     return undefined;
   }
   if (candidate.type === "pi-desktop:browser-agent-backend") {
@@ -332,6 +342,10 @@ async function handleStandaloneMessage(message: unknown): Promise<unknown> {
   }
   if (candidate.type === "pi-desktop:browser-agent-request") {
     const requestId = typeof candidate.requestId === "string" ? candidate.requestId : "";
+    if (candidate.action === "recover_background_login" && typeof candidate.tabId === "string" && piAgentDirectoryPath) {
+      try { return { type: "pi-desktop:browser-agent-response", requestId, ok: true, value: await recoverBackgroundLogin(piAgentDirectoryPath, requestId, candidate.tabId) }; }
+      catch { return { type: "pi-desktop:browser-agent-response", requestId, ok: false, error: "Background login could not be restored" }; }
+    }
     if (!desktopBrowserManager) return { type: "pi-desktop:browser-agent-response", requestId, ok: false, error: BRIDGE_UNAVAILABLE_ERROR };
     return desktopBrowserManager.handleAgentRequest(message);
   }
@@ -1130,7 +1144,7 @@ function isTrustedMainWindowSender(event: IpcMainInvokeEvent): boolean {
 function initializeDshMeme(): void {
   if (!piAgentDirectoryPath) throw new Error("Pi data directory is unavailable");
   const closePanel = () => { dshMemePanel?.destroy(); dshMemePanel = undefined; };
-  dshMeme = new DshMemeManager({
+  const manager = new DshMemeManager({
     root: join(piAgentDirectoryPath, "piora", "desktop-extensions", "dsh-meme"),
     host: join(__dirname, "dsh-meme-host.js"),
     network: () => memeNetwork(process.env, dshPetProxy),
@@ -1159,12 +1173,18 @@ function initializeDshMeme(): void {
       try { await window.loadURL(url); window.show(); } catch (error) { window.destroy(); throw error; }
     },
   });
-  dshMeme.restore();
+  desktopExtensions.register("dsh-meme", {
+    status: () => manager.status(), action: action => manager.action(action),
+    preferences: value => typeof value.autoStart === "boolean" ? manager.setAutoStart(value.autoStart) : manager.status(),
+    restore: () => manager.restore(), dispose: () => manager.dispose(),
+  });
+  dshMeme = manager;
+  desktopExtensions.restore("dsh-meme");
 }
 
 function initializeDshPet(): void {
   if (!piAgentDirectoryPath) throw new Error("Pi data directory is unavailable");
-  dshPet = new DshPetManager({
+  const manager = new DshPetManager({
     root: preparePetRoot(piAgentDirectoryPath, app.getPath("userData")),
     network: () => petNetwork(process.env, dshPetProxy),
     tasks: async () => {
@@ -1194,20 +1214,47 @@ function initializeDshPet(): void {
     openFolder: async path => { const error = await shell.openPath(path); if (error) throw new Error(error); },
     closeSettings: () => { if (dshPetSettings && !dshPetSettings.isDestroyed()) dshPetSettings.destroy(); dshPetSettings = undefined; },
   });
-  for (const channel of ["pi:dsh-pet-status", "pi:dsh-pet-action", "pi:dsh-pet-preferences"]) ipcMain.removeHandler(channel);
+  desktopExtensions.register("dsh-pet", {
+    status: () => manager.status(), action: action => manager.action(action), preferences: value => manager.setPreferences(value),
+    restore: () => manager.restore(), dispose: () => manager.dispose(),
+  });
+  desktopExtensions.restore("dsh-pet");
+}
+
+function bindDesktopExtensionsIpc(): void {
+  for (const channel of ["pi:dsh-pet-status", "pi:dsh-pet-action", "pi:dsh-pet-preferences", "pi:desktop-extension-list",
+    "pi:desktop-extension-action", "pi:desktop-extension-preferences"]) ipcMain.removeHandler(channel);
+  ipcMain.handle("pi:desktop-extension-list", event => {
+    if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
+    return desktopExtensions.list();
+  });
+  ipcMain.handle("pi:desktop-extension-action", (event, id: unknown, action: unknown) => {
+    if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
+    return desktopExtensions.action(id, action);
+  });
+  ipcMain.handle("pi:desktop-extension-preferences", (event, id: unknown, value: unknown) => {
+    if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
+    return desktopExtensions.preferences(id, value);
+  });
   ipcMain.handle("pi:dsh-pet-status", event => {
     if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
-    return dshPet!.status();
+    return desktopExtensions.status("dsh-pet");
   });
   ipcMain.handle("pi:dsh-pet-action", (event, action: unknown) => {
-    if (!isTrustedMainWindowSender(event) || typeof action !== "string" || !["install", "start", "stop", "uninstall", "settings", "folder", "cancel"].includes(action)) throw new Error("Invalid desktop extension action");
-    return dshPet!.action(action as import("./dsh-pet-types.js").DshPetAction);
+    if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
+    return desktopExtensions.action("dsh-pet", action);
   });
   ipcMain.handle("pi:dsh-pet-preferences", (event, value: unknown) => {
     if (!isTrustedMainWindowSender(event)) throw new Error("Untrusted desktop extension request");
-    return dshPet!.setPreferences(value);
+    return desktopExtensions.preferences("dsh-pet", value);
   });
-  dshPet.restore();
+}
+
+async function stopDesktopExtensions(): Promise<void> {
+  dshMeme = undefined;
+  const results = await desktopExtensions.dispose();
+  const errors = results.filter(result => result.status === "rejected").map(result => result.reason as unknown);
+  if (errors.length) throw new AggregateError(errors, "Desktop extension shutdown failed");
 }
 
 function isTrustedCompanionWindowSender(event: IpcMainInvokeEvent): boolean {
@@ -1423,8 +1470,7 @@ function currentAgentDataDirectoryInfo(): AgentDataDirectoryInfo {
 }
 
 async function suspendAgentRuntimeForDataMigration(): Promise<void> {
-  await dshMeme?.dispose();
-  await dshPet?.dispose();
+  await stopDesktopExtensions();
   await requestHarmonyEmergencyStop("agent_data_directory_migration");
   const activeServer = server;
   server = undefined;
@@ -1817,9 +1863,12 @@ function startCompanionWindowMotion(input: {
     if (!center) return { ok: false };
     const display = screen.getDisplayNearestPoint(center);
     if (!validCompanionRectangle(display.workArea)) return { ok: false };
+    const movementArea = companionMovementArea(display.workArea, bounds, companionMovementAreaMode);
+    // Manual placement outside the area is respected: never teleport back on an idle tick.
+    if (companionMovementAreaMode !== "screen" && !isCompanionInsideArea(bounds, movementArea)) return { ok: false };
     const plan = planCompanionMotion(
       bounds,
-      display.workArea,
+      movementArea,
       input,
     );
     if (!plan) return { ok: false };
@@ -1876,6 +1925,7 @@ function startCompanionWindowDrag(): boolean {
   companionDragState = {
     pointerStart: screen.getCursorScreenPoint(),
     startingBounds: companionWindow.getBounds(),
+    workArea: screen.getDisplayMatching(companionWindow.getBounds()).workArea,
   };
   return true;
 }
@@ -1896,8 +1946,24 @@ function updateCompanionWindowDrag(): boolean {
   return Boolean(placed);
 }
 
+async function saveCompanionMovementArea(): Promise<void> {
+  if (!serverUrl || !applicationToken) return;
+  try {
+    const response = await fetch(new URL("/api/companion/state", serverUrl), {
+      method: "PATCH", headers: { [DESKTOP_TOKEN_HEADER]: applicationToken, "Content-Type": "application/json" },
+      body: JSON.stringify({ movementArea: "screen" }), signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) { logger?.warn("Unable to save companion movement area after drag", error); }
+}
+
 function finishCompanionWindowDrag(): boolean {
   const hadDrag = Boolean(companionDragState);
+  if (companionDragState && companionMovementAreaMode === "bottom-right" && companionWindow && !companionWindow.isDestroyed()
+    && companionDragLeavesArea(companionDragState.startingBounds, companionWindow.getBounds(), companionDragState.workArea)) {
+    companionMovementAreaMode = "screen";
+    void saveCompanionMovementArea();
+  }
   companionDragState = undefined;
   companionWindowGuard?.setDragging(false);
   return hadDrag;
@@ -1942,16 +2008,20 @@ function setCompanionWindowAlwaysOnTop(alwaysOnTop: boolean): boolean {
   return true;
 }
 
+function resizeCompanion(scale: number, point?: Electron.Point): void {
+  if (!companionWindow || companionWindow.isDestroyed()) return;
+  companionScale = Math.max(0.5, Math.min(3, scale));
+  companionWindowGuard?.setSize({ width: Math.round(156 * companionScale), height: Math.round(184 * companionScale) }, point);
+  positionCompanionBubble();
+}
+
 function createCompanionWindow(url: URL, log: Logger): BrowserWindow {
+  companionScale = readCompanionScale(app.getPath("userData"), log);
   const position = getCompanionWindowPosition();
   const window = new BrowserWindow({
     ...position,
-    width: COMPANION_COMPACT_WIDTH,
-    height: COMPANION_COMPACT_HEIGHT,
-    minWidth: COMPANION_COMPACT_WIDTH,
-    minHeight: COMPANION_COMPACT_HEIGHT,
-    maxWidth: COMPANION_COMPACT_WIDTH,
-    maxHeight: COMPANION_COMPACT_HEIGHT,
+    width: Math.round(COMPANION_COMPACT_WIDTH * companionScale),
+    height: Math.round(COMPANION_COMPACT_HEIGHT * companionScale),
     show: false,
     frame: false,
     transparent: true,
@@ -1983,7 +2053,7 @@ function createCompanionWindow(url: URL, log: Logger): BrowserWindow {
 
   installRendererDiagnostics(window, "Companion", log);
   protectTransparentCompanion(window);
-  companionWindowGuard = guardCompanionWindow(window, screen, { width: COMPANION_COMPACT_WIDTH, height: COMPANION_COMPACT_HEIGHT }, Date.now,
+  companionWindowGuard = guardCompanionWindow(window, screen, { width: Math.round(156 * companionScale), height: Math.round(184 * companionScale) }, Date.now,
     error => logger?.warn("Skipped companion window update", error));
   window.webContents.setZoomFactor(1);
   void window.webContents.setVisualZoomLevelLimits(1, 1);
@@ -2000,8 +2070,9 @@ function createCompanionWindow(url: URL, log: Logger): BrowserWindow {
   window.webContents.on("context-menu", () => {
     if (window.isDestroyed()) return;
     Menu.buildFromTemplate([
-      { label: brandText("打开 Piora"), click: () => { focusMainWindow(); } },
+      { label: brandText("打开 Piora"), click: () => { focusMainWindow(undefined, "menu"); } },
       { label: "打开随身舱", click: () => { showCompanionPanel(); } },
+      { label: "恢复默认大小", click: () => { resizeCompanion(1); if (logger) writeCompanionScale(app.getPath("userData"), 1, logger); } },
       { label: "桌宠设置", click: () => { focusMainWindow("companion-settings"); } },
       { type: "separator" },
       {
@@ -2050,6 +2121,7 @@ function createCompanionWindow(url: URL, log: Logger): BrowserWindow {
     if (companionMoveTimer) clearTimeout(companionMoveTimer);
     companionMoveTimer = undefined;
     if (companionWindow === window) {
+      companionResize = undefined;
       companionWindowGuard = undefined;
       stopCompanionWindowMotion();
       companionDragState = undefined;
@@ -2226,11 +2298,12 @@ function closeCompanionWindow(): void {
   updateTrayMenu();
 }
 
-function focusMainWindow(action?: string): boolean {
+function focusMainWindow(action?: string, analyticsReason?: "manual_launch" | "shortcut" | "tray" | "menu"): boolean {
   if ((!mainWindow || mainWindow.isDestroyed()) && serverUrl && logger) {
     mainWindow = createMainWindow(serverUrl, logger);
   }
   if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (analyticsReason) desktopAnalytics?.opened(analyticsReason);
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -2343,8 +2416,8 @@ function updateTrayMenu(): void {
   const isChinese = app.getLocale().toLowerCase().startsWith("zh");
   tray.setToolTip(runningTaskCount > 0 ? `${DESKTOP_DISPLAY_NAME} · ${runningTaskCount}` : DESKTOP_DISPLAY_NAME);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: isChinese ? brandText("显示 Piora") : brandText("Show Piora"), click: () => focusMainWindow() },
-    { label: isChinese ? "新任务" : "New task", click: () => focusMainWindow("new-session") },
+    { label: isChinese ? brandText("显示 Piora") : brandText("Show Piora"), click: () => focusMainWindow(undefined, "menu") },
+    { label: isChinese ? "新任务" : "New task", click: () => focusMainWindow("new-session", "menu") },
     { label: isChinese ? "打开随身舱" : "Open companion panel", click: () => showCompanionPanel() },
     {
       label: companionShouldBeVisible ? (isChinese ? "隐藏桌宠" : "Hide companion") : (isChinese ? "显示桌宠" : "Show companion"),
@@ -2368,14 +2441,31 @@ function updateTrayMenu(): void {
 }
 
 async function refreshTrayTaskCount(): Promise<void> {
-  if (!serverUrl || !applicationToken) return;
+  const url = serverUrl;
+  if (!url || !applicationToken) return;
   try {
-    const response = await fetch(new URL("/api/agent/running", serverUrl), { headers: { [DESKTOP_TOKEN_HEADER]: applicationToken } });
+    const response = await fetch(new URL("/api/agent/running", url), {
+      headers: { [DESKTOP_TOKEN_HEADER]: applicationToken }, signal: AbortSignal.timeout(5_000),
+    });
     if (!response.ok) return;
     const payload = await response.json() as { runningSessionIds?: unknown[] };
+    if (url !== serverUrl) return;
     const next = Array.isArray(payload.runningSessionIds) ? payload.runningSessionIds.length : 0;
     if (next !== runningTaskCount) { runningTaskCount = next; updateTrayMenu(); }
   } catch { /* The next poll retries after transient server errors. */ }
+}
+
+function startTrayTaskPolling(): void {
+  if (!tray || trayPollTimer || quitRequested) return;
+  let pending = false;
+  const poll = () => {
+    if (pending) return;
+    pending = true;
+    void refreshTrayTaskCount().finally(() => { pending = false; });
+  };
+  trayPollTimer = setInterval(poll, 2_500);
+  trayPollTimer.unref();
+  poll();
 }
 
 function installTray(): void {
@@ -2394,12 +2484,10 @@ function installTray(): void {
     return;
   }
   tray = new Tray(image.resize({ width: 16, height: 16 }));
-  tray.on("click", () => focusMainWindow());
-  tray.on("double-click", () => focusMainWindow());
+  tray.on("click", () => focusMainWindow(undefined, "tray"));
+  tray.on("double-click", () => focusMainWindow(undefined, "tray"));
   updateTrayMenu();
-  trayPollTimer = setInterval(() => { void refreshTrayTaskCount(); }, 2_500);
-  trayPollTimer.unref();
-  void refreshTrayTaskCount();
+  if (!desktopDevelopmentRuntime) startTrayTaskPolling();
 }
 
 function registerGlobalShortcutHandler(): void {
@@ -2408,7 +2496,7 @@ function registerGlobalShortcutHandler(): void {
     if (!isTrustedMainWindowSender(event) || typeof enabled !== "boolean") return false;
     if (desktopDevelopmentRuntime) return !enabled;
     globalShortcut.unregister("CommandOrControl+Alt+P");
-    return !enabled || globalShortcut.register("CommandOrControl+Alt+P", () => focusMainWindow("new-session"));
+    return !enabled || globalShortcut.register("CommandOrControl+Alt+P", () => focusMainWindow("new-session", "shortcut"));
   });
 }
 
@@ -2585,7 +2673,7 @@ function registerCompanionWindowHandlers(): void {
           : updateCompanionWindowDrag(),
       };
     }
-    if (request.kind !== "walk") return { ok: false };
+    if (request.kind !== "walk" || companionResize) return { ok: false };
     if (Date.now() - companionLastAutonomousMotionAt < 1_500) return { ok: false };
     companionLastAutonomousMotionAt = Date.now();
     const direction = request.direction === "left" || request.direction === "right"
@@ -2615,10 +2703,52 @@ function registerCompanionWindowHandlers(): void {
     return companionWindowGuard?.updateHitRegion(region) ?? false;
   });
 
+  ipcMain.removeHandler("pi:companion-movement-area");
+  ipcMain.handle("pi:companion-movement-area", (event, mode: unknown) => {
+    if (!isTrustedCompanionWindowSender(event) || (mode !== "screen" && mode !== "bottom-right")) return false;
+    if (mode === companionMovementAreaMode) return true;
+    companionMovementAreaMode = mode;
+    stopCompanionWindowMotion();
+    if (mode === "bottom-right" && companionWindow && !companionWindow.isDestroyed()) {
+      const bounds = companionWindow.getBounds();
+      const display = screen.getDisplayMatching(bounds);
+      const area = companionMovementArea(display.workArea, bounds, mode);
+      companionWindowGuard?.place({ x: Math.round(area.x + (area.width - bounds.width) / 2), y: Math.round(area.y + (area.height - bounds.height) / 2) });
+      positionCompanionBubble();
+    }
+    return true;
+  });
+  ipcMain.removeHandler("pi:companion-resize");
+  ipcMain.handle("pi:companion-resize", (event, kind: unknown, corner: unknown) => {
+    if (!isTrustedCompanionWindowSender(event) || !companionWindow) return false;
+    if (kind === "start" && typeof corner === "string" && ["n", "e", "s", "w", "nw", "ne", "sw", "se"].includes(corner)) {
+      stopCompanionWindowMotion(); finishCompanionWindowDrag();
+      companionResize = { corner, point: screen.getCursorScreenPoint(), bounds: companionWindow.getBounds() };
+      companionWindowGuard?.setDragging(true);
+      return true;
+    }
+    if (kind === "end") {
+      companionResize = undefined;
+      companionWindowGuard?.setDragging(false);
+      if (logger) writeCompanionScale(app.getPath("userData"), companionScale, logger);
+      return true;
+    }
+    if (kind !== "move" || !companionResize) return false;
+    const { point, bounds, corner: handle } = companionResize;
+    const cursor = screen.getCursorScreenPoint();
+    const sx = handle.includes("w") ? -1 : handle.includes("e") ? 1 : 0;
+    const sy = handle.includes("n") ? -1 : handle.includes("s") ? 1 : 0;
+    // The visible stage is 132 x 143 DIP inside the 156 x 184 window.
+    const delta = ((cursor.x - point.x) * sx * 132 + (cursor.y - point.y) * sy * 143) / ((sx * 132) ** 2 + (sy * 143) ** 2);
+    const scale = Math.max(0.5, Math.min(3, bounds.width / 156 + delta));
+    resizeCompanion(scale, { x: Math.round(bounds.x + (sx < 0 ? 144 : sx > 0 ? 12 : 78) * (bounds.width / 156 - scale)), y: Math.round(bounds.y + (sy < 0 ? 177 : sy > 0 ? 34 : 105.5) * (bounds.width / 156 - scale)) });
+    companionWindowGuard?.setDragging(true);
+    return true;
+  });
   ipcMain.removeHandler(COMPANION_ACTION_CHANNEL);
   ipcMain.handle(COMPANION_ACTION_CHANNEL, (event, action: unknown): boolean => {
     if (!isTrustedCompletionNotificationSender(event) && !isTrustedCompanionSurfaceSender(event) || typeof action !== "string") return false;
-    if (action === "focus-main") return focusMainWindow();
+    if (action === "focus-main") return focusMainWindow(undefined, "menu");
     if (action === "open-settings") return focusMainWindow("companion-settings");
     if (action === "open-panel") return showCompanionPanel();
     if (action === "hide") {
@@ -2812,111 +2942,6 @@ function createMainWindow(
   return window;
 }
 
-function createStartupWindow(log: Logger): { window: BrowserWindow; ready: Promise<number>; finished: Promise<void>; ensureVisible: () => void } {
-  const { window, initialState } = createMainWindowShell(log);
-  // Retain the EventEmitter while the native window is alive. Accessing
-  // window.webContents from "closed" throws, even just to remove a listener.
-  const webContents = window.webContents;
-  const previousVersion = readLastLaunchedVersion(app.getPath("userData"), log);
-  const firstLaunchOfVersion = previousVersion !== app.getVersion();
-  const updated = Boolean(previousVersion) && firstLaunchOfVersion;
-  const mediaDirectory = app.isPackaged ? join(process.resourcesPath, "startup") : resolve(__dirname, "../../.branding/resources/startup");
-  // The authenticated dev launcher already waits for the live server. Avoid
-  // synchronously reading/base64-embedding the release film on every restart.
-  // Packaged startup always retains the offline intro, even with a stray env.
-  const media = !app.isPackaged && process.env.PI_DESKTOP_DEV_SERVER_URL
-    ? {} : loadStartupMedia(mediaDirectory);
-  const startupPath = join(app.getPath("userData"), "startup.html");
-  let finishIntro!: () => void;
-  const finished = new Promise<void>((resolveIntro) => { finishIntro = () => { resolveIntro(); }; });
-  // Start the watchdog before loading: a failed navigation never emits
-  // ready-to-show, so it must not be responsible for releasing startup.
-  const introTimer = setTimeout(finishIntro, STARTUP_MEDIA_TIMEOUT_MS);
-  introTimer.unref();
-  void finished.then(() => { clearTimeout(introTimer); });
-  const blockIntroNavigation = (event: Electron.Event) => {
-    // Keep the old document from replacing an in-flight application load.
-    // Main-process loadURL does not emit will-navigate.
-    event.preventDefault();
-  };
-  const continueIntro = (event: Electron.IpcMainEvent, channel: string) => {
-    if (channel !== STARTUP_CONTINUE_CHANNEL || webContents.isDestroyed() || !event.senderFrame
-      || event.senderFrame !== webContents.mainFrame || !isStartupDocumentUrl(event.senderFrame.url, startupPath)) return;
-    finishIntro();
-  };
-  const cleanupNavigationGuard = () => {
-    if (!webContents.isDestroyed()) {
-      webContents.removeListener("will-navigate", blockIntroNavigation);
-      webContents.removeListener("did-navigate", onNavigation);
-    }
-    if (!window.isDestroyed()) window.removeListener("closed", onClosed);
-  };
-  const onNavigation = (_event: Electron.Event, target: string) => {
-    if (isStartupDocumentUrl(target, startupPath)) return;
-    cleanupNavigationGuard();
-    finishIntro();
-  };
-  const onClosed = () => { cleanupNavigationGuard(); finishIntro(); };
-  webContents.on("will-navigate", blockIntroNavigation);
-  webContents.on("ipc-message", continueIntro);
-  webContents.on("did-navigate", onNavigation);
-  window.once("closed", onClosed);
-  let ensureVisible!: () => void;
-  const ready = new Promise<number>((resolveReady) => {
-    let shown = false;
-    ensureVisible = () => {
-      if (shown || window.isDestroyed()) return;
-      shown = true;
-      window.removeListener("ready-to-show", ensureVisible);
-      const readyAt = Date.now();
-      if (!PORTABLE_SMOKE_TEST) {
-        if (initialState.maximized) window.maximize();
-        window.show();
-      }
-      const startupMarker = process.env.PIORA_SMOKE_STARTUP_MARKER?.trim();
-      if (PORTABLE_SMOKE_TEST && startupMarker) {
-        writeFileSync(resolve(startupMarker), `${JSON.stringify({ schema: "piora-startup-v1", ready: true, surface: "electron-shell" })}\n`, { encoding: "utf8", flag: "wx" });
-      }
-      resolveReady(readyAt);
-      if (!firstLaunchOfVersion || !media.video || PORTABLE_SMOKE_TEST) finishIntro();
-    };
-    window.once("ready-to-show", ensureVisible);
-  });
-  const startupDocument = createStartupDocument({ chinese: app.getLocale().toLocaleLowerCase().startsWith("zh"), version: app.getVersion(), updated, ...media });
-  let navigation: Promise<void> = Promise.resolve();
-  try {
-    // The embedded film exceeds Chromium's navigation URL limit. Loading the
-    // same local HTML from a file keeps media offline without a huge data URL.
-    writeFileSync(startupPath, startupDocument, { encoding: "utf8", mode: 0o600 });
-    navigation = window.loadFile(startupPath).catch((error) => {
-      log.warn("Unable to load startup animation; continuing to the application", error);
-      finishIntro();
-    });
-  } catch (error) {
-    log.warn("Unable to prepare startup animation; continuing to the application", error);
-    finishIntro();
-  }
-  const handedOff = finished.then(async () => {
-    log.info("Releasing startup animation");
-    if (!webContents.isDestroyed()) webContents.removeListener("ipc-message", continueIntro);
-    // Leave the Chromium/IPC callback before starting another native operation.
-    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
-    if (!window.isDestroyed() && !webContents.isDestroyed()) {
-      // The watchdog may expire while loadFile is still navigating. Settle that
-      // navigation before loadURL, but a broken optional document cannot hold
-      // the application hostage even if Chromium never settles its promise.
-      try { webContents.stop(); }
-      catch (error) { log.warn("Unable to stop startup animation; continuing to the application", error); }
-    }
-    await runOptionalStartupTask("Startup animation navigation cleanup", () => navigation, log, 1_000);
-    // A rejected loadFile settles inside did-stop-loading. Loading the app in
-    // that same event can let old completion events settle the new navigation.
-    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
-    log.info("Startup animation handoff is complete");
-  });
-  return { window, ready, finished: handedOff, ensureVisible };
-}
-
 type SmokeRendererState = {
   readyState: string;
   rendererLoaded: boolean;
@@ -2984,6 +3009,32 @@ function handleUnexpectedServerExit(exit: ServerExit): void {
   void notification.finally(() => app.quit());
 }
 
+async function initializeDesktopAnalytics(load = () => import("./analytics-desktop.mjs")): Promise<void> {
+  if (desktopAnalytics) return;
+  try {
+    const { startDesktopAnalytics } = await load();
+    const collector = await startDesktopAnalytics(() => mainWindow, (code) => logger?.warn(code));
+    if (quitRequested) collector?.stop();
+    else desktopAnalytics = collector;
+  } catch {
+    logger?.warn("Organization analytics startup failed; application remains available");
+  }
+}
+
+async function observeFirstComposer(window: BrowserWindow, origin: string, onReady: () => void): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline && !window.isDestroyed() && !quitRequested) {
+    const contents = window.webContents;
+    if (!isAllowedAppUrl(contents.getURL(), origin)) return;
+    const ready = await contents.executeJavaScript(
+      "Boolean(document.querySelector('.chat-composer-surface textarea:not([disabled])')?.getClientRects().length)",
+      false,
+    ).catch(() => false);
+    if (ready) { onReady(); return; }
+    await new Promise<void>(resolve => { setTimeout(resolve, 100).unref(); });
+  }
+}
+
 async function startApplication(): Promise<void> {
   const startupStartedAt = Date.now();
   recordStartupStage("waiting-for-electron");
@@ -2998,17 +3049,19 @@ async function startApplication(): Promise<void> {
   });
   if (!desktopDevelopmentRuntime) installPortableDesktopShortcut(logger);
   recordStartupStage("clearing-web-cache");
-  await clearObsoleteDesktopWebCaches(logger);
+  const developmentCacheCleanup = desktopDevelopmentRuntime ? clearObsoleteDesktopWebCaches(logger) : undefined;
+  if (!developmentCacheCleanup) await clearObsoleteDesktopWebCaches(logger);
 
   recordStartupStage("preparing-agent-data");
   piAgentDirectoryPath = resolvePiAgentDirectory(logger);
+  process.env[PI_AGENT_DIRECTORY_ENV] = piAgentDirectoryPath;
   logger.info("Using Pi data directory", { directory: piAgentDirectoryPath });
 
   // Show an app-owned shell immediately while the bundled Next.js service
   // starts in parallel. The same BrowserWindow is then navigated to the app,
   // avoiding the process and rendering cost of creating a second window.
   recordStartupStage("creating-startup-window");
-  const startup = createStartupWindow(logger);
+  const startup = createStartupWindow(logger, createMainWindowShell, PORTABLE_SMOKE_TEST);
   mainWindow = startup.window;
   installTray();
   void startup.ready.then((readyAt) => {
@@ -3026,7 +3079,8 @@ async function startApplication(): Promise<void> {
       }).catch((error) => logger?.warn("Development IPC request failed", error));
     });
     serverUrl = desktopDevelopmentRuntime.url;
-    await waitForDesktopDevelopmentServer(serverUrl, token);
+    await Promise.all([waitForDesktopDevelopmentServer(serverUrl, token), developmentCacheCleanup]);
+    if (quitRequested || !serverUrl || mainWindow.isDestroyed()) return;
     configureSession(electronSession.fromPartition(DESKTOP_PARTITION, { cache: true }), serverUrl.origin, token);
     logger.info("Authenticated development service is ready", { elapsedMs: Date.now() - startupStartedAt });
   } else {
@@ -3039,9 +3093,12 @@ async function startApplication(): Promise<void> {
     const initialRuntime = createStandaloneForProfile("normal");
     server = initialRuntime.instance;
     serverUrl = await server.start();
+    if (quitRequested || !serverUrl || mainWindow.isDestroyed()) return;
     activateStandaloneProfile("normal", initialRuntime.dataDirectory, serverUrl);
     logger.info("Bundled service is ready", { elapsedMs: Date.now() - startupStartedAt });
   }
+  recordStartupStage("local-service-ready");
+  startup.finish();
   await syncSavedDesktopNetworkProxy().catch(error => logger?.warn("Saved network proxy could not be applied at startup", error));
   warmInitialModelCatalog(serverUrl, token, logger);
 
@@ -3153,19 +3210,22 @@ async function startApplication(): Promise<void> {
   // An aborted first document can suppress ready-to-show even after a later
   // successful navigation. Do not leave the recovered application hidden.
   startup.ensureVisible();
+  if (desktopDevelopmentRuntime) startTrayTaskPolling();
   // Clipboard capture and shortcuts are already active; create the renderer
   // only when opened instead of retaining a hidden Chromium page at startup.
   writeLastLaunchedVersion(app.getPath("userData"), app.getVersion(), logger);
   logger.info("Application window is ready", { elapsedMs: Date.now() - startupStartedAt });
   recordStartupStage("ready");
+  void observeFirstComposer(mainWindow, serverUrl.origin, () => recordStartupStage("composer-interactive"));
+  setImmediate(() => { if (!quitRequested) void initializeDesktopAnalytics(); }).unref();
   try { initializeDshPet(); } catch (error) { logger.warn("DSH Pet initialization failed", error); }
   try { initializeDshMeme(); } catch (error) { logger.warn("DSH Meme initialization failed", error); }
+  bindDesktopExtensionsIpc();
 }
 
 async function stopApplication(): Promise<void> {
   await clipboardController?.stop().catch(error => { if (error instanceof ClipboardDraftFlushError) throw error; logger?.warn("Clipboard shutdown failed", error); });
-  await dshMeme?.dispose().catch(error => logger?.warn("DSH Meme shutdown failed", error));
-  await dshPet?.dispose().catch(error => logger?.warn("DSH Pet shutdown failed", error));
+  await stopDesktopExtensions().catch(error => logger?.warn("Desktop extension shutdown failed", error));
   if (scheduledUpdateTimer) clearInterval(scheduledUpdateTimer);
   scheduledUpdateTimer = undefined;
   logger?.info("Stopping Piora");
@@ -3182,6 +3242,8 @@ async function stopApplication(): Promise<void> {
     }).catch((error) => logger?.warn("Unable to stop computer control during shutdown", error));
   }
   await server?.stop();
+  desktopAnalytics?.stop();
+  desktopAnalytics = undefined;
   server = undefined;
   serverUrl = undefined;
   applicationToken = undefined;
@@ -3227,8 +3289,9 @@ if (!hasSingleInstanceLock) {
     app.quit();
   }).catch(() => app.exit(1));
 } else {
-  app.on("second-instance", () => {
-    focusMainWindow();
+  app.on("second-instance", (_event, argv) => {
+    const automatic = argv.includes("--piora-autostart") || argv.includes("--updated");
+    focusMainWindow(undefined, automatic ? undefined : "manual_launch");
   });
 
   app.on("activate", () => {

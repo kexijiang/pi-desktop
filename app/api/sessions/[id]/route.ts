@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { existsSync, statSync } from "fs";
+import { stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { summarizeSessionStats } from "@/lib/session-stats";
 import { persistedMessagePromptIds } from "@/lib/session-message-delete";
-import { readLatestSessionSystemPromptBinding } from "@/lib/session-system-prompt";
+import { readLatestSessionSystemPromptBinding, summarizeSessionSystemPromptBinding } from "@/lib/session-system-prompt";
 import {
   resolveSessionPath,
   resolveSessionIdByPath,
@@ -20,11 +21,16 @@ import { acquireSessionMutation, assertSessionNotMutating, collectSessionSubtree
 import { parseJsonWithinLimit } from "@/lib/bounded-json";
 import { isMissingSessionFileError, resolveSessionDetailSource } from "@/lib/session-detail-source";
 import { purgeExpiredTrash, trashSession } from "@/lib/session-trash";
+import { collectSideChatFilesForParents, invalidateSideChatCache } from "@/lib/side-chat/store";
 import { notifyDesktopAgentSessionClosed } from "@/lib/desktop-browser-agent";
+import { fileRevision } from "@/lib/jsonl-file-index";
+import {
+  buildSessionTranscript, decodeHistoryCursor, readHistoryAnchor, readSessionPage, readSessionTranscript, SessionHistoryPageError,
+} from "@/lib/session-read-repository";
 
-// BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
 const MAX_SESSION_RESPONSE_CACHE_BYTES = 48 * 1024 * 1024;
+const MAX_SESSION_RESPONSE_CACHE_ENTRIES = 128;
 
 /**
  * Project the session tree into the shallow navigation tree sent to the client.
@@ -167,7 +173,7 @@ async function buildSessionResponse(
     // A live manager can contain buffered messages before its first disk flush.
     // User receipts require disk history; completed slash commands instead use
     // the durable command journal, since the SDK may never add a user message.
-    persistedPromptIds: [...new SessionControlStore().completedSlashPromptIds(id), ...(manager ? [] : persistedMessagePromptIds(sm.getEntries()))],
+    persistedPromptIds: [...await new SessionControlStore().queryCompletedSlashPromptIds(id), ...(manager ? [] : persistedMessagePromptIds(sm.getEntries()))],
     filePath,
     info,
     leafId,
@@ -177,7 +183,6 @@ async function buildSessionResponse(
   };
 }
 
-type SessionRoutePayload = Awaited<ReturnType<typeof buildSessionResponse>>;
 type SerializedSessionResponse = {
   body: string;
   etag: string;
@@ -215,7 +220,7 @@ function matchesEtag(header: string | null, etag: string): boolean {
   });
 }
 
-function serializeSessionResponse(payload: SessionRoutePayload, etag: string): SerializedSessionResponse {
+function serializeSessionResponse(payload: unknown, etag: string): SerializedSessionResponse {
   const body = JSON.stringify(payload);
   return { body, etag, byteLength: Buffer.byteLength(body, "utf8") };
 }
@@ -224,7 +229,7 @@ function pruneSessionResponseCache(cache: Map<string, SessionResponseCacheEntry>
   let cachedBytes = 0;
   for (const entry of cache.values()) cachedBytes += entry.byteLength;
 
-  while (cachedBytes > MAX_SESSION_RESPONSE_CACHE_BYTES) {
+  while (cachedBytes > MAX_SESSION_RESPONSE_CACHE_BYTES || cache.size > MAX_SESSION_RESPONSE_CACHE_ENTRIES) {
     let oldest: [string, SessionResponseCacheEntry] | null = null;
     for (const candidate of cache) {
       if (!oldest || candidate[1].lastAccessedAt < oldest[1].lastAccessedAt) oldest = candidate;
@@ -233,6 +238,46 @@ function pruneSessionResponseCache(cache: Map<string, SessionResponseCacheEntry>
     cache.delete(oldest[0]);
     cachedBytes -= oldest[1].byteLength;
   }
+}
+
+async function loadHistoryResponse(id: string, path: string, query: URLSearchParams, request: Request, transcript: boolean): Promise<Response> {
+  const cursor = transcript ? undefined : decodeHistoryCursor(query.get("older"));
+  const leafId = transcript ? undefined : readHistoryAnchor(query, "leafId");
+  const around = transcript ? undefined : readHistoryAnchor(query, "around");
+  if (cursor && (leafId || around)) throw new SessionHistoryPageError(400, "History cursor and anchor cannot be combined");
+  const info = await stat(path);
+  const pendingModel = readPendingSessionModel(id);
+  const running = Boolean(getRpcSession(id)?.isRunning());
+  const signature = [fileRevision(info), pendingModel?.revision, running].join(":");
+  const projection = transcript ? "transcript-v1" : "paged-v2:" + JSON.stringify([query.get("older"), leafId, around]);
+  const etag = sessionResponseEtag(id, signature, projection);
+  const headers = { "cache-control": "private, no-cache", etag, "content-type": "application/json; charset=utf-8" };
+  if (matchesEtag(request.headers.get("if-none-match"), etag)) return new Response(null, { status: 304, headers });
+
+  const cache = sessionResponseCache();
+  const key = path + "\0" + projection;
+  let entry = cache.get(key);
+  if (!entry || entry.signature !== signature) {
+    const modified = info.mtime.toISOString();
+    const history = transcript ? readSessionTranscript(path, modified) : readSessionPage(path, modified, { cursor, leafId, around });
+    const promise = history.then(async result => {
+      if (fileRevision(await stat(path)) !== fileRevision(info)) throw new SessionHistoryPageError(409, "History changed; refresh the conversation");
+      if (pendingModel && !running) result.context.model = { provider: pendingModel.provider, modelId: pendingModel.modelId };
+      if (result.info) result.info.id = id;
+      return serializeSessionResponse({ sessionId: id, filePath: path, tree: [], ...result }, etag);
+    });
+    entry = { signature, lastAccessedAt: Date.now(), byteLength: 0, promise };
+    const owned = entry;
+    cache.set(key, owned);
+    pruneSessionResponseCache(cache);
+    void promise.then(serialized => {
+      if (cache.get(key) !== owned) return;
+      owned.byteLength = serialized.byteLength;
+      pruneSessionResponseCache(cache);
+    }, () => { if (cache.get(key) === owned) cache.delete(key); });
+  }
+  entry.lastAccessedAt = Date.now();
+  return new Response((await entry.promise).body, { status: 200, headers });
 }
 
 async function loadCachedSessionResponse(
@@ -245,7 +290,8 @@ async function loadCachedSessionResponse(
 ): Promise<SerializedSessionResponse | { body: null; etag: string }> {
   const fileState = statSync(filePath);
   const commandState = statSync(new SessionControlStore().commandsPath(id), { throwIfNoEntry: false });
-  const signature = `${fileState.size}:${fileState.mtimeMs}:${readPendingSessionModel(id)?.revision ?? ""}:${getRpcSession(id)?.isRunning() ?? false}:${commandState?.size ?? 0}:${commandState?.mtimeMs ?? 0}`;
+  const signature = [fileRevision(fileState), readPendingSessionModel(id)?.revision, getRpcSession(id)?.isRunning(),
+    commandState && fileRevision(commandState)].join(":");
   const projection = `${deferThinking ? "thinking-deferred" : "thinking-full"}\0${deferToolResultImages ? "media-deferred" : "media-full"}\0${includeTree ? "tree" : "no-tree"}`;
   const etag = sessionResponseEtag(id, signature, projection);
   if (matchesEtag(ifNoneMatch, etag)) return { body: null, etag };
@@ -322,7 +368,32 @@ export async function GET(
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
     const includeTree = searchParams.has("includeTree");
+    const view = searchParams.get("view");
+    const transcript = view === "transcript" && !includeTree;
+    if (transcript) {
+      const live = getRpcSession(id);
+      // The running manager can be ahead of disk, and keeps a stable snapshot
+      // even when new messages are appended during the HTTP request.
+      const manager = source.kind === "memory" ? source.manager
+        : live?.isAlive() && live.isRunning() ? live.inner.sessionManager : null;
+      if (manager) {
+        const modified = manager.getLeafEntry()?.timestamp ?? manager.getHeader()?.timestamp ?? new Date().toISOString();
+        const history = buildSessionTranscript(manager, source.filePath, modified);
+        return NextResponse.json({ sessionId: id, filePath: source.filePath, tree: [], ...history },
+          { headers: { "cache-control": "private, no-store" } });
+      }
+    }
     if (source.kind === "memory") {
+      if (view === "chat" && !includeTree && !searchParams.has("older")) {
+        const context = buildSessionContext(source.manager.getEntries() as never, source.manager.getLeafId(), { deferThinking: true, deferToolResultImages: true });
+        if (context.messages.length === 0) {
+          return NextResponse.json({
+            sessionId: id, filePath: source.filePath, leafId: source.manager.getLeafId(), tree: [],
+            context, systemPromptBinding: summarizeSessionSystemPromptBinding(readLatestSessionSystemPromptBinding(source.manager.getEntries())),
+            historyPage: { older: null, contextVersion: "memory" },
+          }, { headers: { "cache-control": "private, no-store" } });
+        }
+      }
       const payload = await buildSessionResponse(
         id,
         source.filePath,
@@ -343,6 +414,13 @@ export async function GET(
 
     let response: Awaited<ReturnType<typeof loadCachedSessionResponse>>;
     try {
+      if (transcript || view === "chat" && !includeTree) {
+        try { return await loadHistoryResponse(id, source.filePath, searchParams, req, transcript); }
+        catch (error) {
+          if (!(error instanceof SessionHistoryPageError) || error.status !== 409 || searchParams.has("older")) throw error;
+          return await loadHistoryResponse(id, source.filePath, searchParams, req, transcript);
+        }
+      }
       response = await loadCachedSessionResponse(
         id,
         source.filePath,
@@ -365,6 +443,7 @@ export async function GET(
     if (response.body === null) return new Response(null, { status: 304, headers });
     return new Response(response.body, { status: 200, headers });
   } catch (error) {
+    if (error instanceof SessionHistoryPageError) return NextResponse.json({ error: error.message }, { status: error.status });
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
@@ -418,11 +497,14 @@ export async function DELETE(
     }
 
     // Collect the whole subtree (this session + every descendant that points
-    // at a member via parentSessionId) so restore is an exact move-back.
+    // at a member via parentSessionId) plus all owned side-chat transcripts
+    // so deletion & trash restore remain atomic.
     const all = await listAllSessions();
     let subtree = collectSessionSubtree(all, id);
-    const ids = subtree.length ? subtree.map((session) => session.id) : [id];
-    if (expectedIds && ids.some((sessionId) => !expectedIds.has(sessionId))) {
+    const parentIds = subtree.length ? subtree.map((session) => session.id) : [id];
+    const sideChats = collectSideChatFilesForParents(parentIds);
+    const ids = [...new Set([...parentIds, ...sideChats.ids])];
+    if (expectedIds && parentIds.some((sessionId) => !expectedIds.has(sessionId))) {
       return NextResponse.json({ error: "Conversation branches changed. Review the affected conversations and try again." }, { status: 409 });
     }
     const releases = [acquireSessionMutation(ids)];
@@ -431,11 +513,13 @@ export async function DELETE(
       while (pendingIds.length) {
         await stopRpcSessionsForFileMutation(pendingIds);
         // A fork admitted before our locks may have finished during the drain.
-        // Include its descendants before moving anything, and lock each new writer.
+        // Include its descendants and any newly created side chats, and lock each new writer.
         subtree = collectSessionSubtree(await listAllSessions(), id);
+        const refreshedParentIds = subtree.length ? subtree.map((session) => session.id) : [id];
+        const refreshedSideChats = collectSideChatFilesForParents(refreshedParentIds);
         const locked = new Set(ids);
-        pendingIds = subtree.map((session) => session.id).filter((sessionId) => !locked.has(sessionId));
-        if (expectedIds && pendingIds.some((sessionId) => !expectedIds.has(sessionId))) {
+        pendingIds = [...new Set([...refreshedParentIds, ...refreshedSideChats.ids])].filter((sessionId) => !locked.has(sessionId));
+        if (expectedIds && refreshedParentIds.some((sessionId) => !locked.has(sessionId) && !expectedIds.has(sessionId))) {
           return NextResponse.json({ error: "Conversation branches changed. Review the affected conversations and try again." }, { status: 409 });
         }
         if (pendingIds.length) {
@@ -443,14 +527,20 @@ export async function DELETE(
           ids.push(...pendingIds);
         }
       }
-      const subtreePaths = subtree.length ? subtree.map((session) => session.path) : [filePath];
+      const finalSideChats = collectSideChatFilesForParents(subtree.length ? subtree.map((session) => session.id) : [id]);
+      const subtreePaths = [
+        ...(subtree.length ? subtree.map((session) => session.path) : [filePath]),
+        ...finalSideChats.files,
+      ];
       purgeExpiredTrash();
       const root = subtree.find((session) => session.id === id);
       trashSession(id, subtreePaths, { title: root?.name || root?.firstMessage?.slice(0, 120), cwd: root?.cwd });
       for (const sessionId of ids) {
         invalidateSessionPathCache(sessionId);
+        invalidateSideChatCache(sessionId);
         notifyDesktopAgentSessionClosed(sessionId);
       }
+      invalidateSideChatCache();
       invalidateSessionListCache();
       return NextResponse.json({ ok: true, trashedCount: subtreePaths.length, sessionIds: ids });
     } finally {

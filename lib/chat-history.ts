@@ -2,9 +2,16 @@ import type { AgentMessage, AssistantMessage, AssistantContentBlock } from "./ty
 import { countToolCallBlocks, hasAssistantNotice, getDisplayableAssistantBlocks, hasFileMutationBlocks, splitFinalAssistantBlocks } from "./message-display";
 import { isCommandToolName } from "./command-execution";
 import type { ChatCommandView } from "./chat-command-types";
+import { isSubagentTool } from "./subagent-types";
+import { WORKFLOW_GOAL_CONTINUE_CUSTOM_TYPE } from "./workflow/goal-continuation";
+
+export function startsChatTurn(message: AgentMessage): boolean {
+  return message.role === "user" || message.followsDeletedPrompt === true;
+}
 
 export function isChatTurnAnchor(message: AgentMessage): boolean {
-  return message.role === "user" || message.role === "custom" && message.customType === "compaction";
+  return startsChatTurn(message)
+    || (message.role === "custom" && (message.customType === "compaction" || message.customType === WORKFLOW_GOAL_CONTINUE_CUSTOM_TYPE));
 }
 
 export interface ChatHistoryRow {
@@ -33,7 +40,7 @@ function hasAnswer(message: AgentMessage): boolean {
 }
 
 function hasVisibleToolOutput(blocks: AssistantContentBlock[]): boolean {
-  return hasFileMutationBlocks(blocks) || blocks.some((block) => block.type === "toolCall" && isCommandToolName(block.toolName));
+  return hasFileMutationBlocks(blocks) || blocks.some((block) => block.type === "toolCall" && (isCommandToolName(block.toolName) || isSubagentTool(block.toolName)));
 }
 
 /** A render plan, not React elements. Collapsed and offscreen messages stay unmounted. */
@@ -92,18 +99,18 @@ export function buildChatHistoryRows(messages: AgentMessage[], entryIds: string[
 }
 
 /** Only a settled turn's final reply gets a footer; tool steps share one continuous body. */
-export function layoutChatResponseRows(rows: ChatHistoryRow[], messages: AgentMessage[], busy: boolean, start = 0): ChatHistoryRow[] {
+export function layoutChatResponseRows(rows: ChatHistoryRow[], messages: import("./chat-segments").ChatMessages, busy: boolean, start = 0): ChatHistoryRow[] {
   const responseEnds = new Set<number>();
   let laterAssistant = false;
   let active = busy;
   for (let index = messages.length - 1; index >= start; index--) {
     const message = messages[index];
     // Compaction can happen inside one response; only a new user prompt ends it.
-    if (message.role === "user") { laterAssistant = false; active = false; }
-    else if (message.role === "assistant" && (getDisplayableAssistantBlocks(message).length || hasAssistantNotice(message))) {
+    if (message.role === "assistant" && (getDisplayableAssistantBlocks(message).length || hasAssistantNotice(message))) {
       if (!laterAssistant && !active) responseEnds.add(index);
       laterAssistant = true;
     }
+    if (startsChatTurn(message)) { laterAssistant = false; active = false; }
   }
   return rows.map((row) => {
     if (row.message?.role !== "assistant") return row;

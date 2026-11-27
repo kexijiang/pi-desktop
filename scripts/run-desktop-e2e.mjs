@@ -1,23 +1,34 @@
+import { companionScaling } from "./desktop-e2e/scenarios/companion-scaling.mjs";
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runDesktopScenario } from './desktop-e2e/harness.mjs';
 import { stopShell, stopBash } from './desktop-e2e/scenarios/stop-shell.mjs';
 import { settingsTheme } from './desktop-e2e/scenarios/settings-theme.mjs';
 import { browserPersistence } from './desktop-e2e/scenarios/browser-persistence.mjs';
+import { browserHome } from './desktop-e2e/scenarios/browser-home.mjs';
+import { browserMenu, browserMenuNative, browserMenuAppearance } from './desktop-e2e/scenarios/browser-menu.mjs';
 import { browserLogin } from './desktop-e2e/scenarios/browser-login.mjs';
+import { browserUpload } from './desktop-e2e/scenarios/browser-upload.mjs';
+import { browserSettings } from './desktop-e2e/scenarios/browser-settings.mjs';
 import { desktopExtensions } from './desktop-e2e/scenarios/desktop-extensions.mjs';
 import { harmonyMirror } from './desktop-e2e/scenarios/harmony-mirror.mjs';
 import { companionPanel } from './desktop-e2e/scenarios/companion-panel.mjs';
 import { harmonyLogs } from './desktop-e2e/scenarios/harmony-logs.mjs';
 import { planGoal } from './desktop-e2e/scenarios/plan-goal.mjs';
 import { usageDashboard } from './desktop-e2e/scenarios/usage-dashboard.mjs';
+import { subagents } from './desktop-e2e/scenarios/subagents.mjs';
+import { subagentsReal } from './desktop-e2e/scenarios/subagents-real.mjs';
+import { chatContextMenu } from './desktop-e2e/scenarios/chat-context-menu.mjs';
+import { chatHistoryFull } from './desktop-e2e/scenarios/chat-history-full.mjs';
+import { workspaceIssueFixes } from './desktop-e2e/scenarios/workspace-issue-fixes.mjs';
+import { worktreeChatLayout } from './desktop-e2e/scenarios/worktree-chat-layout.mjs';
 
-const scenarios = [settingsTheme, stopShell, stopBash, desktopExtensions, browserPersistence, browserLogin, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard];
+const scenarios = [companionScaling, settingsTheme, stopShell, stopBash, desktopExtensions, browserHome, browserPersistence, browserMenu, browserMenuNative, browserMenuAppearance, browserLogin, browserUpload, browserSettings, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard, subagents, subagentsReal, chatContextMenu, chatHistoryFull, workspaceIssueFixes, worktreeChatLayout];
 
 export function parseOptions(args) {
   const options = { scenario: 'settings-theme' };
   const names = { '--scenario': 'scenario', '--timeout-ms': 'timeoutMs', '--step-timeout-ms': 'stepTimeoutMs',
-    '--port': 'port', '--debug-port': 'debugPort', '--fail-at': 'failAt' };
+    '--port': 'port', '--debug-port': 'debugPort', '--fail-at': 'failAt', '--electron-dist': 'electronDist', '--executable': 'executable' };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === '--help' || arg === '--list') { options[arg.slice(2)] = true; continue; }
@@ -30,6 +41,7 @@ export function parseOptions(args) {
     } else options[key] = value;
   }
   if (options.port && options.port === options.debugPort) throw new Error('Application and CDP ports must differ');
+  if (options.executable && options.port && options.port < 20000) throw new Error('Packaged desktop application port must be 20000–65535');
   if (!scenarios.some(scenario => scenario.id === options.scenario)) throw new Error(`Unknown scenario: ${options.scenario}`);
   return options;
 }
@@ -46,7 +58,7 @@ async function main() {
   try {
     const scenario = scenarios.find(candidate => candidate.id === options.scenario);
     const result = await runDesktopScenario({ ...options, root: resolve(import.meta.dirname, '..'), scenario, signal: controller.signal });
-    console.log(JSON.stringify({ status: result.report.status, directory: result.directory, failedStep: result.report.failedStep }));
+    console.log(JSON.stringify({ status: result.report.status, directory: result.directory, failedStep: result.report.failedStep, error: result.report.error?.message }));
     process.exitCode = result.report.status === 'passed' ? 0 : result.report.status === 'cancelled' ? 130 : 1;
   } finally {
     for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.removeListener(name, stop);

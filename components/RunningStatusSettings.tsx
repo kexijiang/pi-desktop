@@ -1,16 +1,119 @@
 "use client";
 
-import { useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useRunningStatusLabel } from "@/hooks/useRunningStatusLabel";
+import { useRunningStatusGenerationPrompt } from "@/hooks/useRunningStatusGenerationPrompt";
+import { defaultRunningStatusLabels, normalizeRunningStatusLabels, parseGeneratedRunningStatusLabels, RUNNING_STATUS_MAX_PROMPT_LENGTH } from "@/lib/running-status-labels";
 import { AliIcon } from "./AliIcon";
+import { SettingsModal, SettingsRow } from "./settings/SettingsPrimitives";
+import primitiveStyles from "./settings/SettingsPrimitives.module.css";
 import shared from "./ModelRetrySettings.module.css";
 import styles from "./RunningStatusSettings.module.css";
 
-export function RunningStatusSettings() {
-  const { t } = useI18n();
-  const { label, setLabel } = useRunningStatusLabel();
+export function RunningStatusSettings({ cwd, compact = false }: { cwd?: string; compact?: boolean }) {
+  const { t, locale } = useI18n();
+  const { labels, setLabels } = useRunningStatusLabel();
+  const { prompt, setPrompt } = useRunningStatusGenerationPrompt();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [feedback, setFeedback] = useState<{ error: boolean; key: string; model?: string } | null>(null);
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [modalOpen, setModalOpen] = useState(false);
+  const request = useRef<AbortController | null>(null);
   const id = useId();
+  const saved = labels.length ? labels : defaultRunningStatusLabels(locale);
+  const text = draft ?? saved.join("\n");
+  let parsed: string[] | null = null;
+  try { parsed = normalizeRunningStatusLabels(text.split(/\r?\n/)); } catch { /* Keep the saved library when validation fails. */ }
+  const preview = parsed?.length ? parsed : saved;
+  useEffect(() => () => { request.current?.abort(); }, []);
+
+  const generate = async () => {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setGenerating(true); setFeedback(null);
+    try {
+      const response = await fetch("/api/running-status/generate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale, ...(cwd ? { cwd } : {}), ...(prompt.trim() ? { prompt: prompt.trim() } : {}) }), signal: controller.signal,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error === "model_unavailable" ? "settings.runningStatusNoModel" : "settings.runningStatusGenerateFailed");
+      const generated = parseGeneratedRunningStatusLabels(JSON.stringify(result.labels));
+      if (controller.signal.aborted) return;
+      setLabels(generated); setDraft(null); setPreviewIndex(0);
+      setFeedback({ error: false, key: "settings.runningStatusGenerated", model: typeof result.model === "string" ? result.model : "" });
+    } catch (error) {
+      if (!controller.signal.aborted) setFeedback({ error: true, key: error instanceof Error && error.message === "settings.runningStatusNoModel" ? error.message : "settings.runningStatusGenerateFailed" });
+    } finally {
+      if (request.current === controller) { request.current = null; setGenerating(false); }
+    }
+  };
+  if (compact) {
+    return (
+      <>
+        <SettingsRow
+          title={t("settings.runningStatusLabel")}
+          description={t("settings.runningStatusCount", { count: saved.length })}
+          badge={preview[0]}
+          settingsId="general.runningStatusLabel"
+        >
+          <button type="button" className={primitiveStyles.button} onClick={() => setModalOpen(true)}>
+            {t("settings.manageLibrary")}
+          </button>
+        </SettingsRow>
+        <SettingsModal
+          open={modalOpen}
+          title={t("settings.runningStatusLabel")}
+          description={t("settings.runningStatusLabelHint")}
+          closeLabel={t("settings.closeAction")}
+          onClose={() => setModalOpen(false)}
+          footer={
+            <>
+              <button type="button" className={primitiveStyles.button} disabled={generating} onClick={() => { setLabels([]); setDraft(null); setFeedback(null); }}>
+                {t("settings.runningStatusRestore")}
+              </button>
+              <div className={primitiveStyles.modalActions}>
+                <button type="button" className={primitiveStyles.button} disabled={generating} onClick={() => void generate()}>
+                  <AliIcon name={generating ? "reload" : "solution"} size={14} />{t(generating ? "settings.runningStatusGenerating" : "settings.runningStatusGenerate")}
+                </button>
+                <button type="button" className={primitiveStyles.buttonPrimary} disabled={generating || parsed === null || draft === null} onClick={() => {
+                  if (!parsed) return;
+                  setLabels(parsed); setDraft(null); setFeedback({ error: false, key: "settings.runningStatusSaved" });
+                }}>{t("settings.runningStatusSave")}</button>
+              </div>
+            </>
+          }
+        >
+          <div className={shared.fields}>
+            <label className={styles.field}>
+              <span>{t("settings.runningStatusText")} ({t("settings.runningStatusCount", { count: parsed?.length ?? 0 })})</span>
+              <textarea className={styles.input} value={text} rows={8} disabled={generating}
+                aria-describedby={`${id}-count`} onChange={event => { setDraft(event.target.value); setFeedback(null); }} />
+            </label>
+            <label className={styles.field}>
+              <span>{t("settings.runningStatusPrompt")}</span>
+              <textarea className={`${styles.input} ${styles.prompt}`} value={prompt} rows={3} disabled={generating}
+                maxLength={RUNNING_STATUS_MAX_PROMPT_LENGTH} placeholder={t("settings.runningStatusPromptPlaceholder")}
+                onChange={event => { setPrompt(event.target.value); setFeedback(null); }} />
+            </label>
+          </div>
+          {parsed === null ? <p className={styles.error} role="alert">{t("settings.runningStatusInvalid")}</p> : null}
+          {feedback ? <p role={feedback.error ? "alert" : "status"} className={feedback.error ? styles.error : styles.caption}>{t(feedback.key, { model: feedback.model ?? "" })}</p> : null}
+          <div className={styles.preview}>
+            <div className={styles.previewHeading}><span className={styles.caption}>{t("settings.runningStatusPreview")}</span><button type="button" onClick={() => setPreviewIndex(index => (index + 1) % preview.length)}>{t("settings.runningStatusNextPreview")}</button></div>
+            <div className={styles.status}>
+              <span className={styles.dot} aria-hidden="true" />
+              <span className={styles.label}>{preview[previewIndex % preview.length]}</span>
+              <span className={styles.elapsed}>· {t("chat.taskDuration.elapsed")} 25s</span>
+            </div>
+          </div>
+        </SettingsModal>
+      </>
+    );
+  }
   return <section className={shared.card} aria-labelledby={`${id}-title`}>
     <div className={shared.heading}>
       <span className={shared.icon}><AliIcon name="timer" size={17} /></span>
@@ -22,16 +125,38 @@ export function RunningStatusSettings() {
     <div className={shared.fields}>
       <label className={styles.field}>
         <span>{t("settings.runningStatusText")}</span>
-        <input className={styles.input} value={label} maxLength={80}
-          aria-describedby={`${id}-hint`} placeholder={t("chat.taskDuration.running")}
-          onChange={(event) => setLabel(event.target.value)} />
+        <textarea className={styles.input} value={text} rows={8} disabled={generating}
+          aria-describedby={`${id}-hint ${id}-count`} onChange={event => { setDraft(event.target.value); setFeedback(null); }} />
+      </label>
+      <label className={styles.field}>
+        <span>{t("settings.runningStatusPrompt")}</span>
+        <textarea className={`${styles.input} ${styles.prompt}`} value={prompt} rows={3} disabled={generating}
+          maxLength={RUNNING_STATUS_MAX_PROMPT_LENGTH} placeholder={t("settings.runningStatusPromptPlaceholder")}
+          aria-describedby={`${id}-prompt-hint`} onChange={event => { setPrompt(event.target.value); setFeedback(null); }} />
       </label>
     </div>
+    <p id={`${id}-prompt-hint`} className={styles.caption}>{t("settings.runningStatusPromptHint", { max: RUNNING_STATUS_MAX_PROMPT_LENGTH })}</p>
+    <div className={styles.actions}>
+      <span id={`${id}-count`} className={styles.caption}>{t("settings.runningStatusCount", { count: parsed?.length ?? 0 })}</span>
+      <div>
+        <button type="button" disabled={generating} onClick={() => { setLabels([]); setDraft(null); setFeedback(null); }}>{t("settings.runningStatusRestore")}</button>
+        <button type="button" disabled={generating || parsed === null || draft === null} onClick={() => {
+          if (!parsed) return;
+          setLabels(parsed); setDraft(null); setFeedback({ error: false, key: "settings.runningStatusSaved" });
+        }}>{t("settings.runningStatusSave")}</button>
+        <button type="button" className={styles.generate} disabled={generating} onClick={() => void generate()}>
+          <AliIcon name={generating ? "reload" : "solution"} size={14} />{t(generating ? "settings.runningStatusGenerating" : "settings.runningStatusGenerate")}
+        </button>
+      </div>
+    </div>
+    <p className={styles.caption}>{t("settings.runningStatusModelHint")}</p>
+    {parsed === null ? <p className={styles.error} role="alert">{t("settings.runningStatusInvalid")}</p> : null}
+    {feedback ? <p role={feedback.error ? "alert" : "status"} className={feedback.error ? styles.error : styles.caption}>{t(feedback.key, { model: feedback.model ?? "" })}</p> : null}
     <div className={styles.preview}>
-      <span className={styles.caption}>{t("settings.runningStatusPreview")}</span>
+      <div className={styles.previewHeading}><span className={styles.caption}>{t("settings.runningStatusPreview")}</span><button type="button" onClick={() => setPreviewIndex(index => (index + 1) % preview.length)}>{t("settings.runningStatusNextPreview")}</button></div>
       <div className={styles.status}>
         <span className={styles.dot} aria-hidden="true" />
-        <span className={styles.label}>{label.trim() || t("chat.taskDuration.running")}</span>
+        <span className={styles.label}>{preview[previewIndex % preview.length]}</span>
         <span className={styles.elapsed}>· {t("chat.taskDuration.elapsed")} 25s</span>
       </div>
     </div>

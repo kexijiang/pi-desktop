@@ -27,13 +27,46 @@ async function git(cwd: string, args: string[], maxBuffer = GIT_STATUS_MAX_BUFFE
   return stdout;
 }
 
+const REPO_ROOT_CACHE_TTL_MS = 30_000;
+const REPO_ROOT_CACHE_CAPACITY = 64;
+const repositoryRootCache = new Map<string, { root: string; expiresAt: number }>();
+const repositoryRootInflight = new Map<string, Promise<string | null>>();
+
+export function invalidateRepositoryRootCache(): void {
+  repositoryRootCache.clear();
+  repositoryRootInflight.clear();
+}
+
 async function findRepositoryRoot(cwd: string): Promise<string | null> {
-  try {
-    const repositoryRoot = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
-    return repositoryRoot ? resolveExistingPath(repositoryRoot) : null;
-  } catch {
-    return null;
+  const resolved = resolveExistingPath(cwd);
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const cached = repositoryRootCache.get(key);
+  if (cached && cached.expiresAt > Date.now() && fs.existsSync(path.join(cached.root, ".git"))) {
+    return cached.root;
   }
+  if (cached) repositoryRootCache.delete(key);
+
+  const pending = repositoryRootInflight.get(key);
+  if (pending) return pending;
+
+  const lookup = git(resolved, ["rev-parse", "--show-toplevel"]).then((stdout) => {
+    const repositoryRoot = stdout.trim();
+    const canonical = repositoryRoot ? resolveExistingPath(repositoryRoot) : null;
+    if (canonical && repositoryRootInflight.get(key) === lookup) {
+      repositoryRootCache.delete(key);
+      repositoryRootCache.set(key, { root: canonical, expiresAt: Date.now() + REPO_ROOT_CACHE_TTL_MS });
+      while (repositoryRootCache.size > REPO_ROOT_CACHE_CAPACITY) {
+        repositoryRootCache.delete(repositoryRootCache.keys().next().value!);
+      }
+    }
+    return canonical;
+  }).catch(() => null);
+
+  repositoryRootInflight.set(key, lookup);
+  void lookup.finally(() => {
+    if (repositoryRootInflight.get(key) === lookup) repositoryRootInflight.delete(key);
+  });
+  return lookup;
 }
 
 function resolveExistingPath(candidate: string): string {
@@ -56,14 +89,16 @@ function toGitPath(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }
 
-async function readStatusEntries(repositoryRoot: string): Promise<GitPorcelainEntry[]> {
-  const output = await git(repositoryRoot, [
+function readStatus(repositoryRoot: string, includeBranch = false, pathspecs?: readonly string[]): Promise<string> {
+  return git(repositoryRoot, [
+    ...(pathspecs?.length ? ["--literal-pathspecs"] : []),
     "status",
     "--porcelain=v1",
     "-z",
+    ...(includeBranch ? ["--branch", "--ahead-behind"] : []),
     "--untracked-files=all",
+    ...(pathspecs?.length ? ["--", ...pathspecs] : []),
   ]);
-  return parseGitPorcelainV1(output);
 }
 
 async function readIgnoredPaths(repositoryRoot: string, paths: readonly string[]): Promise<Set<string>> {
@@ -118,21 +153,41 @@ async function readIgnoredPaths(repositoryRoot: string, paths: readonly string[]
 }
 
 async function readVisibleStatusEntries(repositoryRoot: string): Promise<GitPorcelainEntry[]> {
-  const entries = await readStatusEntries(repositoryRoot);
+  const entries = parseGitPorcelainV1(await readStatus(repositoryRoot));
   const ignoredPaths = await readIgnoredPaths(repositoryRoot, entries.map((entry) => entry.path));
   return entries.filter((entry) => !ignoredPaths.has(entry.path));
+}
+
+async function readVisibleStatusEntryForPath(
+  repositoryRoot: string,
+  relativePath: string,
+): Promise<GitPorcelainEntry | undefined> {
+  const entries = parseGitPorcelainV1(await readStatus(repositoryRoot, false, [relativePath]));
+  if (entries.length === 0) return undefined;
+  // A pathspec-scoped status hides the deleted source of a staged `git mv`
+  // rename (`R`), reporting the target as `A`. Fall back only in that case.
+  if (entries.some((candidate) => candidate.indexStatus === "A" || candidate.indexStatus === "R")) {
+    const fullEntries = await readVisibleStatusEntries(repositoryRoot);
+    return fullEntries.find((candidate) => candidate.path === relativePath);
+  }
+  const ignoredPaths = await readIgnoredPaths(repositoryRoot, entries.map((entry) => entry.path));
+  return entries.find((candidate) => candidate.path === relativePath && !ignoredPaths.has(candidate.path));
 }
 
 async function readBranchLabel(repositoryRoot: string): Promise<string | null> {
   try {
     return (await git(repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim() || null;
   } catch {
-    try {
-      const sha = (await git(repositoryRoot, ["rev-parse", "--short", "HEAD"])).trim();
-      return sha ? `HEAD ${sha}` : null;
-    } catch {
-      return null;
-    }
+    return readDetachedLabel(repositoryRoot);
+  }
+}
+
+async function readDetachedLabel(repositoryRoot: string): Promise<string | null> {
+  try {
+    const sha = (await git(repositoryRoot, ["rev-parse", "--short", "HEAD"])).trim();
+    return sha ? `HEAD ${sha}` : null;
+  } catch {
+    return null;
   }
 }
 
@@ -144,11 +199,30 @@ async function readUpstream(repositoryRoot: string): Promise<{ upstream: string 
   } catch { return { upstream: null, ahead: 0, behind: 0 }; }
 }
 
+async function readRepositoryStatus(repositoryRoot: string) {
+  const output = await readStatus(repositoryRoot, true);
+  const divider = output.indexOf("\0");
+  const heading = divider >= 0 ? output.slice(0, divider) : "";
+  const defaultTracking = { upstream: null, ahead: 0, behind: 0 };
+  if (!heading.startsWith("## ")) {
+    const [branch, tracking] = await Promise.all([readBranchLabel(repositoryRoot), readUpstream(repositoryRoot)]);
+    return { branch, tracking, entries: parseGitPorcelainV1(output) };
+  }
+  const entries = parseGitPorcelainV1(output.slice(divider + 1));
+  const label = heading.slice(3).replace(/^(?:No commits yet|Initial commit) on /, "");
+  if (label === "HEAD (no branch)") return { branch: await readDetachedLabel(repositoryRoot), tracking: defaultTracking, entries };
+  const [branch, upstreamStatus] = label.split("...");
+  const [upstream, relation = ""] = upstreamStatus?.split(" [") ?? [];
+  const tracking = upstream && relation !== "gone]"
+    ? { upstream, ahead: Number(/\bahead (\d+)/.exec(relation)?.[1] ?? 0), behind: Number(/\bbehind (\d+)/.exec(relation)?.[1] ?? 0) }
+    : defaultTracking;
+  return { branch, tracking, entries };
+}
+
 async function readTrackedLineStats(
   repositoryRoot: string,
   cwd: string,
-  ignoredPaths: ReadonlySet<string> = new Set(),
-): Promise<{ additions: number; deletions: number; byPath: Map<string, { additions: number; deletions: number }> }> {
+): Promise<Array<{ path?: string; additions: number; deletions: number }>> {
   const relativeCwd = toGitPath(path.relative(repositoryRoot, cwd));
   const pathspec = relativeCwd || ".";
   try {
@@ -161,25 +235,21 @@ async function readTrackedLineStats(
       "--",
       pathspec,
     ]);
-    let additions = 0;
-    let deletions = 0;
-    const byPath = new Map<string, { additions: number; deletions: number }>();
+    const stats: Array<{ path?: string; additions: number; deletions: number }> = [];
     for (const line of output.split(/\r?\n/)) {
       if (!line) continue;
       const [added, deleted, filePath] = line.split("\t", 3);
-      if (filePath && ignoredPaths.has(filePath)) continue;
       const addedCount = Number(added);
       const deletedCount = Number(deleted);
-      if (Number.isInteger(addedCount)) additions += addedCount;
-      if (Number.isInteger(deletedCount)) deletions += deletedCount;
-      if (filePath) byPath.set(filePath, {
+      stats.push({
+        path: filePath,
         additions: Number.isInteger(addedCount) ? addedCount : 0,
         deletions: Number.isInteger(deletedCount) ? deletedCount : 0,
       });
     }
-    return { additions, deletions, byPath };
+    return stats;
   } catch {
-    return { additions: 0, deletions: 0, byPath: new Map() };
+    return [];
   }
 }
 
@@ -197,15 +267,27 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
     };
   }
 
-  const [allEntries, branch, tracking] = await Promise.all([readStatusEntries(repositoryRoot), readBranchLabel(repositoryRoot), readUpstream(repositoryRoot)]);
+  const [status, lineStats] = await Promise.all([
+    readRepositoryStatus(repositoryRoot),
+    readTrackedLineStats(repositoryRoot, resolvedCwd),
+  ]);
+  const { entries: allEntries, branch, tracking } = status;
   const ignoredPaths = await readIgnoredPaths(repositoryRoot, allEntries.map((entry) => entry.path));
   const entries = allEntries.filter((entry) => !ignoredPaths.has(entry.path));
-  const trackedLineStats = await readTrackedLineStats(repositoryRoot, resolvedCwd, ignoredPaths);
+  let additions = 0;
+  let deletions = 0;
+  const trackedByPath = new Map<string, { additions: number; deletions: number }>();
+  for (const change of lineStats) {
+    if (change.path && ignoredPaths.has(change.path)) continue;
+    additions += change.additions;
+    deletions += change.deletions;
+    if (change.path) trackedByPath.set(change.path, change);
+  }
   const files = entries.flatMap((entry): GitFileStatus[] => {
     const filePath = path.resolve(repositoryRoot, entry.path);
     if (!isWithinPath(resolvedCwd, filePath)) return [];
     const classified = classifyGitStatus(entry);
-    const lineStats = trackedLineStats.byPath.get(entry.path);
+    const lineStats = trackedByPath.get(entry.path);
     return [{
       filePath,
       ...classified,
@@ -225,8 +307,8 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
     branch,
     ...tracking,
     files,
-    additions: trackedLineStats.additions,
-    deletions: trackedLineStats.deletions,
+    additions,
+    deletions,
   };
 }
 
@@ -263,7 +345,7 @@ async function createTrackedFilePatch(
     ? [originalPath, relativePath]
     : [relativePath];
   try {
-    const args = ["diff", "--no-color", "--no-ext-diff", `--unified=${contextLines === "all" ? 1_000_000 : contextLines}`];
+    const args = ["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", `--unified=${contextLines === "all" ? 1_000_000 : contextLines}`];
     if (scope === "staged") args.push("--cached");
     else if (scope === "combined") args.push("HEAD");
     args.push("--", ...paths);
@@ -315,8 +397,7 @@ export async function getGitFileDiff(
   const resolvedFilePath = resolveExistingPath(filePath);
   if (!isWithinPath(repositoryRoot, resolvedFilePath)) return { supported: false };
   const relativePath = toGitPath(path.relative(repositoryRoot, resolvedFilePath));
-  const entries = await readVisibleStatusEntries(repositoryRoot);
-  const entry = entries.find((candidate) => candidate.path === relativePath);
+  const entry = await readVisibleStatusEntryForPath(repositoryRoot, relativePath);
   if (!entry) return { supported: false };
 
   const { status } = classifyGitStatus(entry);

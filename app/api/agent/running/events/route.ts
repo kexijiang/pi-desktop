@@ -1,4 +1,4 @@
-import { getRunningRpcSessionStatuses, subscribeRunningSessions } from "@/lib/rpc-manager";
+import { getRunningRpcSessionStatuses, subscribeRunningSessions } from "@/lib/rpc-running-status";
 import { createRunningSessionsPayload } from "@/lib/task-status";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +50,7 @@ export async function GET(req: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
     },
   });

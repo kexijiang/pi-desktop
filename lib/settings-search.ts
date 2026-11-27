@@ -1,6 +1,6 @@
 import { filterFileEntries } from "./file-fuzzy.ts";
 
-export type SettingsKey = "laboratory" | "desktopExtensions" | "general" | "data" | "network" | "conversation" | "prompts" | "shortcuts" | "speech" | "automations" | "models" | "modelRuntime" | "shell" | "tools" | "extensions" | "skills" | "plugins" | "appearance" | "companion" | "remote" | "usage" | "archived" | "trash";
+export type SettingsKey = "browser" | "laboratory" | "desktopExtensions" | "general" | "data" | "network" | "conversation" | "prompts" | "shortcuts" | "speech" | "automations" | "models" | "modelRuntime" | "shell" | "tools" | "extensions" | "skills" | "plugins" | "appearance" | "companion" | "usage" | "archived" | "trash";
 
 export interface SettingsPage {
   key: SettingsKey;
@@ -11,40 +11,42 @@ export interface SettingsPage {
 
 export const SETTINGS_GROUPS: readonly { labelKey: string; pages: readonly SettingsPage[] }[] = [
   { labelKey: "settings.group.experience", pages: [
+    { key: "general", labelKey: "settings.page.app", descriptionKey: "settings.page.appDescription", icon: "layout" },
     { key: "appearance", labelKey: "settings.page.appearance", descriptionKey: "settings.appearanceDescription", icon: "skin" },
     { key: "conversation", labelKey: "settings.conversation", descriptionKey: "settings.conversationDescription", icon: "message" },
+    { key: "prompts", labelKey: "settings.page.prompts", descriptionKey: "settings.page.promptsDescription", icon: "solution" },
     { key: "shortcuts", labelKey: "settings.shortcuts", descriptionKey: "settings.shortcutsDescription", icon: "setting" },
-    { key: "speech", labelKey: "speech.title", descriptionKey: "speech.description", icon: "microphone" },
-    { key: "companion", labelKey: "companion.settingsTitle", descriptionKey: "settings.companionDescription", icon: "robot" },
   ] },
   { labelKey: "settings.group.modelWorkflow", pages: [
     { key: "models", labelKey: "settings.page.models", descriptionKey: "settings.modelsDescription", icon: "api" },
-    { key: "automations", labelKey: "automations.title", descriptionKey: "automations.description", icon: "calendar" },
     { key: "shell", labelKey: "shell.title", descriptionKey: "shell.description", icon: "code" },
+    { key: "automations", labelKey: "automations.title", descriptionKey: "automations.description", icon: "calendar" },
+    { key: "speech", labelKey: "speech.title", descriptionKey: "speech.description", icon: "microphone" },
   ] },
   { labelKey: "settings.group.capabilities", pages: [
     { key: "tools", labelKey: "projectTools.title", descriptionKey: "projectTools.description", icon: "build" },
     { key: "extensions", labelKey: "settings.extensions", descriptionKey: "settings.manageExtensionsDescription", icon: "package" },
-    { key: "desktopExtensions", labelKey: "desktopExtensions.title", descriptionKey: "desktopExtensions.description", icon: "robot" },
     { key: "plugins", labelKey: "common.plugins", descriptionKey: "settings.pluginsDescription", icon: "package" },
     { key: "skills", labelKey: "common.skills", descriptionKey: "settings.skillsDescription", icon: "solution" },
+    { key: "desktopExtensions", labelKey: "desktopExtensions.title", descriptionKey: "desktopExtensions.description", icon: "robot" },
   ] },
   { labelKey: "settings.group.connections", pages: [
+    { key: "browser", labelKey: "browserPreferences.title", descriptionKey: "browserPreferences.description", icon: "earth" },
     { key: "network", labelKey: "networkProxy.title", descriptionKey: "networkProxy.description", icon: "link" },
-    { key: "remote", labelKey: "remote.title", descriptionKey: "remote.description", icon: "external-link" },
+    { key: "companion", labelKey: "companion.settingsTitle", descriptionKey: "settings.companionDescription", icon: "robot" },
   ] },
   { labelKey: "settings.group.appData", pages: [
-    { key: "general", labelKey: "settings.page.app", descriptionKey: "settings.page.appDescription", icon: "layout" },
     { key: "laboratory", labelKey: "laboratory.title", descriptionKey: "laboratory.description", icon: "rocket" },
     { key: "data", labelKey: "settings.page.data", descriptionKey: "settings.page.dataDescription", icon: "database" },
     { key: "usage", labelKey: "usage.title", descriptionKey: "usage.description", icon: "chart-no-axes-column" },
-    { key: "archived", labelKey: "archive.title", descriptionKey: "archive.description", icon: "archive" },
-    { key: "trash", labelKey: "trash.title", descriptionKey: "trash.description", icon: "archive" },
+    { key: "archived", labelKey: "settings.page.history", descriptionKey: "settings.page.historyDescription", icon: "archive" },
   ] },
 ];
 
 export function normalizeSettingsKey(key: SettingsKey): SettingsKey {
-  return key === "prompts" || key === "modelRuntime" ? "conversation" : key;
+  if (key === "modelRuntime") return "conversation";
+  if (key === "trash") return "archived";
+  return key;
 }
 
 export function resolveSettingsPage(key: SettingsKey): SettingsPage {
@@ -65,7 +67,9 @@ export interface SettingsSearchItem {
 export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   { id: "laboratory", section: "laboratory", labelKey: "laboratory.title", descriptionKey: "laboratory.description", keywords: ["labs", "experimental", "实验室", "实验"] },
   { id: "laboratory.planGoal", section: "laboratory", labelKey: "laboratory.planGoal", descriptionKey: "laboratory.planGoalDescription", keywords: ["plan", "goal", "mode", "计划", "目标", "模式", "实验室"] },
-  { id: "desktopExtensions", section: "desktopExtensions", labelKey: "desktopExtensions.title", descriptionKey: "desktopExtensions.description", keywords: ["dsh-pet", "desktop", "桌宠", "桌面扩展"] },
+  { id: "laboratory.sideChat", section: "laboratory", labelKey: "laboratory.sideChat", descriptionKey: "laboratory.sideChatDescription", keywords: ["side", "side chat", "parallel", "follow up", "侧边", "侧边对话", "并行", "追问", "实验室"] },
+  { id: "laboratory.subagents", section: "laboratory", labelKey: "subagent.title", descriptionKey: "subagent.description", keywords: ["subagent", "agent", "parallel", "profile", "template", "reviewer", "explore", "子代理", "委派", "并行", "后台", "自定义代理", "模板"] },
+  { id: "desktopExtensions", section: "desktopExtensions", labelKey: "desktopExtensions.title", descriptionKey: "desktopExtensions.description", keywords: ["dsh-pet", "dsh-meme", "desktop", "桌宠", "表情包", "桌面扩展"] },
   { id: "shell", section: "shell", labelKey: "shell.title", descriptionKey: "shell.description", keywords: ["terminal", "shell", "PowerShell", "终端", "命令"] },
   { id: "shell.history", section: "shell", labelKey: "shell.history", descriptionKey: "shell.nativeHistoryHint", keywords: ["history", "PowerShell", "PSReadLine", "历史", "提示", "补全"] },
   { id: "shell.defaultShell", section: "shell", labelKey: "shell.defaultShell", descriptionKey: "shell.nativeProfileHint", keywords: ["bash", "powershell", "cmd", "wsl", "zsh", "shell", "终端", "切换", "默认"] },
@@ -75,17 +79,21 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   { id: "general.updateSource", section: "general", requiresDesktop: true, labelKey: "settings.updateSource", descriptionKey: "settings.updateSourceDescription", keywords: ["update", "source", "github", "internal", "更新", "来源", "内源", "渠道"] },
   { id: "general.updateSchedule", section: "general", requiresDesktop: true, labelKey: "settings.updateSchedule", descriptionKey: "settings.updateScheduleDescription", keywords: ["update", "schedule", "silent", "更新", "静默", "安装", "定时"] },
   { id: "general", section: "general", labelKey: "settings.general", descriptionKey: "settings.generalDescription", keywords: ["preferences", "偏好"] },
-  { id: "data", section: "data", labelKey: "settings.page.data", descriptionKey: "settings.page.dataDescription", keywords: ["backup", "storage", "data", "备份", "存储", "数据"] },
-  { id: "general.portability", section: "data", labelKey: "settings.portability.title", descriptionKey: "settings.portability.description", keywords: ["import", "export", "backup", "导入", "导出", "迁移"] },
+  { id: "browser.downloads", section: "browser", requiresDesktop: true, labelKey: "browserPreferences.directory", descriptionKey: "browserPreferences.description", keywords: ["browser", "download", "zoom", "浏览器", "下载", "目录", "缩放"] },
+  { id: "data", section: "data", requiresDesktop: true, labelKey: "settings.page.data", descriptionKey: "settings.page.dataDescription", keywords: ["storage", "data", "logs", "存储", "数据", "日志"] },
   { id: "conversation.runningSendMode", section: "conversation", labelKey: "settings.runningSendMode", descriptionKey: "settings.runningSendModeHelp", keywords: ["steer", "queue", "引导", "排队"] },
   { id: "general.onboarding", section: "general", labelKey: "settings.firstRunGuideTitle", descriptionKey: "settings.firstRunGuideDescription", keywords: ["welcome", "guide", "新手", "引导"] },
   { id: "network", section: "network", labelKey: "networkProxy.title", descriptionKey: "networkProxy.description", keywords: ["http", "https", "network", "代理", "网络"] },
   { id: "general.proxy", section: "network", labelKey: "networkProxy.title", descriptionKey: "networkProxy.description", keywords: ["http", "https", "network", "代理", "网络"] },
-  { id: "general.runningStatusLabel", section: "conversation", labelKey: "settings.runningStatusLabel", descriptionKey: "settings.runningStatusLabelHint", keywords: ["thinking", "凝思求解中", "文案"] },
+  { id: "general.runningStatusLabel", section: "conversation", labelKey: "settings.runningStatusLabel", descriptionKey: "settings.runningStatusLabelHint", keywords: ["thinking", "status", "random", "generate", "style", "prompt", "50", "凝思求解中", "文案", "随机", "生成", "风格", "提示词"] },
   { id: "general.modelRetry", section: "conversation", labelKey: "modelRetry.title", descriptionKey: "modelRetry.description", keywords: ["retry", "timeout", "backoff", "retries", "重试", "超时", "退避", "卡住"] },
   { id: "models.compaction", section: "conversation", labelKey: "modelCompaction.title", descriptionKey: "modelCompaction.description", keywords: ["context", "compaction", "compression", "threshold", "reserve tokens", "上下文", "压缩", "阈值", "预留"] },
   { id: "general.autoLaunch", section: "general", requiresDesktop: true, labelKey: "settings.autoLaunch", descriptionKey: "settings.autoLaunchDescription", keywords: ["startup", "boot", "login", "开机", "启动"] },
   { id: "general.runtimeLog", section: "data", requiresDesktop: true, labelKey: "settings.runtimeLog.title", descriptionKey: "settings.runtimeLog.description", keywords: ["log", "logs", "diagnostics", "path", "日志", "诊断", "路径", "文件夹"] },
+  { id: "data.websiteAccounts", section: "data", requiresDesktop: true, labelKey: "settings.websiteAccounts", descriptionKey: "settings.websiteAccountsDescription", keywords: ["browser", "login", "password", "accounts", "网页登录", "自动登录", "账户", "密码"] },
+  { id: "data.credentialVault", section: "data", requiresDesktop: true, labelKey: "settings.credentialVault", descriptionKey: "settings.credentialVaultDescription", keywords: ["credential", "vault", "backup", "import", "export", "凭据库", "备份", "导入", "导出", "主密码"] },
+  { id: "data.credentialWhitelist", section: "data", requiresDesktop: true, labelKey: "settings.credentialWhitelist", descriptionKey: "settings.credentialWhitelistDescription", keywords: ["http", "allowlist", "intranet", "白名单", "内网"] },
+  { id: "data.credentialSso", section: "data", requiresDesktop: true, labelKey: "settings.credentialSso", descriptionKey: "settings.credentialSsoDescription", keywords: ["sso", "oauth", "cookie", "回跳", "统一登录"] },
   { id: "general.globalShortcut", section: "shortcuts", requiresDesktop: true, labelKey: "settings.globalShortcut", descriptionKey: "settings.globalShortcutDescription", keywords: ["hotkey", "keyboard", "快捷键"] },
 
   { id: "conversation", section: "conversation", labelKey: "settings.conversation", descriptionKey: "settings.conversationDescription", keywords: ["chat", "session", "聊天", "会话"] },
@@ -95,9 +103,17 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   { id: "conversation.newlineShortcut", section: "shortcuts", labelKey: "settings.newlineShortcut", descriptionKey: "settings.newlineShortcutDescription", keywords: ["newline", "shift enter", "换行", "快捷键"] },
   { id: "conversation.autoScroll", section: "conversation", labelKey: "settings.liveOutputAutoScroll", descriptionKey: "settings.liveOutputAutoScrollDescription", keywords: ["scroll", "follow", "滚动", "跟随"] },
   { id: "conversation.notifications", section: "conversation", labelKey: "taskControls.notifications", descriptionKey: "taskControls.notificationsDescription", keywords: ["notify", "notification", "通知", "完成"] },
-  { id: "conversation.promptOptimizer", section: "conversation", labelKey: "settings.promptOptimizerTitle", descriptionKey: "settings.promptOptimizerDescription", keywords: ["prompt", "rewrite", "提示词", "优化"] },
-  { id: "conversation.titleModel", section: "conversation", labelKey: "settings.sessionTitleModelTitle", descriptionKey: "settings.sessionTitleModelDescription", keywords: ["title", "model", "标题", "模型"] },
-  { id: "conversation.systemPrompt", section: "conversation", labelKey: "system.prompt", descriptionKey: "system.description", keywords: ["system prompt", "instruction", "系统提示词", "指令"] },
+  { id: "prompts", section: "prompts", labelKey: "settings.page.prompts", descriptionKey: "settings.page.promptsDescription", keywords: ["prompt", "system", "title", "optimizer", "instructions", "提示词", "指令", "标题"] },
+  { id: "conversation.promptOptimizer", section: "prompts", labelKey: "settings.promptOptimizerTitle", descriptionKey: "settings.promptOptimizerDescription", keywords: ["prompt", "rewrite", "提示词", "优化"] },
+  { id: "conversation.titleModel", section: "prompts", labelKey: "settings.sessionTitleModelTitle", descriptionKey: "settings.sessionTitleModelDescription", keywords: ["title", "model", "标题", "模型"] },
+  { id: "conversation.systemPrompt", section: "prompts", labelKey: "system.prompt", descriptionKey: "system.description", keywords: ["system prompt", "instruction", "系统提示词", "指令"] },
+  {
+    id: "conversation.runtimePrompt",
+    section: "prompts",
+    labelKey: "runtimePrompt.title",
+    descriptionKey: "runtimePrompt.description",
+    keywords: ["extension", "prompt", "cli", "merge", "compact", "compaction", "guidance", "rules", "扩展", "说明", "合并", "压缩", "对齐", "冲突", "提示词"],
+  },
 
   { id: "shortcuts", section: "shortcuts", labelKey: "settings.shortcuts", descriptionKey: "settings.shortcutsDescription", keywords: ["keyboard", "hotkey", "键盘", "快捷键"] },
   { id: "shortcuts.palette", section: "shortcuts", labelKey: "shortcuts.commandPalette", descriptionKey: "shortcuts.commandPaletteDescription", keywords: ["ctrl k", "command", "命令面板"] },
@@ -137,10 +153,9 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   { id: "companion.idle", section: "companion", labelKey: "companion.idleTricks", descriptionKey: "companion.idleTricksDescription", keywords: ["hover", "idle", "悬浮", "挂机", "闲聊"] },
   { id: "companion.model", section: "companion", labelKey: "companion.model.title", descriptionKey: "companion.model.description", keywords: ["interaction", "model", "互动", "模型"] },
 
-  { id: "remote", section: "remote", labelKey: "remote.title", descriptionKey: "remote.description", keywords: ["http", "sse", "token", "远程", "令牌"] },
   { id: "usage", section: "usage", labelKey: "usage.title", descriptionKey: "usage.description", keywords: ["token", "statistics", "usage", "monthly", "daily", "dashboard", "用量", "统计", "月度", "每日", "看板"] },
-  { id: "trash", section: "trash", labelKey: "trash.title", descriptionKey: "trash.description", keywords: ["deleted", "restore", "回收站", "删除", "恢复"] },
-  { id: "archived", section: "archived", labelKey: "archive.title", descriptionKey: "archive.description", keywords: ["history", "restore", "archive", "归档", "恢复"] },
+  { id: "trash", section: "archived", labelKey: "trash.title", descriptionKey: "trash.description", keywords: ["deleted", "restore", "回收站", "删除", "恢复"] },
+  { id: "archived", section: "archived", labelKey: "settings.page.history", descriptionKey: "settings.page.historyDescription", keywords: ["history", "restore", "archive", "归档", "恢复"] },
 ];
 
 export function filterSettingsSearchItems(

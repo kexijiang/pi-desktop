@@ -24,9 +24,11 @@ export async function GET(
     const context = buildSessionContext(sm.getEntries() as never, leafId, {
       deferThinking,
       deferToolResultImages,
+      includeCompactedMessages: url.searchParams.get("view") === "transcript",
     });
 
-    return NextResponse.json({ context, persistedPromptIds: [...persistedMessagePromptIds(sm.getEntries()), ...new SessionControlStore().completedSlashPromptIds(id)] });
+    const slashReceipts = await new SessionControlStore().queryCompletedSlashPromptIds(id);
+    return NextResponse.json({ context, persistedPromptIds: [...persistedMessagePromptIds(sm.getEntries()), ...slashReceipts] });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

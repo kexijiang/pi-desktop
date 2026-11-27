@@ -3,7 +3,7 @@
 import { useId, useRef } from "react";
 import { useBackground } from "@/hooks/useBackground";
 import { useI18n } from "@/hooks/useI18n";
-import { getBackgroundPreset, SUPPORTED_BACKGROUND_MIME_TYPES } from "@/lib/backgrounds";
+import { getBackgroundMotionKind, getBackgroundPreset, SUPPORTED_BACKGROUND_MIME_TYPES, TIDE_PERFORMANCE_BACKGROUND_ID } from "@/lib/backgrounds";
 import type { BackgroundStorageErrorCode } from "@/lib/background-storage";
 import styles from "./BackgroundSettings.module.css";
 
@@ -46,10 +46,15 @@ export function BackgroundSettings({ compact = false, className }: BackgroundSet
     setSidebarOverlay,
     setFilePanelOverlay,
     setBlur,
+    setMotionEnabled,
+    setLive2dEnabled,
+    setAgentReactiveEnabled,
+    setPerformanceEnabled,
     reset,
   } = useBackground();
 
   const selectedPreset = getBackgroundPreset(preference.presetId);
+  const motion = getBackgroundMotionKind(selectedPreset?.id);
   const previewBackground = selectedPreset
     ? selectedPreset.artworkStatus === "available"
       ? `url("${selectedPreset.asset}"), ${selectedPreset.fallback}`
@@ -78,6 +83,57 @@ export function BackgroundSettings({ compact = false, className }: BackgroundSet
       </div>
 
       <div className={styles.preview} aria-hidden="true" style={{ backgroundImage: previewBackground }} />
+
+      {motion && (
+        <label className={styles.motionToggle}>
+          <input
+            type="checkbox"
+            checked={preference.motionEnabled !== false}
+            disabled={!hydrated || busy}
+            onChange={(event) => setMotionEnabled(event.currentTarget.checked)}
+          />
+          {t(motion === "flagship"
+            ? "background.flagshipMotion"
+            : motion === "character"
+              ? "background.characterMotion"
+              : "background.motion")}
+        </label>
+      )}
+
+      {motion === "flagship" && (
+        <>
+          <label className={styles.motionToggle}>
+            <input
+              type="checkbox"
+              checked={preference.agentReactiveEnabled !== false}
+              disabled={!hydrated || busy || preference.motionEnabled === false}
+              onChange={(event) => setAgentReactiveEnabled(event.currentTarget.checked)}
+            />
+            {t("background.agentReactive")}
+          </label>
+          <label className={styles.motionToggle}>
+            <input
+              type="checkbox"
+              checked={preference.performanceEnabled !== false}
+              disabled={!hydrated || busy || preference.motionEnabled === false}
+              onChange={(event) => setPerformanceEnabled(event.currentTarget.checked)}
+            />
+            {t("background.flagshipPerformance")}
+          </label>
+        </>
+      )}
+
+      {selectedPreset?.id === TIDE_PERFORMANCE_BACKGROUND_ID && (
+        <label className={styles.motionToggle}>
+          <input
+            type="checkbox"
+            checked={preference.live2dEnabled === true}
+            disabled={!hydrated || busy || preference.motionEnabled === false}
+            onChange={(event) => setLive2dEnabled(event.currentTarget.checked)}
+          />
+          {t("background.live2dExperimental")}
+        </label>
+      )}
 
       <div className={styles.field}>
         <span id={`${titleId}-source`} className={styles.fieldHeader}>{t("background.source")}</span>

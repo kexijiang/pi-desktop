@@ -2,9 +2,9 @@
 
 > Deterministically generated from the committed npm lockfile. Do not edit by hand; run `npm run licenses:generate`.
 
-Lockfile SHA-256: `6db2410cb392b368411bea85df8e46f7ea207d697166a0d7493f40853e56fc08`
+Lockfile SHA-256: `6cbf5a938092b7dcf9f9ce7751abf15bfaf34e4f5feb86120e6709f4cbc42053`
 
-Unique locked packages: **1271**. Runtime packages: **771**. Build/development-only packages: **500**.
+Unique locked packages: **1273**. Runtime packages: **773**. Build/development-only packages: **500**.
 
 This source inventory records lockfile package-declared license labels plus exact version-scoped reviewed declarations before reviewed postinstall replacements. The packaged application additionally contains a build-derived SBOM, the final package-copy inventory, every published LICENSE/LICENCE/COPYING/NOTICE file, and version-scoped reviewed upstream fallbacks when a compiled npm package omits its required license text. A runtime package marked `UNDECLARED` fails generation.
 
@@ -14,7 +14,7 @@ Every locked package declares a license.
 
 | Package | Version | Declared license | Optional |
 | --- | --- | --- | --- |
-| `7z-bin` | `26.4.0` | MIT | No |
+| `7z-bin` | `26.6.0` | MIT | No |
 | `@antfu/install-pkg` | `1.1.0` | MIT | No |
 | `@anthropic-ai/sdk` | `0.129.0` | MIT | No |
 | `@aws-sdk/client-bedrock-runtime` | `3.1127.0` | Apache-2.0 | No |
@@ -75,19 +75,19 @@ Every locked package declares a license.
 | `@codemirror/state` | `6.7.6` | MIT | No |
 | `@codemirror/streamparser` | `6.0.0` | MIT | No |
 | `@codemirror/view` | `6.43.15` | MIT | No |
-| `@earendil-works/pi-agent-core` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-ai` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-codemode` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-coding-agent` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-mcp` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-schema` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-telemetry` | `1.5.0` | MIT | No |
-| `@earendil-works/pi-tui` | `1.5.0` | MIT | No |
+| `@earendil-works/pi-agent-core` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-ai` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-codemode` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-coding-agent` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-mcp` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-schema` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-telemetry` | `1.5.2` | MIT | No |
+| `@earendil-works/pi-tui` | `1.5.2` | MIT | No |
 | `@emnapi/runtime` | `1.11.3` | MIT | Yes |
 | `@google/genai` | `2.21.0` | Apache-2.0 | No |
 | `@grpc/grpc-js` | `1.14.7` | Apache-2.0 | No |
 | `@grpc/proto-loader` | `0.8.1` | Apache-2.0 | No |
-| `@hono/node-server` | `2.1.5` | MIT | No |
+| `@hono/node-server` | `2.1.8` | MIT | No |
 | `@iconify/types` | `2.0.0` | MIT | No |
 | `@iconify/utils` | `3.1.1` | MIT | No |
 | `@img/colour` | `1.1.0` | MIT | No |
@@ -119,28 +119,28 @@ Every locked package declares a license.
 | `@img/sharp-win32-x64` | `0.35.5` | Apache-2.0 AND LGPL-3.0-or-later | Yes |
 | `@isaacs/cliui` | `8.0.2` | ISC | No |
 | `@isaacs/fs-minipass` | `4.0.1` | ISC | No |
-| `@isaacs/nonrecursive-glob-match` | `1.0.3` | BlueOak-1.0.0 | No |
+| `@isaacs/nonrecursive-glob-match` | `1.1.0` | BlueOak-1.0.0 | No |
 | `@js-sdsl/ordered-map` | `4.4.2` | MIT | No |
-| `@koromix/koffi-android-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-android-x64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-darwin-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-darwin-x64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-freebsd-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-freebsd-ia32` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-freebsd-x64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-arm` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-ia32` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-loong64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-ppc64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-riscv64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-linux-x64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-openbsd-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-openbsd-ia32` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-openbsd-x64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-win32-arm64` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-win32-ia32` | `3.3.7` | MIT | Yes |
-| `@koromix/koffi-win32-x64` | `3.3.7` | MIT | Yes |
+| `@koromix/koffi-android-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-android-x64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-darwin-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-darwin-x64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-freebsd-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-freebsd-ia32` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-freebsd-x64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-arm` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-ia32` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-loong64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-ppc64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-riscv64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-linux-x64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-openbsd-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-openbsd-ia32` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-openbsd-x64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-win32-arm64` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-win32-ia32` | `3.3.8` | MIT | Yes |
+| `@koromix/koffi-win32-x64` | `3.3.8` | MIT | Yes |
 | `@lezer/common` | `1.5.2` | MIT | No |
 | `@lezer/cpp` | `1.1.6` | MIT | No |
 | `@lezer/css` | `1.3.6` | MIT | No |
@@ -158,21 +158,21 @@ Every locked package declares a license.
 | `@lezer/sass` | `1.1.0` | MIT | No |
 | `@lezer/xml` | `1.0.6` | MIT | No |
 | `@lezer/yaml` | `1.0.4` | MIT | No |
-| `@lobehub/icons` | `6.15.0` | MIT | No |
+| `@lobehub/icons` | `6.15.2` | MIT | No |
 | `@marijn/find-cluster-break` | `1.0.4` | MIT | No |
 | `@mermaid-js/parser` | `2.0.1` | MIT | No |
-| `@microsoft/winappcli` | `0.7.1` | MIT | Yes |
+| `@microsoft/winappcli` | `0.8.0` | MIT | Yes |
 | `@mixmark-io/domino` | `2.2.0` | BSD-2-Clause | No |
 | `@modelcontextprotocol/sdk` | `1.32.2` | MIT | No |
-| `@next/env` | `16.4.5` | MIT | No |
-| `@next/swc-darwin-arm64` | `16.4.5` | MIT | Yes |
-| `@next/swc-darwin-x64` | `16.4.5` | MIT | Yes |
-| `@next/swc-linux-arm64-gnu` | `16.4.5` | MIT | Yes |
-| `@next/swc-linux-arm64-musl` | `16.4.5` | MIT | Yes |
-| `@next/swc-linux-x64-gnu` | `16.4.5` | MIT | Yes |
-| `@next/swc-linux-x64-musl` | `16.4.5` | MIT | Yes |
-| `@next/swc-win32-arm64-msvc` | `16.4.5` | MIT | Yes |
-| `@next/swc-win32-x64-msvc` | `16.4.5` | MIT | Yes |
+| `@next/env` | `16.4.6` | MIT | No |
+| `@next/swc-darwin-arm64` | `16.4.6` | MIT | Yes |
+| `@next/swc-darwin-x64` | `16.4.6` | MIT | Yes |
+| `@next/swc-linux-arm64-gnu` | `16.4.6` | MIT | Yes |
+| `@next/swc-linux-arm64-musl` | `16.4.6` | MIT | Yes |
+| `@next/swc-linux-x64-gnu` | `16.4.6` | MIT | Yes |
+| `@next/swc-linux-x64-musl` | `16.4.6` | MIT | Yes |
+| `@next/swc-win32-arm64-msvc` | `16.4.6` | MIT | Yes |
+| `@next/swc-win32-x64-msvc` | `16.4.6` | MIT | Yes |
 | `@oozcitak/dom` | `1.15.10` | MIT | No |
 | `@oozcitak/infra` | `1.0.8` | MIT | No |
 | `@oozcitak/url` | `1.0.4` | MIT | No |
@@ -292,6 +292,7 @@ Every locked package declares a license.
 | `bowser` | `2.14.1` | MIT | No |
 | `brace-expansion` | `2.1.7` | MIT | No |
 | `brace-expansion` | `5.0.12` | MIT | No |
+| `brace-expansion` | `5.0.13` | MIT | No |
 | `buffer` | `6.0.3` | MIT | No |
 | `buffer-crc32` | `1.0.0` | MIT | No |
 | `buffer-equal-constant-time` | `1.0.1` | BSD-3-Clause | No |
@@ -446,7 +447,6 @@ Every locked package declares a license.
 | `google-protobuf` | `3.21.4` | (BSD-3-Clause AND Apache-2.0) | No |
 | `gopd` | `1.2.0` | MIT | No |
 | `graceful-fs` | `4.2.11` | ISC | No |
-| `grok-mermaid` | `0.2.3` | Apache-2.0 | No |
 | `hachure-fill` | `0.5.2` | MIT | No |
 | `has-symbols` | `1.1.0` | MIT | No |
 | `has-tostringtag` | `1.0.2` | MIT | No |
@@ -468,7 +468,7 @@ Every locked package declares a license.
 | `hastscript` | `9.0.1` | MIT | No |
 | `highlight.js` | `10.7.3` | BSD-3-Clause | No |
 | `highlightjs-vue` | `1.0.0` | CC0-1.0 | No |
-| `hono` | `4.13.13` | MIT | No |
+| `hono` | `4.13.18` | MIT | No |
 | `hosted-git-info` | `9.0.3` | ISC | No |
 | `html-url-attributes` | `3.0.1` | MIT | No |
 | `html-void-elements` | `3.0.0` | MIT | No |
@@ -514,7 +514,7 @@ Every locked package declares a license.
 | `jws` | `4.0.1` | MIT | No |
 | `katex` | `0.19.1` | MIT | No |
 | `khroma` | `2.1.0` | MIT | No |
-| `koffi` | `3.3.7` | MIT | No |
+| `koffi` | `3.3.8` | MIT | No |
 | `layout-base` | `1.0.2` | MIT | No |
 | `layout-base` | `2.0.1` | MIT | No |
 | `lazy-val` | `1.0.5` | MIT | No |
@@ -528,6 +528,7 @@ Every locked package declares a license.
 | `long` | `5.3.2` | Apache-2.0 | No |
 | `longest-streak` | `3.1.0` | MIT | No |
 | `lop` | `0.4.2` | BSD-2-Clause | No |
+| `lovely-mermaid` | `0.3.3` | Apache-2.0 | No |
 | `lowlight` | `1.20.0` | MIT | No |
 | `lru-cache` | `10.4.3` | ISC | No |
 | `lru-cache` | `11.4.0` | BlueOak-1.0.0 | No |
@@ -554,7 +555,7 @@ Every locked package declares a license.
 | `mdast-util-to-markdown` | `2.1.2` | MIT | No |
 | `mdast-util-to-string` | `4.0.0` | MIT | No |
 | `media-typer` | `1.1.1` | MIT | No |
-| `mediabunny` | `1.65.2` | MPL-2.0 | No |
+| `mediabunny` | `1.66.0` | MPL-2.0 | No |
 | `merge-descriptors` | `2.0.0` | MIT | No |
 | `mermaid` | `12.3.0` | MIT | No |
 | `micromark` | `4.0.2` | MIT | No |
@@ -601,7 +602,7 @@ Every locked package declares a license.
 | `nan` | `2.28.0` | MIT | Yes |
 | `nanoid` | `3.3.18` | MIT | No |
 | `negotiator` | `1.1.0` | MIT | No |
-| `next` | `16.4.5` | MIT | No |
+| `next` | `16.4.6` | MIT | No |
 | `node-addon-api` | `7.1.1` | MIT | No |
 | `node-domexception` | `1.0.0` | MIT | No |
 | `node-fetch` | `3.3.2` | MIT | No |
@@ -631,12 +632,12 @@ Every locked package declares a license.
 | `picocolors` | `1.1.1` | ISC | No |
 | `pkce-challenge` | `5.0.1` | MIT | No |
 | `pkg-types` | `1.3.1` | MIT | No |
-| `playwright-core` | `1.65.0` | Apache-2.0 | No |
+| `playwright-core` | `1.65.1` | Apache-2.0 | No |
 | `points-on-curve` | `0.2.0` | MIT | No |
 | `points-on-path` | `0.2.1` | MIT | No |
 | `polished` | `4.3.1` | MIT | No |
 | `portfinder` | `1.0.38` | MIT | No |
-| `postcss` | `8.5.32` | MIT | No |
+| `postcss` | `8.5.33` | MIT | No |
 | `prismjs` | `1.30.0` | MIT | No |
 | `process` | `0.11.10` | MIT | No |
 | `process-nextick-args` | `2.0.1` | MIT | No |
@@ -683,6 +684,7 @@ Every locked package declares a license.
 | `scheduler` | `0.28.0` | MIT | No |
 | `semver` | `7.7.4` | ISC | No |
 | `semver` | `7.8.5` | ISC | No |
+| `semver` | `7.8.6` | ISC | No |
 | `send` | `1.2.1` | MIT | No |
 | `serve-static` | `2.2.1` | MIT | No |
 | `setimmediate` | `1.0.5` | MIT | No |
@@ -721,7 +723,7 @@ Every locked package declares a license.
 | `style-to-object` | `1.0.14` | MIT | No |
 | `styled-jsx` | `5.1.6` | MIT | No |
 | `stylis` | `4.4.0` | MIT | No |
-| `tar` | `7.5.22` | BlueOak-1.0.0 | No |
+| `tar` | `7.5.23` | BlueOak-1.0.0 | No |
 | `tar-stream` | `3.2.1` | MIT | No |
 | `teen_process` | `2.3.3` | Apache-2.0 | No |
 | `teex` | `1.0.1` | MIT | No |
@@ -740,7 +742,7 @@ Every locked package declares a license.
 | `tweetnacl` | `0.14.5` | Unlicense | No |
 | `type-is` | `2.1.0` | MIT | No |
 | `typebox` | `1.3.27` | MIT | No |
-| `typebox` | `1.4.5` | MIT | No |
+| `typebox` | `1.4.7` | MIT | No |
 | `typescript` | `6.0.2` | Apache-2.0 | No |
 | `ufo` | `1.6.4` | MIT | No |
 | `underscore` | `1.13.8` | MIT | No |
@@ -770,7 +772,7 @@ Every locked package declares a license.
 | `wrap-ansi` | `8.1.0` | MIT | No |
 | `wrap-ansi-cjs` | `7.0.0` | MIT | No |
 | `wrappy` | `1.0.2` | ISC | No |
-| `ws` | `8.22.1` | MIT | No |
+| `ws` | `8.23.0` | MIT | No |
 | `xmlbuilder` | `10.1.1` | MIT | No |
 | `xmlbuilder2` | `3.1.1` | MIT | No |
 | `xmldom` | `0.9.12` | MIT | No |
@@ -818,7 +820,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `@dimforge/rapier3d-compat` | `0.12.0` | Apache-2.0 | No |
 | `@electron-internal/extract-zip` | `1.0.5` | BSD-2-Clause | No |
 | `@electron/asar` | `3.4.1` | MIT | No |
-| `@electron/asar` | `4.3.1` | MIT | No |
+| `@electron/asar` | `4.3.2` | MIT | No |
 | `@electron/fuses` | `1.8.0` | MIT | No |
 | `@electron/get` | `3.1.0` | MIT | No |
 | `@electron/get` | `5.1.0` | MIT | No |
@@ -832,7 +834,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `@emnapi/wasi-threads` | `1.2.3` | MIT | Yes |
 | `@eslint-community/eslint-utils` | `4.9.1` | MIT | No |
 | `@eslint-community/regexpp` | `4.12.2` | MIT | No |
-| `@eslint/config-array` | `0.23.5` | Apache-2.0 | No |
+| `@eslint/config-array` | `0.23.6` | Apache-2.0 | No |
 | `@eslint/config-helpers` | `0.7.0` | Apache-2.0 | No |
 | `@eslint/core` | `1.2.1` | Apache-2.0 | No |
 | `@eslint/object-schema` | `3.0.5` | Apache-2.0 | No |
@@ -853,7 +855,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `@malept/flatpak-bundler` | `0.4.0` | MIT | No |
 | `@napi-rs/wasm-runtime` | `0.2.12` | MIT | Yes |
 | `@napi-rs/wasm-runtime` | `1.2.2` | MIT | Yes |
-| `@next/eslint-plugin-next` | `16.4.5` | MIT | No |
+| `@next/eslint-plugin-next` | `16.4.6` | MIT | No |
 | `@noble/hashes` | `1.4.0` | MIT | No |
 | `@noble/hashes` | `1.8.0` | MIT | No |
 | `@nodelib/fs.scandir` | `2.1.5` | MIT | No |
@@ -1013,7 +1015,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `dotenv-expand` | `11.0.7` | BSD-2-Clause | No |
 | `duplexer2` | `0.1.4` | BSD-3-Clause | No |
 | `ejs` | `3.1.10` | Apache-2.0 | No |
-| `electron` | `45.2.3` | MIT | No |
+| `electron` | `45.3.3` | MIT | No |
 | `electron-builder` | `26.18.0` | MIT | No |
 | `electron-publish` | `26.18.0` | MIT | No |
 | `electron-to-chromium` | `1.5.399` | ISC | No |
@@ -1028,8 +1030,8 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `es-to-primitive` | `1.3.0` | MIT | No |
 | `es6-error` | `4.1.1` | MIT | Yes |
 | `escape-string-regexp` | `4.0.0` | MIT | No |
-| `eslint` | `10.14.0` | MIT | No |
-| `eslint-config-next` | `16.4.5` | MIT | No |
+| `eslint` | `10.15.0` | MIT | No |
+| `eslint-config-next` | `16.4.6` | MIT | No |
 | `eslint-import-resolver-node` | `0.3.9` | MIT | No |
 | `eslint-import-resolver-typescript` | `3.10.1` | ISC | No |
 | `eslint-module-utils` | `2.12.1` | MIT | No |
@@ -1071,7 +1073,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `get-stream` | `5.2.0` | MIT | No |
 | `get-symbol-description` | `1.1.0` | MIT | No |
 | `get-tsconfig` | `4.13.7` | MIT | No |
-| `glob` | `13.0.6` | BlueOak-1.0.0 | No |
+| `glob` | `14.0.6` | BlueOak-1.0.0 | No |
 | `glob` | `7.2.3` | ISC | No |
 | `glob-parent` | `5.1.2` | ISC | No |
 | `glob-parent` | `6.0.2` | ISC | No |
@@ -1171,7 +1173,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `mimic-response` | `1.0.1` | MIT | No |
 | `mimic-response` | `3.1.0` | MIT | No |
 | `minimatch` | `10.2.5` | BlueOak-1.0.0 | No |
-| `minimatch` | `10.2.6` | BlueOak-1.0.0 | No |
+| `minimatch` | `11.0.8` | BlueOak-1.0.0 | No |
 | `minimatch` | `3.1.5` | ISC | No |
 | `minimist` | `1.2.8` | MIT | No |
 | `napi-postinstall` | `0.3.4` | MIT | No |
@@ -1199,7 +1201,7 @@ Archive SHA-256: `02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 | `path-exists` | `4.0.0` | MIT | No |
 | `path-is-absolute` | `1.0.1` | MIT | No |
 | `path-parse` | `1.0.7` | MIT | No |
-| `path-scurry` | `2.0.2` | BlueOak-1.0.0 | No |
+| `path-scurry` | `3.0.0` | BlueOak-1.0.0 | No |
 | `pe-library` | `0.4.1` | MIT | No |
 | `picomatch` | `2.3.2` | MIT | No |
 | `picomatch` | `4.0.4` | MIT | No |
@@ -1316,4 +1318,4 @@ Bundled HDC uses Apache-2.0 and libusb uses LGPL-2.1-or-later; see [tool provena
 
 ## Harmony log workbench
 
-The offline log workbench is adapted from Alentaoker/dsh-harmoneydev-tools at 8b178a755d33cee9899160a7be283af2b23eb85d under Apache-2.0; live log components use that project's MIT code. Exact provenance, modifications and complete licenses are retained in [source notices](third_party/harmony-log-workbench/SOURCE.md). ZIP uses yauzl (MIT); RAR uses the unmodified 7-Zip 26.04 runtime from 7z-bin, preserving its LGPL/BSD/unRAR notices. No Harmony SDK, dictionary or vendor video binary is included in this adaptation.
+The offline log workbench is adapted from Alentaoker/dsh-harmoneydev-tools at 8b178a755d33cee9899160a7be283af2b23eb85d under Apache-2.0; live log components use that project's MIT code. Exact provenance, modifications and complete licenses are retained in [source notices](third_party/harmony-log-workbench/SOURCE.md). ZIP uses yauzl (MIT); RAR uses the unmodified 7-Zip 26.06 runtime from 7z-bin, preserving its LGPL/BSD/unRAR notices. No Harmony SDK, dictionary or vendor video binary is included in this adaptation.

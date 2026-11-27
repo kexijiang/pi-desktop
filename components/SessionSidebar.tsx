@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState, useCallback, useRef } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useState, useCallback, useRef } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { SessionInfo } from "@/lib/types";
 import type { SessionFlags } from "@/lib/session-flags";
@@ -25,6 +25,7 @@ import { isProjectlessChatCwd } from "@/lib/projectless-chat-path";
 import { ConversationSearchDialog } from "./ConversationSearchDialog";
 import type { SessionMoveTarget } from "./sidebar/TaskContextMenu";
 import { useProjectNotificationPreferences } from "@/hooks/useProjectNotificationPreferences";
+import { SubagentSidebarContext } from "@/hooks/useSubagents";
 
 export type { SessionSidebarHandle } from "./sidebar/sidebar-types";
 
@@ -36,7 +37,7 @@ function createTemporarySessionId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function SessionSidebar({ selectedSessionId, selectedRoomId, onSelectSession, onSelectSearchResult, onSelectRoom, onNewSession, onRequestNewSession, initialSessionId, initialRoomId, skipInitialProjectSelection, onInitialRestoreDone, onInitialRoomRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenSettings, activeProjectRoot }, ref) {
+export const SessionSidebar = memo(forwardRef<SessionSidebarHandle, Props>(function SessionSidebar({ selectedSession, selectedSessionId, selectedSubagent, onOpenSubagent, selectedRoomId, onSelectSession, onSelectSearchResult, onSelectRoom, onNewSession, onRequestNewSession, initialSessionId, initialRoomId, skipInitialProjectSelection, onInitialRestoreDone, onInitialRoomRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenSettings, activeProjectRoot }, ref) {
   const { t } = useI18n();
   const [sessionFlags, setSessionFlags] = useState<SessionFlags>({});
   const primaryActionRef = useRef<HTMLButtonElement>(null);
@@ -47,6 +48,10 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const { mutedProjectRoots, toggleProjectMuted } = useProjectNotificationPreferences();
   const deletedSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flagPatchVersionRef = useRef<Map<string, number>>(new Map());
+  const flagConfirmedVersionRef = useRef<Map<string, number>>(new Map());
+  const activeFlagPatchesRef = useRef<Map<string, number>>(new Map());
+  const confirmedSessionFlagsRef = useRef<SessionFlags>({});
   const {
     collapsedProjectKeys, setCollapsedProjectKeys,
     pinnedProjectRoots, setPinnedProjectRoots,
@@ -63,14 +68,48 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
     customPathOpen, setCustomPathOpen, customPathError, setCustomPathError,
     customPathValidating, commitCustomPath, handleCustomPathClick, handleDefaultCwd,
   } = useProjectPicker({ setSelectedCwd, setRememberedProjectRoots, setHiddenProjectRoots, onProjectSelected: handlePickedProject });
-  const { allSessions, loading, error, runningSessionIds, unreadSessionIds, completionAnnouncement, loadSessions, markSessionUnread } = useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectRoots });
+  const { allSessions, loading, catalogComplete, error, runningSessionIds, unreadSessionIds, completionAnnouncement, loadSessions, markSessionUnread, subagentCounts } = useSessionCatalog({ selectedSessionId, refreshKey, mutedProjectRoots });
+  const subagentSidebar = useMemo(() => ({ activeCounts: subagentCounts, open: onOpenSubagent, selected: selectedSubagent }),
+    [subagentCounts, onOpenSubagent, selectedSubagent]);
   const { state: worktreeState, error: worktreeError } = useWorktrees(selectedCwd, true, refreshKey);
 
   useEffect(() => {
     let cancelled = false;
+    const snapshotVersions = new Map(flagPatchVersionRef.current);
     fetch("/api/sessions/flags")
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
-      .then((data: { flags?: SessionFlags }) => { if (!cancelled) setSessionFlags(data.flags ?? {}); })
+      .then((data: { flags?: SessionFlags }) => {
+        if (cancelled) return;
+        const incoming = data.flags ?? {};
+        const nextConfirmed: SessionFlags = { ...confirmedSessionFlagsRef.current };
+        const isProtected = (id: string) =>
+          (activeFlagPatchesRef.current.get(id) ?? 0) > 0
+          || (flagPatchVersionRef.current.get(id) ?? 0) !== (snapshotVersions.get(id) ?? 0);
+
+        for (const id of Object.keys(nextConfirmed)) {
+          if (!isProtected(id) && !(id in incoming)) {
+            delete nextConfirmed[id];
+          }
+        }
+        for (const [id, flag] of Object.entries(incoming)) {
+          if (!isProtected(id)) {
+            nextConfirmed[id] = flag;
+          }
+        }
+        confirmedSessionFlagsRef.current = nextConfirmed;
+
+        setSessionFlags((current) => {
+          const next: SessionFlags = { ...incoming };
+          const allIds = new Set([...Object.keys(current), ...Object.keys(incoming)]);
+          for (const id of allIds) {
+            if (isProtected(id)) {
+              if (current[id] !== undefined) next[id] = current[id];
+              else delete next[id];
+            }
+          }
+          return next;
+        });
+      })
       .catch(() => { /* Flags are optional; the task list remains usable. */ });
     return () => { cancelled = true; };
   }, [refreshKey]);
@@ -140,8 +179,9 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
     if (selectedCwd === null) {
       // Restore the chat first; its committed selection synchronizes cwd.
       if (initialSessionId && !restoredRef.current) {
-        restoredRef.current = true;
         const target = allSessions.find((s) => s.id === initialSessionId);
+        if (!target && !catalogComplete) return;
+        restoredRef.current = true;
         if (target) {
           onSelectSession(target, true);
           return;
@@ -162,16 +202,16 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
         setSelectedCwd(projects[0]);
       }
     }
-  }, [allSessions, hiddenProjectRoots, initialSessionId, loading, onInitialRestoreDone, onSelectSession, rememberedProjectRoots, selectedCwd, selectedRoomId, selectedSessionId, sessionFlags, skipInitialProjectSelection]);
+  }, [allSessions, catalogComplete, hiddenProjectRoots, initialSessionId, loading, onInitialRestoreDone, onSelectSession, rememberedProjectRoots, selectedCwd, selectedRoomId, selectedSessionId, sessionFlags, skipInitialProjectSelection]);
 
   useImperativeHandle(ref, () => ({
+    findSession: (id: string) => allSessions.find(session => session.id === id),
     openProjectPicker: handleCustomPathClick,
     openConversationSearch() { setConversationSearchOpen(true); },
     focusPrimaryNavigation() { primaryActionRef.current?.focus({ preventScroll: true }); },
-  }), [handleCustomPathClick]);
+  }), [allSessions, handleCustomPathClick]);
   const handleSelectSessionFromList = useCallback((s: SessionInfo) => {
-    // The selected-session prop synchronizes cwd after the prepared switch.
-    // Advancing cwd first would clear the old chat while its replacement loads.
+    // The selected-session prop synchronizes cwd after the selection commits.
     onSelectSession(s);
   }, [onSelectSession]);
 
@@ -210,14 +250,28 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
     session: SessionInfo,
     patch: { pinned?: boolean; archived?: boolean },
   ) => {
-    const previous = sessionFlags[session.id] ?? {};
-    const optimistic = {
-      ...previous,
-      ...patch,
-      ...(patch.pinned === true ? { pinnedAt: previous.pinnedAt ?? new Date().toISOString() } : {}),
-    };
-    setSessionFlags((flags) => ({ ...flags, [session.id]: optimistic }));
-    if (patch.archived === true) setArchivedSessionToast(session);
+    const nextVersion = (flagPatchVersionRef.current.get(session.id) ?? 0) + 1;
+    flagPatchVersionRef.current.set(session.id, nextVersion);
+    activeFlagPatchesRef.current.set(session.id, (activeFlagPatchesRef.current.get(session.id) ?? 0) + 1);
+    const optimisticTimestamp = patch.pinned === true ? new Date().toISOString() : undefined;
+
+    setSessionFlags((flags) => {
+      const previous = flags[session.id] ?? {};
+      return {
+        ...flags,
+        [session.id]: {
+          ...previous,
+          ...patch,
+          ...(patch.pinned === true ? { pinnedAt: previous.pinnedAt ?? optimisticTimestamp } : {}),
+        },
+      };
+    });
+    if (patch.archived === true) {
+      setArchivedSessionToast(session);
+    } else if (patch.archived === false) {
+      setArchivedSessionToast((current) => current?.id === session.id ? null : current);
+    }
+
     try {
       const response = await fetch("/api/sessions/flags", {
         method: "PATCH",
@@ -226,12 +280,44 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json() as { flag: SessionFlags[string] };
-      setSessionFlags((flags) => ({ ...flags, [session.id]: data.flag }));
+      if ((flagConfirmedVersionRef.current.get(session.id) ?? 0) < nextVersion) {
+        flagConfirmedVersionRef.current.set(session.id, nextVersion);
+        if (data.flag) {
+          confirmedSessionFlagsRef.current = { ...confirmedSessionFlagsRef.current, [session.id]: data.flag };
+        } else {
+          const nextConfirmed = { ...confirmedSessionFlagsRef.current };
+          delete nextConfirmed[session.id];
+          confirmedSessionFlagsRef.current = nextConfirmed;
+        }
+      }
+      if (flagPatchVersionRef.current.get(session.id) !== nextVersion) return;
+      if (data.flag) {
+        setSessionFlags((flags) => ({ ...flags, [session.id]: data.flag }));
+      } else {
+        setSessionFlags((flags) => {
+          const next = { ...flags };
+          delete next[session.id];
+          return next;
+        });
+      }
     } catch {
-      setSessionFlags((flags) => ({ ...flags, [session.id]: previous }));
-      if (patch.archived === true) setArchivedSessionToast(null);
+      if (flagPatchVersionRef.current.get(session.id) !== nextVersion) return;
+      const confirmed = confirmedSessionFlagsRef.current[session.id];
+      setSessionFlags((flags) => {
+        if (confirmed !== undefined) return { ...flags, [session.id]: confirmed };
+        const next = { ...flags };
+        delete next[session.id];
+        return next;
+      });
+      if (patch.archived === true) {
+        setArchivedSessionToast((current) => current?.id === session.id ? null : current);
+      }
+    } finally {
+      const remaining = (activeFlagPatchesRef.current.get(session.id) ?? 1) - 1;
+      if (remaining <= 0) activeFlagPatchesRef.current.delete(session.id);
+      else activeFlagPatchesRef.current.set(session.id, remaining);
     }
-  }, [sessionFlags]);
+  }, []);
 
   const undoArchive = useCallback(() => {
     const session = archivedSessionToast;
@@ -251,15 +337,27 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
   }, [loadSessions]);
 
   const handleNewSessionInProject = useCallback((cwd: string) => {
+    const root = projectRootFor(cwd);
+    if (root) setCollapsedProjectKeys(previous => {
+      if (!previous.has(root)) return previous;
+      const next = new Set(previous);
+      next.delete(root);
+      return next;
+    });
     // Pi will be spawned lazily when the user sends the first message.
     onNewSession?.(createTemporarySessionId(), cwd);
-  }, [onNewSession]);
+  }, [onNewSession, projectRootFor, setCollapsedProjectKeys]);
 
   const selectedProject = projectRootFor(selectedCwd);
-  const activeSessions = useMemo(
-    () => allSessions.filter((session) => !sessionFlags[session.id]?.archived),
-    [allSessions, sessionFlags],
-  );
+  const activeSessions = useMemo(() => {
+    const visible = allSessions.filter(session => !sessionFlags[session.id]?.archived);
+    // Keep the newly admitted chat visible until the catalog catches up.
+    if (selectedSession && !sessionFlags[selectedSession.id]?.archived && !allSessions.some(session => session.id === selectedSession.id)) {
+      const root = selectedSession.projectRoot ?? projectRootFor(selectedSession.cwd);
+      return [...visible, { ...selectedSession, projectRoot: root ?? undefined }];
+    }
+    return visible;
+  }, [allSessions, projectRootFor, selectedSession, sessionFlags]);
   const projectlessSessions = useMemo(
     () => activeSessions.filter((session) => session.projectless),
     [activeSessions],
@@ -450,6 +548,7 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
           onInitialRestoreDone={onInitialRoomRestoreDone}
         />
       ) : null}
+      <SubagentSidebarContext.Provider value={subagentSidebar}>
       <SidebarProjectArea
         loading={loading} error={error}
         handleDefaultCwd={handleDefaultCwd} handleCustomPathClick={handleCustomPathClick}
@@ -485,6 +584,7 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
         sessionOrder={sessionOrder}
         onReorderSessions={reorderSessions}
       />
+      </SubagentSidebarContext.Provider>
       <SidebarFooter
         deletedToast={deletedSessionToast}
         archivedToast={archivedSessionToast}
@@ -508,4 +608,4 @@ export const SessionSidebar = forwardRef<SessionSidebarHandle, Props>(function S
     ) : null}
     </>
   );
-});
+}));

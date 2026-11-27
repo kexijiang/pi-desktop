@@ -23,3 +23,10 @@ test("continuity storage failures do not disable workspace navigation", () => {
   assert.match(explorer, /tree remains usable when browser storage is unavailable/);
   assert.match(explorer, /Expansion remains available for the current render when storage fails/);
 });
+
+test("the file panel and newly opened tabs follow the conversation worktree", () => {
+  assert.match(shell, /const chatWorkspaceCwd = selectedSession\?\.cwd \?\? newSessionCwd/);
+  assert.match(shell, /const workspaceCwd = selectedRoom\?\.workspace\.path \?\? \(isProjectlessConversation \? null : chatWorkspaceCwd \?\? activeCwd\)/);
+  assert.match(shell, /<RightPanel\s[\s\S]*?cwd=\{workspaceCwd\}/);
+  assert.match(shell, /filePath,\s*cwd: workspaceCwd \?\? undefined/);
+});

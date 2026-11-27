@@ -2,7 +2,8 @@
 
 import { latestTaskTiming, mergeTaskTiming, type TaskTiming } from "@/lib/task-timing";
 import { mergeResponseTaskTimings, type ResponseTaskTiming } from "@/lib/response-task-timing";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { SharedCommandStreamChannel } from "@/lib/shared-command-stream";
 import { AgentCommandError, sendAgentCommand } from "@/lib/agent-client";
 import { createChatCommandOperation, parseChatInput, persistentChatInputOptions } from "@/lib/chat-command-input";
 import type { ChatCommandCatalog, ChatCommandView, ChatInputOptions } from "@/lib/chat-command-types";
@@ -20,6 +21,7 @@ interface Options {
   conversationKey: string;
   sessionId: string | null;
   scope: string;
+  timingPromptIds?: string[];
   catalog: ChatCommandCatalog;
   ensureSession(): Promise<string | null>;
   loadCatalog(): Promise<ChatCommandCatalog>;
@@ -28,6 +30,8 @@ interface Options {
   uploadFiles(files: AttachedFile[]): Promise<PromptMaterialReference[]>;
   onAccepted(): void;
   onFinished(record: ChatCommandView): void;
+  sharedCommandStream?: SharedCommandStreamChannel;
+  deferStandaloneStream?: boolean;
 }
 
 export function useChatCommandOperations(options: Options) {
@@ -47,7 +51,15 @@ export function useChatCommandOperations(options: Options) {
   const submitting = useRef(new Set<string>());
   const sessionId = options.sessionId ?? localSessionId;
   const sessionRef = useRef(sessionId);
+  const loadedTimings = useRef<{ sessionId: string; ids: Set<string> } | null>(null);
+  const lastRefreshAtRef = useRef(0);
   sessionRef.current = sessionId;
+  const sharedStreamSessionId = useSyncExternalStore(
+    useCallback((listener) => options.sharedCommandStream?.subscribeState(listener) ?? (() => {}), [options.sharedCommandStream]),
+    () => options.sharedCommandStream?.getActiveSessionId() ?? null,
+    () => null,
+  );
+  const usingSharedStream = Boolean(sessionId && options.sharedCommandStream && sharedStreamSessionId === sessionId);
   useEffect(() => {
     const confirmed = (event: Event) => {
       const ids = (event as CustomEvent<string[]>).detail;
@@ -62,25 +74,58 @@ export function useChatCommandOperations(options: Options) {
     const sid = sessionRef.current;
     if (!sid) return;
     const query = new URLSearchParams({ view: "operations", offset: String(offset) });
+    if (latest.current.timingPromptIds) {
+      query.set("scope", "chat");
+      for (const id of latest.current.timingPromptIds.slice(-80)) query.append("timingPromptId", id);
+    }
     for (const record of recordsRef.current.filter(record => record.targetSessionId === sid && !record.operation && !record.local && !terminal(record.status)).slice(0, 100)) query.append("trackedCommandId", record.commandId);
     for (const record of recordsRef.current.filter(record => record.targetSessionId === sid && record.local).slice(0, 100)) query.append("trackedPromptId", record.idempotencyKey);
     const response = await fetch(`/api/sessions/${encodeURIComponent(sid)}/submissions?${query}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json() as { items: ChatCommandView[]; nextOffset: number | null; taskTiming?: TaskTiming | null; taskTimings?: ResponseTaskTiming[] };
     if (sessionRef.current !== sid) return;
+    lastRefreshAtRef.current = Date.now();
     setRecords(current => mergeChatCommandViews(current.filter(record => record.targetSessionId === sid || record.local && submitting.current.has(record.idempotencyKey)), body.items));
     setTaskTiming(current => mergeTaskTiming(current, body.taskTiming ?? null));
     setTaskTimings(current => mergeResponseTaskTimings(current.filter(record => record.taskTiming.sessionId === sid), body.taskTimings ?? []));
     setNextOffset(body.nextOffset);
     await Promise.all(body.items.filter(record => !record.operation && record.status === "cancelled").map(record => dismissPendingPrompt(record.idempotencyKey)));
-    const completed = body.items.filter(record => record.status === "completed");
+    const completed = body.items.filter(record => record.status === "completed" && record.operation && record.attachments === 0);
     await confirmPendingPrompts(completed.map(record => record.idempotencyKey));
     for (const record of body.items.filter(record => terminal(record.status))) {
       if (notified.current.has(record.commandId)) continue;
       notified.current.add(record.commandId);
+      if (offset > 0 && !query.getAll("trackedCommandId").includes(record.commandId)
+        && !query.getAll("trackedPromptId").includes(record.idempotencyKey)) continue;
       latest.current.onFinished(record);
     }
   }, []);
+
+  useEffect(() => {
+    if (!sessionId || !options.timingPromptIds?.length) return;
+    const request = new AbortController();
+    const loaded = loadedTimings.current?.sessionId === sessionId ? loadedTimings.current : { sessionId, ids: new Set<string>() };
+    loadedTimings.current = loaded;
+    const ids = options.timingPromptIds.filter(id => !loaded.ids.has(id));
+    void (async () => {
+      for (let start = 0; start < ids.length; start += 80) {
+        const page = ids.slice(start, start + 80);
+        const query = new URLSearchParams({ view: "timings" });
+        for (const id of page) query.append("timingPromptId", id);
+        const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/submissions?" + query, {
+          signal: request.signal, cache: "no-store",
+        });
+        if (!response.ok || request.signal.aborted || sessionRef.current !== sessionId) return;
+        const body = await response.json() as { taskTimings?: ResponseTaskTiming[] };
+        if (request.signal.aborted || sessionRef.current !== sessionId) return;
+        for (const id of page) loaded.ids.add(id);
+        if (body.taskTimings?.length) {
+          setTaskTimings(current => mergeResponseTaskTimings(current.filter(record => record.taskTiming.sessionId === sessionId), body.taskTimings!));
+        }
+      }
+    })().catch(() => {});
+    return () => request.abort();
+  }, [options.timingPromptIds, sessionId]);
 
   useEffect(() => {
     const activeGeneration = ++generation.current;
@@ -108,20 +153,49 @@ export function useChatCommandOperations(options: Options) {
   useEffect(() => {
     if (!sessionId) return;
     const sid = sessionId;
-    const source = new EventSource(`/api/agent/${encodeURIComponent(sid)}/events?scope=commands`);
+    const sharedStream = options.sharedCommandStream;
+    const deferStandalone = Boolean(options.deferStandaloneStream);
+    if (!usingSharedStream && deferStandalone) return;
     let disposed = false;
+    let sseHealthy = false;
     const recover = () => { void refresh().catch(() => { if (!disposed) setConnectionError(t("chatCommands.connectionRecovering")); }); };
-    source.onmessage = event => {
+    const handlePayload = (payload: unknown) => {
       if (disposed || sessionRef.current !== sid) return;
       try {
-        const data = JSON.parse(event.data) as Omit<SessionCommandEvent, "type"> & { operations?: ChatCommandView[]; type: string; hasMore?: boolean };
+        const data = payload as Omit<SessionCommandEvent, "type"> & { operations?: ChatCommandView[]; type: string; hasMore?: boolean };
         if (data.type === "command_snapshot" && data.operations) {
+          sseHealthy = true;
+          const pending = new Set(recordsRef.current.filter(record => record.targetSessionId === sid && (record.local || !terminal(record.status))).map(record => record.idempotencyKey));
+          for (const record of data.operations) {
+            if (!terminal(record.status) || notified.current.has(record.commandId)) continue;
+            notified.current.add(record.commandId);
+            if (pending.has(record.idempotencyKey)) latest.current.onFinished(record);
+          }
           setRecords(current => mergeChatCommandViews(current.filter(record => record.targetSessionId === sid || record.local && submitting.current.has(record.idempotencyKey)), data.operations!));
           setTaskTiming(current => mergeTaskTiming(current, latestTaskTiming(data.operations!)));
+          const snapshotTimings = data.operations.flatMap(record =>
+            record.taskTiming ? [{ idempotencyKey: record.idempotencyKey, taskTiming: record.taskTiming }] : [],
+          );
+          if (snapshotTimings.length) {
+            setTaskTimings(current => mergeResponseTaskTimings(
+              current.filter(record => record.taskTiming.sessionId === sid),
+              snapshotTimings,
+            ));
+          }
           setNextOffset(data.hasMore ? 50 : null);
           setConnectionError(null);
-          recover();
+          const snapshotIds = new Set(data.operations.map(record => record.commandId));
+          const snapshotPromptIds = new Set(data.operations.map(record => record.idempotencyKey));
+          const needsReconcile = data.operations.some(record => record.status === "cancelled" && pending.has(record.idempotencyKey)) || recordsRef.current.some(record =>
+            record.targetSessionId === sid
+            && (
+              (record.local && !snapshotPromptIds.has(record.idempotencyKey))
+              || (!record.local && !record.operation && !terminal(record.status) && !snapshotIds.has(record.commandId))
+            ),
+          );
+          if (needsReconcile) recover();
         } else if (data.commandId && data.idempotencyKey && data.status) {
+          sseHealthy = true;
           const record: ChatCommandView = { commandId: data.commandId, idempotencyKey: data.idempotencyKey, targetSessionId: sid,
             acceptedAt: data.acceptedAt ?? data.timestamp, taskTiming: data.taskTiming, status: data.status, revision: data.revision, queuePaused: data.queuePaused, operation: data.operation, errorCode: data.errorCode, errorMessage: data.errorMessage, preview: data.preview };
           setTaskTiming(current => data.taskTiming === null && current?.commandId === data.commandId
@@ -131,19 +205,54 @@ export function useChatCommandOperations(options: Options) {
             : data.taskTiming ? mergeResponseTaskTimings(current, [{ idempotencyKey: data.idempotencyKey!, taskTiming: data.taskTiming }]) : current);
           setRecords(current => mergeChatCommandViews(current, [record]));
           if (terminal(data.status)) {
-            if (!record.operation && !notified.current.has(record.commandId)) { notified.current.add(record.commandId); latest.current.onFinished(record); }
-            recover();
+            if (!notified.current.has(record.commandId)) { notified.current.add(record.commandId); latest.current.onFinished(record); }
+            if (record.operation || data.status === "cancelled" || data.taskTiming === undefined) recover();
           }
-        } else if (data.type === "command_stream_error") setConnectionError(t("chatCommands.connectionRecovering"));
+        } else if (data.type === "command_stream_error") {
+          sseHealthy = false;
+          setConnectionError(t("chatCommands.connectionRecovering"));
+        }
       } catch { setConnectionError(t("chatCommands.connectionRecovering")); }
     };
-    source.onerror = () => { if (!disposed) { setConnectionError(t("chatCommands.connectionRecovering")); recover(); } };
-    const reconcile = () => { if (document.visibilityState !== "hidden") recover(); };
-    const timer = setInterval(reconcile, 2500);
-    window.addEventListener("online", reconcile);
-    document.addEventListener("visibilitychange", reconcile);
-    return () => { disposed = true; source.close(); clearInterval(timer); window.removeEventListener("online", reconcile); document.removeEventListener("visibilitychange", reconcile); };
-  }, [sessionId, refresh, t]);
+    const handleStreamError = () => {
+      sseHealthy = false;
+      if (!disposed) { setConnectionError(t("chatCommands.connectionRecovering")); recover(); }
+    };
+    let unsubscribeStream = () => {};
+    if (usingSharedStream && sharedStream) {
+      unsubscribeStream = sharedStream.subscribe(sid, handlePayload, handleStreamError);
+    } else {
+      const source = new EventSource(`/api/agent/${encodeURIComponent(sid)}/events?scope=commands`);
+      source.onmessage = event => {
+        try {
+          handlePayload(JSON.parse(event.data));
+        } catch {
+          if (!disposed && sessionRef.current === sid) setConnectionError(t("chatCommands.connectionRecovering"));
+        }
+      };
+      source.onerror = handleStreamError;
+      unsubscribeStream = () => source.close();
+    }
+    const reconcileOnInterval = () => {
+      if (document.visibilityState === "hidden") return;
+      if (!sseHealthy) {
+        recover();
+        return;
+      }
+      const hasPending = recordsRef.current.some(
+        record => record.targetSessionId === sid && (record.local || !terminal(record.status)),
+      );
+      if (hasPending && Date.now() - lastRefreshAtRef.current >= 30_000) recover();
+    };
+    const reconcileOnWake = () => {
+      if (document.visibilityState === "hidden") return;
+      if (!sseHealthy || Date.now() - lastRefreshAtRef.current >= 5_000) recover();
+    };
+    const timer = setInterval(reconcileOnInterval, 2500);
+    window.addEventListener("online", reconcileOnWake);
+    document.addEventListener("visibilitychange", reconcileOnWake);
+    return () => { disposed = true; unsubscribeStream(); clearInterval(timer); window.removeEventListener("online", reconcileOnWake); document.removeEventListener("visibilitychange", reconcileOnWake); };
+  }, [sessionId, refresh, t, usingSharedStream, options.sharedCommandStream, options.deferStandaloneStream]);
 
   const submit = useCallback(async (message: string, images: AttachedImage[] = [], files: AttachedFile[] = [], onDurable?: (id?: string) => void, inputOptions: ChatInputOptions = {}, retryOfPromptIds?: string[]) => {
     const initial = latest.current;

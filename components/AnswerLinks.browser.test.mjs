@@ -107,7 +107,12 @@ return <I18nProvider><AnswerLinkProvider openLink={navigation.openLink}><main><A
         assert.equal((await opens()).length, count);
       };
       const external = async (link, options = {}) => { const popup = page.waitForEvent("popup"); await link.click(options); const opened = await popup; await opened.waitForLoadState(); assert.equal(new URL(opened.url()).hostname, "docs.example.test"); await opened.close(); };
-      assert.equal(await builtin.getAttribute("aria-pressed"), "true");
+      assert.equal(await system.getAttribute("aria-pressed"), "true");
+      await external(linkA);
+      assert.equal((await opens()).length, 0, "default links must not open built-in tabs");
+      await builtin.click();
+      await page.reload();
+      assert.equal(await builtin.getAttribute("aria-pressed"), "true", "explicit built-in preference survives reload");
       // Queue two real clicks before either lazy panel or native session is ready.
       await linkA.click(); await linkB.click(); await waitCount(2);
       assert.deepEqual((await opens()).map(a => a.url), ["https://docs.example.test/a", "https://docs.example.test/b"]);
@@ -120,8 +125,10 @@ return <I18nProvider><AnswerLinkProvider openLink={navigation.openLink}><main><A
         assert.ok((await opens()).every(a => a.displayedSession === "first"));
         assert.equal(requests.filter(r => r.input).length, 0);
       }
-      // Returning from follow mode must remain on the explicit new manual tab.
-      if (mode !== "desktop") assert.equal(await page.getByRole("switch").getAttribute("aria-checked"), "false");
+      // Retired follow preferences cannot replace explicit answer-link navigation.
+      assert.equal(await page.getByRole("switch").count(), 0);
+      assert.equal(await page.evaluate(() => localStorage.getItem("piora-browser-follow-agent-v1")), null);
+      if (mode !== "web") assert.equal(await page.locator('[data-native-browser="true"]').count(), 1);
       if (mode === "desktop") {
         const publishAgentActivity = () => page.evaluate(() => window.agentActivityListener({ sessionId: "first", tabId: "original", status: "running" }));
         const switches = () => page.evaluate(() => window.nativeActions.filter(action => action.action === "switch_tab").length);

@@ -640,7 +640,7 @@ async function inspectElectronShell(webRoot, required, runtimeWebRoot) {
     if (!sourceLicense.equals(packagedLicense)) throw new Error("Packaged winapp CLI license differs from locked dependency");
     const options = { windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024, env: { ...process.env, WINAPP_CLI_TELEMETRY_OPTOUT: "1" } };
     const { stdout: version } = await execFileAsync(join(winappRoot, "winapp.exe"), ["--version"], options);
-    if (version.trim().split(/\s+/).at(-1) !== "0.7.1") throw new Error(`Packaged winapp CLI version mismatch: ${version.slice(-100)}`);
+    if (version.trim().split(/\s+/).at(-1) !== "0.8.0") throw new Error(`Packaged winapp CLI version mismatch: ${version.slice(-100)}`);
     const { stdout: windows } = await execFileAsync(join(winappRoot, "winapp.exe"), ["ui", "list-windows", "--json"], options);
     if (!Array.isArray(JSON.parse(windows))) throw new Error("Packaged winapp CLI could not list Windows windows");
   }
@@ -836,7 +836,7 @@ async function stopChild(child) {
 
 export async function verifyPackagedBundledDependencies(runtimeWebRoot) {
   const patchedBundledDependencies = [
-    { name: "brace-expansion", version: "5.0.12" },
+    { name: "brace-expansion", version: "5.0.13" },
     { name: "undici", version: "8.12.4" },
   ];
   for (const expected of patchedBundledDependencies) {
@@ -973,6 +973,9 @@ async function main() {
   await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "node_modules", "node-pty", "package.json"));
   for (const name of ["store-worker.cjs", "history-import.cjs", "integration.ps1", "integration.bash", "integration.zsh"]) {
     await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "lib", "shell", "runtime", name));
+  }
+  for (const name of ["worker.mjs", "session-history.mjs", "file-index.mjs", "file-ranking.mjs"]) {
+    await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "lib", "read-runtime", name));
   }
   await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "lib", "harmony", "runtime", "sqlite-inspector.cjs"));
   await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "lib", "harmony", "runtime", "sqlite-error-location.cjs"));

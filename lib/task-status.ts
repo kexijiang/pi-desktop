@@ -11,6 +11,8 @@ export interface TaskStatus {
   /** Server-owned start time for the current run. Survives task switches. */
   startedAt?: number;
   taskRun?: TaskRunState;
+  activeGoal?: boolean;
+  awaitingPlanApproval?: boolean;
 }
 
 export interface TaskStatusInput {
@@ -30,6 +32,8 @@ export type TaskStatusPresentationKey = Attention | "running";
 export interface TaskRuntimeSnapshot {
   id: string;
   runtime: Runtime;
+  runningSubagentCount?: number;
+  runningSideChatIds?: string[];
   pendingApproval: boolean;
   lastPromptFailed: boolean;
   errorSummary?: string;
@@ -39,6 +43,10 @@ export interface TaskRuntimeSnapshot {
   /** Current model context usage for this task; totals only, never message content. */
   contextUsage?: { percent: number | null; contextWindow: number; tokens: number | null };
   taskRun?: TaskRunState;
+  /** True when the session currently owns an active/paused/waiting Goal run. */
+  activeGoal?: boolean;
+  /** True when a Plan run is awaiting user implementation confirmation. */
+  awaitingPlanApproval?: boolean;
 }
 
 export type TaskRuntimeActivityKind =
@@ -61,6 +69,11 @@ export interface RunningSessionsPayload {
   /** Compatibility field for clients from before the three-axis status model. */
   runningSessionIds: string[];
   runningSessions: TaskRuntimeSnapshot[];
+  subagentPresenceVersion?: string;
+  subagentRefreshEpoch?: string;
+  subagentRefreshCursor?: number;
+  subagentChanges?: string[];
+  subagentRefreshReset?: boolean;
 }
 
 export const STATUS_PRESENTATION: Record<TaskStatusPresentationKey, {

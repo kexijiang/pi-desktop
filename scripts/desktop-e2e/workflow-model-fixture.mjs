@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Only the model is scripted. The desktop, SDK, tools, stores and UI are real. */
-export async function prepareWorkflowModel({ paths, directory, registerCleanup, report }) {
+export async function prepareWorkflowModel({ paths, directory, registerCleanup, report }, modelName = 'Plan / Goal Fixture') {
   const fixture = {
     stage: 'plan', requests: [], calls: [], holds: [], failures: [],
     forbiddenPath: join(directory, 'plan-forbidden.txt'), approvedPath: join(directory, 'plan-approved.txt'),
@@ -27,11 +27,15 @@ export async function prepareWorkflowModel({ paths, directory, registerCleanup, 
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       const tools = (body.tools ?? []).map(tool => tool.function?.name);
-      const workflow = tools.includes('piora_submit_plan') || tools.includes('piora_update_goal');
-      const row = { at: Date.now(), stage: fixture.stage, tools, path: req.url, workflow };
+      // Session title generation uses shadow copies of all workflow tools.
+      // It is a separate utility request and must not consume a scenario turn.
+      const titleRequest = JSON.stringify(body.messages?.at(-1) ?? '').includes('You are a precise session title editor.');
+      const workflow = !titleRequest && (tools.includes('piora_submit_plan') || tools.includes('piora_update_goal'));
+      const row = { at: Date.now(), stage: fixture.stage, tools, path: req.url, workflow, titleRequest,
+        containsRevisionFeedback: JSON.stringify(body.messages ?? []).includes('PLAN_GOAL_E2E_REVISE: Include the exact APPROVED_BY_UI output in the plan.') };
       fixture.requests.push(row);
       assert.ok(fixture.requests.length < 80, 'Unexpected fixture model request loop');
-      let call, content = 'Plan / Goal fixture';
+      let call, content = titleRequest ? 'Fixture session' : 'Plan / Goal fixture';
       if (workflow) {
         const count = stageCounts.get(fixture.stage) ?? 0;
         stageCounts.set(fixture.stage, count + 1);
@@ -85,7 +89,7 @@ export async function prepareWorkflowModel({ paths, directory, registerCleanup, 
   const provider = 'desktop-workflow-fixture';
   await writeFile(join(paths.agent, 'models.json'), JSON.stringify({ providers: { [provider]: {
     api: 'openai-completions', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'local-test-only',
-    models: [{ id: 'plan-goal', name: 'Plan / Goal Fixture', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    models: [{ id: 'plan-goal', name: modelName, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
   } } }));
   const settingsPath = join(paths.agent, 'settings.json');
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'));

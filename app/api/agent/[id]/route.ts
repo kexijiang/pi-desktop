@@ -36,7 +36,7 @@ const promptCommandIdPattern = /^cmd_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 async function readPromptCommandState(sessionId: string, commandId: string) {
   try {
-    const command = await getSessionMessageRouter().getCommand(commandId);
+    const command = await getSessionMessageRouter().getCommand(commandId, sessionId);
     // Router records describe a full prompt by next_turn delivery. Steer and
     // follow-up records use steer delivery and must not settle this prompt.
     if (command.commandId !== commandId || command.targetSessionId !== sessionId
@@ -120,6 +120,14 @@ export async function POST(
       return NextResponse.json({ success: true, data: result, commandId: result.commandId, ...(result.runId ? { runId: result.runId } : {}), ...(result.attachedRunId ? { attachedRunId: result.attachedRunId } : {}) });
     }
 
+    // Presence/activity signals for request_user_input must never spin up an idle session.
+    if (body.type === "user_input_presence" || body.type === "user_input_activity") {
+      const live = getRpcSession(id);
+      if (!live?.isAlive()) return NextResponse.json({ success: true, data: null });
+      const result = await live.send(body);
+      return NextResponse.json({ success: true, data: result });
+    }
+
     // Fast path: already-running session
     const existing = getRpcSession(id);
     if (existing?.isAlive()) {
@@ -150,7 +158,8 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const commandIds = new URL(req.url).searchParams.getAll("promptCommandId");
+  const query = new URL(req.url).searchParams;
+  const commandIds = query.getAll("promptCommandId");
   if (commandIds.length > 1 || (commandIds.length === 1
     && !promptCommandIdPattern.test(commandIds[0]))) {
     return NextResponse.json({ error: "Invalid promptCommandId.", code: "INVALID_PROMPT_COMMAND_ID" }, { status: 400 });
@@ -174,7 +183,7 @@ export async function GET(
       throw new Error(`Live session ${id} has a mismatched runtime profile.`);
     }
 
-    const state = await session.send({ type: "get_state" });
+    const state = await session.send({ type: "get_state", view: query.get("view") });
     return NextResponse.json({ running: true, state, runtimeProfile, ...await commandState() }, responseOptions);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

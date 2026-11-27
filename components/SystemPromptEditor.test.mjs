@@ -6,7 +6,11 @@ const editor = readFileSync(new URL("./SystemPromptEditor.tsx", import.meta.url)
 const selector = readFileSync(new URL("./SystemPromptSelector.tsx", import.meta.url), "utf8");
 const route = readFileSync(new URL("../app/api/system-prompt/route.ts", import.meta.url), "utf8");
 const sessionRoute = readFileSync(new URL("../app/api/sessions/[id]/system-prompt/route.ts", import.meta.url), "utf8");
-const manager = readFileSync(new URL("../lib/rpc-manager.ts", import.meta.url), "utf8");
+const manager = [
+  readFileSync(new URL("../lib/rpc/session-bootstrap.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../lib/rpc/session-wrapper.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../lib/rpc/system-prompt-reloader.ts", import.meta.url), "utf8"),
+].join("\n");
 const chatWindow = readFileSync(new URL("./ChatWindow.tsx", import.meta.url), "utf8");
 const projectPicker = readFileSync(new URL("./NewSessionProjectPicker.tsx", import.meta.url), "utf8");
 
@@ -34,6 +38,9 @@ test("new and existing conversations can select an isolated prompt snapshot", ()
   assert.doesNotMatch(selector, /<select/);
   assert.match(projectPicker, /systemPromptSelection/);
   assert.match(chatWindow, /<SystemPromptSelector/);
+  assert.match(chatWindow, /toolbarControl=\{composerToolbarControl\}/);
+  assert.match(selector, /system\.searchTemplates/);
+  assert.match(selector, /system\.previewTemplate/);
   assert.match(sessionRoute, /createSessionSystemPromptBinding/);
   assert.match(manager, /resolveSessionSystemPrompt/);
   assert.match(manager, /appendSessionSystemPromptBinding/);

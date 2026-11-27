@@ -7,6 +7,7 @@ declare global {
     piDesktop?: {
       vault?: import("@/desktop/src/credential-vault-types").VaultBridge;
       dshPet?: import("@/desktop/src/dsh-pet-types").DshPetBridge;
+      desktopExtensions?: import("@/desktop/src/desktop-extension-registry").DesktopExtensionsBridge;
       harmonyMirror?: import("@/desktop/src/harmony-window-types").HarmonyWindowBridge;
       messages?: import("@/desktop/src/harmony-window-types").PioraMessageBridge;
       files?: { getPathForFile: (file: File) => string };
@@ -79,6 +80,8 @@ declare global {
         moving: boolean;
         direction: "left" | "right" | null;
       }) => void) => () => void;
+      setCompanionMovementArea?: (area: "screen" | "bottom-right") => Promise<boolean>;
+      resizeCompanion?: (kind: "start" | "move" | "end", corner?: string) => Promise<boolean>;
       setCompanionHitTest?: (region: { x: number; y: number; width: number; height: number } | null) => Promise<boolean>;
       companionAction?: (action: "focus-main" | "open-settings" | "open-panel" | "hide") => Promise<boolean>;
       getAutoLaunchState?: () => Promise<{
@@ -101,6 +104,10 @@ declare global {
       selectHarmonyRuntimePath?: (kind: "sdk" | "hdc") => Promise<string | null>;
       onMenuAction?: (listener: (action: string) => void) => () => void;
       browser?: {
+        tools?: import("@/desktop/src/browser/contracts").BrowserToolInvoke;
+        onToolsEvent?: (listener: (event: import("@/desktop/src/browser/contracts").BrowserToolsEvent) => void) => () => void;
+        getPreferences?: () => Promise<import("@/desktop/src/browser-preferences").BrowserDownloadPreferences>;
+        setPreferences?: (input: { directory: string; askEachTime: boolean }) => Promise<import("@/desktop/src/browser-preferences").BrowserDownloadPreferences>;
         getState: () => Promise<DesktopBrowserState | null>;
         action: (input: DesktopBrowserAction) => Promise<DesktopBrowserState | null>;
         setViewport: (bounds: { x: number; y: number; width: number; height: number }, visible: boolean) => Promise<boolean>;
@@ -133,11 +140,14 @@ export interface DesktopUpdateState {
 }
 
 export interface DesktopBrowserState {
+  navigationEpoch?: number;
+  zoomFactor?: number;
   tabCount?: number;
   tabLimit?: number;
   idleTabCount?: number;
   vaultProtected?: boolean;
   vaultMatches?: number;
+  loginNotice?: string;
   sessionId: string;
   activeTabId: string;
   canGoBack: boolean;
@@ -165,7 +175,7 @@ export interface DesktopBrowserAgentActivity {
 export type DesktopBrowserAgentBackend = "desktop" | "playwright";
 
 export interface DesktopBrowserAction {
-  action: "back" | "close_tab" | "close_idle_tabs" | "forward" | "navigate" | "new_tab" | "reload" | "set_session" | "switch_tab" | "configure_login" | "show_agent_tab";
+  action: "back" | "close_tab" | "close_idle_tabs" | "forward" | "navigate" | "new_tab" | "reload" | "set_session" | "switch_tab" | "configure_login" | "show_agent_tab" | "zoom_in" | "zoom_out" | "zoom_reset";
   sessionId?: string;
   tabId?: string;
   url?: string;
@@ -206,6 +216,9 @@ export interface DesktopBrowserDownload {
 }
 
 export interface SessionSidebarProps {
+  selectedSession?: SessionInfo | null;
+  selectedSubagent?: import("@/lib/subagent-types").SubagentSelection;
+  onOpenSubagent?: (session: SessionInfo, agentId: string, openerId: string) => void;
   selectedSessionId: string | null;
   selectedRoomId?: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean) => void;
@@ -230,4 +243,5 @@ export interface SessionSidebarHandle {
   openProjectPicker: () => void;
   openConversationSearch: () => void;
   focusPrimaryNavigation: () => void;
+  findSession: (id: string) => SessionInfo | undefined;
 }

@@ -16,32 +16,105 @@ test('one chat settings page preserves controls, legacy entries and searchable t
   try {
     await writeFile(path.join(directory, 'ts.cjs'), `const ts=require(${JSON.stringify(require.resolve('typescript'))});module.exports=s=>ts.transpileModule(s,{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText`);
     await writeFile(path.join(directory, 'css.cjs'), `module.exports=function(s){const prefix=require('node:path').basename(this.resourcePath).replace(/\\W/g,'_');const names=Object.fromEntries([...s.matchAll(/\\.([a-zA-Z][\\w-]*)/g)].map(m=>[m[1],prefix+'_'+m[1]]));const css=s.replace(/\\.([a-zA-Z][\\w-]*)/g,(_,n)=>'.'+names[n]);return 'const style=document.createElement("style");style.textContent='+JSON.stringify(css)+';document.head.append(style);export default '+JSON.stringify(names)}`);
-    await writeFile(path.join(directory, 'entry.tsx'), `import{useState}from'react';import{createRoot}from'react-dom/client';import{I18nProvider}from'@/hooks/useI18n';import{SettingsDialog}from'@/components/SettingsDialog';import{ToolPermissionControl}from'@/components/ToolPermissionControl';const noop=()=>{};function App(){const[key,setKey]=useState('prompts');window.openPage=setKey;return <I18nProvider><ToolPermissionControl state={{mode:"auto",revision:1}} onChange={noop}/><SettingsDialog open activeKey={key} onActiveKeyChange={setKey} onClose={noop} conversation={{systemPrompt:'Example system prompt',onSystemPromptSaved:noop,notificationEnabled:false,notificationCapability:'unsupported',onNotificationToggle:noop}} desktop={{available:false}}/></I18nProvider>}createRoot(document.getElementById('root')).render(<App/>);`);
+    await writeFile(path.join(directory, 'entry.tsx'), `import{useState}from'react';import{createRoot}from'react-dom/client';import{I18nProvider}from'@/hooks/useI18n';import{SettingsDialog}from'@/components/SettingsDialog';import{ToolPermissionControl}from'@/components/ToolPermissionControl';const noop=()=>{};function App(){const[key,setKey]=useState('prompts');const[hasDesktop,setHasDesktop]=useState(false);window.openPage=setKey;window.setDesktopFixture=setHasDesktop;return <I18nProvider><ToolPermissionControl state={{mode:"auto",revision:1}} onChange={noop}/><SettingsDialog open activeKey={key} onActiveKeyChange={setKey} onClose={noop} conversation={{systemPrompt:'Example system prompt',onSystemPromptSaved:noop,notificationEnabled:false,notificationCapability:'unsupported',onNotificationToggle:noop}} desktop={{available:hasDesktop}}/></I18nProvider>}createRoot(document.getElementById('root')).render(<App/>);`);
     const compiler = webpack({ mode: 'development', target: 'web', devtool: false, entry: path.join(directory, 'entry.tsx'), output: { path: directory, filename: 'bundle.js' }, resolve: { extensions: ['.tsx', '.ts', '.js'], modules: [path.join(repo, 'node_modules')], alias: { '@': repo } }, module: { rules: [{ test: /\.tsx?$/, exclude: /node_modules/, use: path.join(directory, 'ts.cjs') }, { test: /\.css$/, use: path.join(directory, 'css.cjs') }] } });
     await new Promise((resolve, reject) => compiler.run((error, stats) => compiler.close(() => error || stats.hasErrors() ? reject(error || new Error(stats.toString({ all: false, errors: true }))) : resolve())));
     const css = (await readFile(path.join(repo, 'app/globals.css'), 'utf8')).replace(/^@import.*$/gm, '');
     browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : 'chromium', headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 950 } });
     const errors = [];
+    const requests = [];
     page.on('pageerror', error => errors.push(error.message));
+    page.on('request', request => requests.push(new URL(request.url()).pathname));
     await page.addInitScript(() => localStorage.setItem('pi-locale', 'zh-CN'));
     let approvalsEnabled = true;
+    let reserve = null;
+    let runtimePrompt = {
+      version: 1,
+      mergeCompact: true,
+      alignCliCompaction: true,
+      extensions: {
+        browser: true,
+        automations: false,
+        userInput: false,
+        fileTools: false,
+        fileReferences: false,
+        subagents: true,
+        ssh: true,
+        harmony: false,
+        computer: true,
+        room: false,
+        meme: false,
+      },
+    };
     await page.route('https://chat-settings.test/**', async route => {
       const url = new URL(route.request().url());
       if (url.pathname === '/api/settings/tool-approval') {
         if (route.request().method() === 'PUT') approvalsEnabled = route.request().postDataJSON().enabled;
         return route.fulfill({ json: { enabled: approvalsEnabled } });
       }
+      if (url.pathname === '/api/settings/runtime-prompt') {
+        if (route.request().method() === 'PUT') {
+          const patch = route.request().postDataJSON();
+          runtimePrompt = {
+            ...runtimePrompt,
+            ...(typeof patch.mergeCompact === 'boolean' ? { mergeCompact: patch.mergeCompact } : {}),
+            ...(typeof patch.alignCliCompaction === 'boolean' ? { alignCliCompaction: patch.alignCliCompaction } : {}),
+            extensions: {
+              ...runtimePrompt.extensions,
+              ...(patch.extensions ?? {}),
+            },
+          };
+        }
+        return route.fulfill({ json: runtimePrompt });
+      }
       if (url.pathname.endsWith('.js')) return route.fulfill({ contentType: 'text/javascript', body: await readFile(path.join(directory, path.basename(url.pathname))) });
       if (url.pathname === '/api/models-config/retry') return route.fulfill({ json: { enabled: true, maxRetries: 3, baseDelayMs: 2000, provider: { timeoutMs: null, maxRetries: null, maxRetryDelayMs: 60000 }, httpIdleTimeoutMs: 120000 } });
-      if (url.pathname.startsWith('/api/')) return route.fulfill({ json: { enabled: false, reserveTokens: 16384, templates: [], defaultTemplateId: null, settings: { enabled: true, maxRetries: 3, baseDelayMs: 2000, provider: { timeoutMs: null, maxRetries: null, maxRetryDelayMs: 60000 }, httpIdleTimeoutMs: 120000 }, modelList: [], models: [], files: [] } });
+      if (url.pathname === '/api/models-config/compaction') {
+        if (route.request().method() === 'PATCH') reserve = route.request().postDataJSON().settings.reserveTokens;
+        return route.fulfill({ json: { reserveTokens: reserve ?? 16384, configuredReserveTokens: reserve } });
+      }
+      if (url.pathname.startsWith('/api/')) return route.fulfill({ json: { enabled: false, templates: [], defaultTemplateId: null, settings: { enabled: true, maxRetries: 3, baseDelayMs: 2000, provider: { timeoutMs: null, maxRetries: null, maxRetryDelayMs: 60000 }, httpIdleTimeoutMs: 120000 }, modelList: [], models: [], files: [] } });
       return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><style>${css}body{margin:0}</style><div id="root"></div><script src="/bundle.js"></script>` });
     });
     await page.goto('https://chat-settings.test/');
-    await page.getByRole('heading', { name: '对话与任务', exact: true }).waitFor().catch(async error => { throw new Error(`${error.message}; renderer: ${errors.join('; ')}; visible: ${(await page.locator('body').innerText()).slice(0, 1500)}`); });
+    await page.getByRole('heading', { name: '指令与提示词', exact: true }).waitFor().catch(async error => { throw new Error(`${error.message}; renderer: ${errors.join('; ')}; visible: ${(await page.locator('body').innerText()).slice(0, 1500)}`); });
+    const assertCentered = async () => {
+      const pane = await page.locator('.settings-content').boundingBox();
+      const content = await page.locator('.settings-embedded-section').boundingBox();
+      assert.ok(Math.abs(pane.x + pane.width / 2 - content.x - content.width / 2) <= 2, 'settings are centered within the detail pane');
+      assert.ok(content.x >= pane.x && content.x + content.width <= pane.x + pane.width, 'settings stay within the detail pane');
+    };
+    await assertCentered();
+    assert.equal(await page.getByRole('heading', { name: '指令与提示词', exact: true }).locator('..').locator('p').count(), 0);
     assert.equal(await page.getByRole('button', { name: '对话与任务', exact: true }).count(), 1);
-    assert.equal(await page.getByRole('button', { name: /^(运行策略|提示词与标题|鸿蒙开发)$/ }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '指令与提示词', exact: true }).count(), 1);
+    assert.equal(await page.getByRole('button', { name: /^(运行策略|鸿蒙开发)$/ }).count(), 0);
     assert.equal(await page.getByText('下一轮输入预测', { exact: true }).count(), 0);
+
+    for (const id of ['conversation.systemPrompt', 'conversation.runtimePrompt', 'conversation.promptOptimizer', 'conversation.titleModel']) {
+      assert.equal(await page.locator(`[data-settings-id="${id}"]`).count(), 1, `${id} remains available on prompts page`);
+    }
+    const runtimeCard = page.locator('[data-settings-id="conversation.runtimePrompt"]');
+    await runtimeCard.getByText('各扩展提示词开关', { exact: true }).click();
+    const fileToolsSwitch = runtimeCard.getByRole('switch', { name: '文件工具引导（易冲突）', exact: true });
+    await runtimeCard.locator('button[role="switch"][aria-label="文件工具引导（易冲突）"][aria-checked="false"]:not([disabled])').waitFor();
+    await fileToolsSwitch.click();
+    await runtimeCard.locator('button[role="switch"][aria-label="文件工具引导（易冲突）"][aria-checked="true"]:not([disabled])').waitFor();
+    assert.equal(runtimePrompt.extensions.fileTools, true);
+    await runtimeCard.getByRole('button', { name: '对齐 Pi CLI（全部关闭）', exact: true }).click();
+    await runtimeCard.locator('button[role="switch"][aria-label="文件工具引导（易冲突）"][aria-checked="false"]:not([disabled])').waitFor();
+    await runtimeCard.locator('button[role="switch"][aria-label="内置浏览器说明"][aria-checked="false"]:not([disabled])').waitFor();
+    assert.equal(runtimePrompt.extensions.browser, false);
+    await page.reload();
+    await page.getByRole('heading', { name: '指令与提示词', exact: true }).waitFor();
+    await page.locator('[data-settings-id="conversation.runtimePrompt"]').getByText('各扩展提示词开关', { exact: true }).click();
+    await page.locator('[data-settings-id="conversation.runtimePrompt"] button[role="switch"][aria-label="内置浏览器说明"][aria-checked="false"]:not([disabled])').waitFor();
+
+    await page.getByRole('button', { name: '对话与任务', exact: true }).click();
+    await page.getByRole('heading', { name: '对话与任务', exact: true }).waitFor();
+    await assertCentered();
+    assert.equal(await page.locator('[data-settings-id="conversation.autoScroll"] [id="conversation-auto-scroll-desc"]').count(), 0);
     const toggle = page.getByRole('switch', { name: '权限控制', exact: true });
     await toggle.waitFor();
     assert.equal(await toggle.isChecked(), true);
@@ -50,21 +123,36 @@ test('one chat settings page preserves controls, legacy entries and searchable t
     await page.locator('[data-permission-trigger]').waitFor({ state: 'hidden' });
     assert.equal(approvalsEnabled, false);
     await page.reload();
+    await page.getByRole('button', { name: '对话与任务', exact: true }).click();
     await toggle.waitFor();
     assert.equal(await toggle.isChecked(), false);
     await toggle.click();
     await page.locator('[data-permission-trigger]').waitFor();
     assert.equal(approvalsEnabled, true);
-    const groups = await page.locator('[class*="settingsSectionHeading"]').allTextContents();
-    assert.deepEqual(groups, ['1. 消息输入与阅读', '2. 回复辅助', '3. 任务运行', '4. 权限控制', '5. 系统提示词与优化', '6. 自动标题']);
-    assert.equal(await toggle.locator('xpath=ancestor::*[contains(@class, "runtimeCards")]').count(), 0, 'permissions have their own section outside task execution');
-    for (const id of ['permission.settings', 'conversation.autoScroll', 'conversation.notifications', 'conversation.runningSendMode', 'general.runningStatusLabel', 'general.modelRetry', 'models.compaction', 'conversation.systemPrompt', 'conversation.promptOptimizer', 'conversation.titleModel']) {
-      assert.equal(await page.locator(`[data-settings-id="${id}"]`).count(), 1, `${id} remains available exactly once`);
+    const groups = await page.getByRole('main').locator('section > div > h3').allTextContents();
+    assert.deepEqual(groups, ['交互行为', '智能辅助', '执行与安全']);
+    for (const id of ['permission.settings', 'conversation.autoScroll', 'conversation.notifications', 'conversation.runningSendMode', 'conversation.answerLinks', 'conversation.replySuggestions', 'general.runningStatusLabel', 'models.fallback', 'general.modelRetry', 'models.compaction']) {
+      assert.equal(await page.locator(`[data-settings-id="${id}"]`).count(), 1, `${id} remains available on conversation page`);
     }
+    await page.getByText('请求超时、重试与上下文压缩', { exact: true }).click();
+    const compaction = page.locator('[data-settings-id="models.compaction"]');
+    await compaction.getByRole('button', { name: '自定义', exact: true }).click();
+    const reserveInput = compaction.getByPlaceholder('随模型计算');
+    const saveCompaction = compaction.getByRole('button', { name: '保存', exact: true });
+    assert.equal(await reserveInput.inputValue(), '');
+    assert.equal(await saveCompaction.isDisabled(), true);
+    await reserveInput.fill('0');
+    await saveCompaction.click();
+    await compaction.getByRole('status').waitFor();
+    assert.equal(reserve, 0);
+    await compaction.getByRole('button', { name: '自动', exact: true }).click();
+    await compaction.getByRole('status').waitFor();
+    assert.equal(reserve, null);
     const autoScroll = page.getByRole('switch', { name: '自动跟随最新输出', exact: true });
     await autoScroll.click();
     assert.equal(await autoScroll.getAttribute('aria-checked'), 'false');
     await page.reload();
+    await page.getByRole('button', { name: '对话与任务', exact: true }).click();
     await page.getByRole('heading', { name: '对话与任务', exact: true }).waitFor();
     assert.equal(await autoScroll.getAttribute('aria-checked'), 'false', 'moving the setting preserves its saved value');
     await page.evaluate(() => window.openPage('modelRuntime'));
@@ -75,6 +163,66 @@ test('one chat settings page preserves controls, legacy entries and searchable t
     assert.deepEqual(errors, []);
     await mkdir(path.join(repo, '.verification/chat-settings'), { recursive: true });
     await page.screenshot({ path: path.join(repo, '.verification/chat-settings/consolidated.png') });
+
+    assert.equal(await page.getByRole('button', { name: '数据与诊断', exact: true }).count(), 0, 'browser settings do not expose an empty desktop-only page');
+    await page.evaluate(() => window.openPage('data'));
+    await page.getByRole('heading', { name: '应用行为', exact: true }).waitFor();
+    await page.evaluate(() => {
+      const remembered = { enabled: true, entries: [{ id: 'remembered-1', url: 'https://login.example/signin', enabled: true }] };
+      window.vaultCalls = [];
+      window.piDesktop = {
+        vault: { request: async input => {
+          window.vaultCalls.push(input);
+          if (input.action === 'remember-configure') remembered.enabled = input.enabled;
+          if (input.action === 'remember-toggle') remembered.entries[0].enabled = input.enabled;
+          if (input.action === 'remember-remove') remembered.entries = [];
+          return structuredClone({ available: true, initialized: false, unlocked: false, autofill: false, entries: [], audit: [], remembered });
+        } },
+        getAgentDataDirectory: async () => ({ currentDirectory: 'F:/fixture/agent', defaultDirectory: 'F:/fixture/agent', configuredBy: 'default', environmentOverride: false }),
+        getRuntimeLog: async () => ({ filePath: 'F:/fixture/logs/runtime.log', defaultDirectory: 'F:/fixture/logs', fileLoggingAvailable: true, settings: { directory: 'F:/fixture/logs', level: 'info', maxSizeMiB: 5, backups: 1 } }),
+      };
+      window.openPage('conversation');
+      window.setDesktopFixture(true);
+    });
+    requests.length = 0;
+    await page.getByRole('button', { name: '数据与诊断', exact: true }).click();
+    await page.getByRole('heading', { name: '数据与诊断', exact: true }).waitFor();
+    await page.getByText('F:/fixture/agent', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '更改目录…', exact: true }).click();
+    await page.getByRole('textbox', { name: '目标数据目录', exact: true }).waitFor();
+    assert.equal(await page.getByRole('textbox', { name: '目标数据目录', exact: true }).inputValue(), 'F:/fixture/agent');
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.locator('[data-settings-id="general.runtimeLog"]').getByText('F:/fixture/logs/runtime.log', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: '网页登录账户', exact: true }).waitFor();
+    assert.equal(await page.getByLabel('自动保存网页登录账户并自动登录', { exact: true }).isChecked(), true);
+    await page.getByText('https://login.example/signin · ••••••', { exact: true }).waitFor();
+    await page.getByLabel('允许自动登录', { exact: true }).uncheck();
+    assert.equal(await page.getByLabel('允许自动登录', { exact: true }).isChecked(), false);
+    await page.getByRole('button', { name: '删除已记住账户', exact: true }).click();
+    await page.getByText('还没有可见账户。可登录支持的网站自动保存，或解锁后手动添加。', { exact: true }).waitFor();
+    await page.getByLabel('自动保存网页登录账户并自动登录', { exact: true }).uncheck();
+    assert.ok(await page.evaluate(() => window.vaultCalls.some(input => input.action === 'remember-configure' && input.enabled === false)));
+    await page.getByText('凭据库（本地加密）', { exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '创建凭据库', exact: true }).isVisible(), true, 'the encrypted credential manager is reachable');
+    for (const text of ['完整备份与迁移', '界面偏好（兼容旧版 JSON）', '本地凭据库', '组织使用统计']) {
+      assert.equal(await page.getByText(text, { exact: true }).count(), 0, `${text} is removed from Data & Diagnostics`);
+    }
+    assert.equal(requests.some(pathname => /analytics|vault|backup/.test(pathname)), false, 'opening the remaining page does not initialize removed cards');
+    await page.getByRole('heading', { name: '数据与诊断', exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(repo, '.verification/chat-settings/data-diagnostics.png') });
+    for (const query of ['完整备份', '界面偏好', '组织使用统计']) {
+      await page.getByPlaceholder('搜索设置…').fill(query);
+      await page.getByRole('main').getByText('没有匹配的设置项', { exact: true }).waitFor();
+    }
+    await page.getByPlaceholder('搜索设置…').fill('自动登录');
+    await page.getByRole('button', { name: /网页登录账户/ }).click();
+    await page.locator('[data-settings-id="data.websiteAccounts"][data-settings-highlighted="true"]').waitFor();
+    assert.equal(await page.getByLabel('自动保存网页登录账户并自动登录', { exact: true }).isChecked(), false, 'the saved disabled preference survives remounting the settings page');
+    await page.getByPlaceholder('搜索设置…').fill('凭据库');
+    await page.getByRole('button', { name: /凭据库（本地加密）/ }).click();
+    await page.locator('[data-settings-id="data.credentialVault"][data-settings-highlighted="true"]').waitFor();
+    assert.equal(await page.getByRole('button', { name: '创建凭据库', exact: true }).isVisible(), true, 'search opens the collapsed management section');
+    assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
     assert.equal(path.dirname(directory), path.resolve(tmpdir()));

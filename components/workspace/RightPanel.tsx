@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { useI18n } from "@/hooks/useI18n";
@@ -16,15 +16,32 @@ import { AliIcon, type AliIconName } from "../AliIcon";
 import styles from "./WorkspacePanel.module.css";
 import { AutomationPanel } from "../AutomationPanel";
 import { SSHPanel } from "./SSHPanel";
+import { PlanSidePanelTab } from "../workflow/PlanSidePanelTab";
+import { GoalSidePanelTab } from "../workflow/GoalSidePanelTab";
+import { RunChangesPane } from "./RunChangesPane";
+import {
+  dispatchFocusSideChatComposer,
+  isSideChatTab,
+  parseSideChatTabId,
+  toSideChatLoadingTabId,
+  toSideChatTabId,
+  type SideChatTabId,
+} from "../side-chat/side-chat-events";
+import {
+  SideChatMenuEntries,
+  SideChatTabPanels,
+  SideChatTabStripItems,
+  type RightPanelSideChatProps,
+} from "../side-chat/SideChatRightPanelSlots";
 import type { SessionCapabilitiesState } from "@/lib/session-capabilities";
-import type { PromptFileChanges } from "@/lib/prompt-file-changes";
-import { pollVisibleDocument } from "@/lib/visible-poller";
 import type { BrowserNavigationRequest } from "@/lib/answer-links";
 
-export type RightPanelTab = "home" | "automation" | "review" | "files" | "commands" | "ssh" | "browser" | "design" | "harmony";
+type StaticToolTab = "automation" | "review" | "files" | "commands" | "ssh" | "browser" | "design" | "harmony" | "plan" | "goal";
+export type RightPanelTab = "home" | StaticToolTab | SideChatTabId;
 export interface RightPanelHandle { focusActiveTab: () => void; focusFileSearch: () => void; }
 
 interface Props {
+  sideChat?: RightPanelSideChatProps;
   answerNavigation?: BrowserNavigationRequest;
   onAnswerNavigationConsumed?: (id: string) => void;
   commitRequest?: { cwd: string; id: number } | null;
@@ -63,7 +80,7 @@ interface Props {
   capabilities: SessionCapabilitiesState | null;
 }
 
-const TOOLS: Array<{ id: Exclude<RightPanelTab, "home">; icon: AliIconName; shortcut?: string }> = [
+const TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; shortcut?: string; labelKey?: string }> = [
   { id: "automation", icon: "calendar" },
   { id: "review", icon: "diff", shortcut: "Ctrl+Shift+G" },
   { id: "commands", icon: "code" },
@@ -75,16 +92,75 @@ const TOOLS: Array<{ id: Exclude<RightPanelTab, "home">; icon: AliIconName; shor
   { id: "files", icon: "folder-open", shortcut: "Ctrl+P" },
 ];
 
+const DYNAMIC_TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; labelKey: string }> = [
+  { id: "plan", icon: "list-check", labelKey: "workflow.plan.panelTitle" },
+  { id: "goal", icon: "target", labelKey: "workflow.goal.panelTitle" },
+];
+
+const ALL_TOOLS = [...TOOLS, ...DYNAMIC_TOOLS];
+
 const DesignToHarmonyPanel = dynamic(
   () => import("./design-to-harmony/DesignToHarmonyPanel").then((module) => module.DesignToHarmonyPanel),
   { ssr: false },
 );
 
-type ToolTab = Exclude<RightPanelTab, "home">;
+type ToolTab = StaticToolTab;
 const TREE_SPLIT_KEY = "piora-file-tree-share";
 const TREE_HANDLE_WIDTH = 6;
 
-export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPanel(props, ref) {
+interface FileViewerTabSlotProps {
+  tab: Tab;
+  selected: boolean;
+  panelActive: boolean;
+  cwd: string | null;
+  refreshKey: number;
+  onDirtyChange: (id: string, dirty: boolean) => void;
+  onRefresh: () => void;
+  onMentionLines: (relativePath: string, startLine: number, endLine: number) => void;
+  onOpenFile: (path: string, name: string, options?: { sourceSessionId?: string | null; modeHint?: "diff"; line?: number; column?: number }) => void;
+}
+
+const FileViewerTabSlot = memo(function FileViewerTabSlot({
+  tab,
+  selected,
+  panelActive,
+  cwd,
+  refreshKey,
+  onDirtyChange,
+  onRefresh,
+  onMentionLines,
+  onOpenFile,
+}: FileViewerTabSlotProps) {
+  const handleDirtyChange = useCallback(
+    (dirty: boolean) => onDirtyChange(tab.id, dirty),
+    [onDirtyChange, tab.id],
+  );
+  const handleOpenFile = useCallback(
+    (path: string, options?: { sourceSessionId?: string | null; modeHint?: "diff"; line?: number; column?: number }) => {
+      onOpenFile(path, path.replace(/\\/g, "/").split("/").pop() ?? path, options);
+    },
+    [onOpenFile],
+  );
+  return <div aria-hidden={!selected} style={{ position: "absolute", inset: 0, display: selected ? "block" : "none", overflow: "hidden" }}>
+    <FileViewer
+      filePath={tab.filePath}
+      cwd={tab.cwd ?? cwd ?? undefined}
+      sourceSessionId={tab.sourceSessionId}
+      gitRefreshKey={refreshKey}
+      initialDisplayMode={tab.initialDisplayMode}
+      revealLine={tab.revealLine}
+      revealColumn={tab.revealColumn}
+      revealKey={tab.revealKey}
+      active={panelActive && selected}
+      onDirtyChange={handleDirtyChange}
+      onSaved={onRefresh}
+      onMentionLines={panelActive && selected ? onMentionLines : undefined}
+      onOpenFile={handleOpenFile}
+    />
+  </div>;
+});
+
+export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function RightPanel(props, ref) {
   const { t } = useI18n();
   const explorerRef = useRef<FileExplorerHandle>(null);
   const filesRootRef = useRef<HTMLDivElement>(null);
@@ -93,17 +169,16 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
   const [treeDrawerOpen, setTreeDrawerOpen] = useState(false);
   const [resizingTree, setResizingTree] = useState(false);
   const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
-  const [runChanges, setRunChanges] = useState<PromptFileChanges | null>(null);
   const [browserNavigation, setBrowserNavigation] = useState<BrowserNavigationRequest | undefined>();
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const firstLauncherRef = useRef<HTMLButtonElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
   const addButtonRef = useRef<HTMLButtonElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
-  const { activeTab, onActiveTabChange, cwd, refreshKey, active, fileTabs, activeFileTabId } = props;
+  const { activeTab, onActiveTabChange, cwd, refreshKey, active, fileTabs, activeFileTabId, onOpenFile } = props;
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuPosition, setAddMenuPosition] = useState({ left: 8, top: 48, width: 278 });
-  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" ? [] : [activeTab]);
+  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" || isSideChatTab(activeTab) ? [] : [activeTab]);
   const [filesHasOpened, setFilesHasOpened] = useState(activeTab === "files");
   const [draggedTool, setDraggedTool] = useState<ToolTab | null>(null);
   const [dropTargetTool, setDropTargetTool] = useState<ToolTab | null>(null);
@@ -128,24 +203,23 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
 
   useEffect(() => { if (!compactFiles) setTreeDrawerOpen(false); }, [compactFiles]);
 
-  useEffect(() => {
-    if (activeTab !== "files" || !props.sessionId) { setRunChanges(null); return; }
-    const sessionId = props.sessionId;
-    setRunChanges((current) => current?.sessionId === sessionId ? current : null);
-    let cancelled = false;
-    const load = async (signal: AbortSignal) => {
-      try {
-        const response = await fetch(`/api/agent/${encodeURIComponent(sessionId)}/changes`, { cache: "no-store", signal });
-        if (!response.ok) return;
-        const data = await response.json() as PromptFileChanges | null;
-        if (!cancelled && !signal.aborted) setRunChanges(data);
-      } catch { if (!cancelled && !signal.aborted) setRunChanges(null); }
-    };
-    const controller = new AbortController();
-    const polling = props.sessionRunning ? pollVisibleDocument(load, 2500) : null;
-    if (!polling) void load(controller.signal);
-    return () => { cancelled = true; controller.abort(); polling?.stop(); };
-  }, [activeTab, props.sessionId, props.sessionRunning, refreshKey]);
+  const selectedFilePath = useMemo(
+    () => fileTabs.find((tab) => tab.id === activeFileTabId)?.filePath ?? null,
+    [fileTabs, activeFileTabId],
+  );
+  const handleExplorerOpenFile = useCallback((
+    path: string,
+    name: string,
+    options?: { sourceSessionId?: string | null; modeHint?: "diff"; line?: number; column?: number },
+  ) => {
+    onOpenFile(path, name, options);
+    setTreeDrawerOpen(false);
+  }, [onOpenFile]);
+  const handleOpenReview = useCallback(() => onActiveTabChange("review"), [onActiveTabChange]);
+  const handleOpenRunFile = useCallback((path: string, name: string, options?: { modeHint?: "diff" }) => {
+    onOpenFile(path, name, options);
+    setTreeDrawerOpen(false);
+  }, [onOpenFile]);
 
   const changeTreeWidth = (candidate: number) => {
     const width = filesRootRef.current?.getBoundingClientRect().width ?? 0;
@@ -184,9 +258,17 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
     </div>;
   };
   useImperativeHandle(ref, () => ({
-    focusActiveTab: () => (activeTab === "home" ? firstLauncherRef.current : activeTabRef.current)?.focus({ preventScroll: true }),
+    focusActiveTab: () => {
+      if (isSideChatTab(activeTab)) {
+        dispatchFocusSideChatComposer(parseSideChatTabId(activeTab)?.id);
+        return;
+      }
+      (activeTab === "home" ? firstLauncherRef.current : activeTabRef.current)?.focus({ preventScroll: true });
+    },
     focusFileSearch: () => { setFileNavMode("tree"); setTreeDrawerOpen(true); requestAnimationFrame(() => explorerRef.current?.focusSearch()); },
   }), [activeTab]);
+
+  useEffect(() => { setAddMenuOpen(false); }, [active, activeTab]);
 
   useEffect(() => {
     if (!addMenuOpen) return;
@@ -194,7 +276,11 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
       if (!addMenuRef.current?.contains(event.target as Node) && !toolMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAddMenuOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAddMenuOpen(false);
+        addButtonRef.current?.focus();
+      }
     };
     window.addEventListener("pointerdown", dismiss);
     window.addEventListener("keydown", closeOnEscape);
@@ -204,7 +290,7 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
     };
   }, [addMenuOpen]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!addMenuOpen) return;
     const placeMenu = () => {
       const rect = addButtonRef.current?.getBoundingClientRect();
@@ -234,7 +320,7 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "home") return;
+    if (activeTab === "home" || isSideChatTab(activeTab)) return;
     setOpenTools((current) => current.includes(activeTab) ? current : [...current, activeTab]);
   }, [activeTab]);
 
@@ -269,16 +355,30 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
     });
   };
 
-  const moveToolTabFocus = (event: React.KeyboardEvent<HTMLButtonElement>, tab: ToolTab) => {
-    const currentIndex = openTools.indexOf(tab);
+  const sideChatTabIds: RightPanelTab[] = props.sideChat?.enabled
+    ? [
+        ...props.sideChat.openIds
+          .filter((sideId) => props.sideChat!.items.some((item) => item.id === sideId))
+          .map((sideId) => toSideChatTabId(sideId)),
+        ...props.sideChat.pendingCreates.map((entry) => toSideChatLoadingTabId(entry.clientId)),
+      ]
+    : [];
+  const allRenderedTabs: RightPanelTab[] = [...openTools, ...sideChatTabIds];
+
+  const moveToolTabFocus = (event: React.KeyboardEvent<HTMLButtonElement>, tab: RightPanelTab) => {
+    const currentIndex = allRenderedTabs.indexOf(tab);
+    if (currentIndex < 0 || allRenderedTabs.length === 0) return;
     let nextIndex: number;
-    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % openTools.length;
-    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + openTools.length) % openTools.length;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % allRenderedTabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + allRenderedTabs.length) % allRenderedTabs.length;
     else if (event.key === "Home") nextIndex = 0;
-    else if (event.key === "End") nextIndex = openTools.length - 1;
+    else if (event.key === "End") nextIndex = allRenderedTabs.length - 1;
     else return;
     event.preventDefault();
-    onActiveTabChange(openTools[nextIndex]);
+    const nextTab = allRenderedTabs[nextIndex];
+    const parsedSide = parseSideChatTabId(nextTab);
+    if (parsedSide?.kind === "live" && props.sideChat) props.sideChat.onSelect(parsedSide.id);
+    else onActiveTabChange(nextTab);
     requestAnimationFrame(() => activeTabRef.current?.focus({ preventScroll: true }));
   };
 
@@ -287,7 +387,7 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
     <div className={`${styles.panelChrome} right-panel-chrome`}>
       <div className={styles.toolTabs} role="tablist" aria-label={t("workspace.panelTabs")}>
         {openTools.map((toolId) => {
-          const tool = TOOLS.find((candidate) => candidate.id === toolId);
+          const tool = ALL_TOOLS.find((candidate) => candidate.id === toolId);
           if (!tool) return null;
           const selected = activeTab === tool.id;
           return <div
@@ -311,7 +411,7 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
             onDrop={(event) => {
               event.preventDefault();
               const source = (draggedTool ?? event.dataTransfer.getData("text/piora-tool-tab")) as ToolTab;
-              if (TOOLS.some((candidate) => candidate.id === source)) moveTool(source, tool.id);
+              if (ALL_TOOLS.some((candidate) => candidate.id === source)) moveTool(source, tool.id);
               setDraggedTool(null);
               setDropTargetTool(null);
             }}
@@ -319,21 +419,31 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
           >
             <button ref={selected ? activeTabRef : undefined} type="button" role="tab" aria-selected={selected} aria-controls={`workspace-${tool.id}`} id={`workspace-${tool.id}-tab`} tabIndex={selected ? 0 : -1} onClick={() => onActiveTabChange(tool.id)} onKeyDown={(event) => moveToolTabFocus(event, tool.id)}>
               <AliIcon name={tool.icon} size={14} />
-              <span>{t(`workspace.${tool.id}`)}</span>
+              <span>{t(tool.labelKey ?? `workspace.${tool.id}`)}</span>
             </button>
             <button className={styles.closeToolTab} type="button" aria-label={t("workspace.closeTool")} onClick={() => closeTool(tool.id)}><AliIcon name="close" size={12} /></button>
           </div>;
         })}
+        <SideChatTabStripItems
+          sideChat={props.sideChat}
+          activeTab={activeTab}
+          tabClassName={styles.activeToolTab}
+          closeClassName={styles.closeToolTab}
+          activeTabRef={activeTabRef}
+          onActivateTab={(tab) => onActiveTabChange(tab)}
+          onTabKeyDown={moveToolTabFocus}
+        />
       </div>
       <div className={styles.panelChromeActions}>
         <div ref={addMenuRef} className={styles.addToolWrap}>
           <button ref={addButtonRef} className={styles.addToolButton} type="button" aria-label={t("workspace.addTool")} aria-haspopup="menu" aria-expanded={addMenuOpen} onClick={() => setAddMenuOpen((open) => !open)}><AliIcon name="plus" size={15} /></button>
-          {addMenuOpen ? createPortal(<div ref={toolMenuRef} className={styles.toolMenu} role="menu" style={addMenuPosition}>
+          {active && addMenuOpen ? createPortal(<div ref={toolMenuRef} className={styles.toolMenu} role="menu" style={addMenuPosition}>
             {TOOLS.map((tool) => <button key={tool.id} type="button" role="menuitem" data-active={activeTab === tool.id ? "true" : "false"} onClick={() => selectTool(tool.id)}>
               <AliIcon name={tool.icon} size={15} />
               <span>{t(`workspace.${tool.id}`)}</span>
               {tool.shortcut ? <kbd>{tool.shortcut}</kbd> : null}
             </button>)}
+            <SideChatMenuEntries sideChat={props.sideChat} variant="menu" onAfterSelect={() => setAddMenuOpen(false)} />
           </div>, document.body) : null}
         </div>
         <button type="button" title={t(props.maximized ? "workspace.restorePanel" : "workspace.maximizePanel")} aria-label={t(props.maximized ? "workspace.restorePanel" : "workspace.maximizePanel")} onClick={() => props.onMaximizedChange(!props.maximized)}><AliIcon name={props.maximized ? "fullscreen-exit" : "fullscreen"} size={14} /></button>
@@ -346,6 +456,7 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
         <span>{t(`workspace.${tool.id}`)}</span>
         {tool.shortcut ? <kbd>{tool.shortcut}</kbd> : null}
       </button>)}
+      <SideChatMenuEntries sideChat={props.sideChat} variant="launcher" />
     </div> : null}
     <section id="workspace-review" role="tabpanel" aria-labelledby="workspace-review-tab" hidden={activeTab !== "review"} className={styles.panel}>
       {activeTab === "review" ? <RenderErrorBoundary resetKey={`review:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><ReviewPanel cwd={cwd} commitRequest={props.commitRequest?.cwd === cwd ? props.commitRequest.id : undefined} refreshKey={refreshKey} onRefresh={props.onRefresh} onOpenFile={(path) => { props.onOpenFile(path, path.replace(/\\/g, "/").split("/").pop() ?? path); onActiveTabChange("files"); }} /></RenderErrorBoundary> : null}
@@ -356,20 +467,18 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
         {compactFiles ? <button className={styles.fileTreeRail} type="button" aria-label={t("files.explorer")} aria-expanded={treeDrawerOpen} onClick={() => setTreeDrawerOpen((open) => !open)}><AliIcon name="folder-open" size={16} /></button> : null}
         {compactFiles && treeDrawerOpen ? <button className={styles.fileTreeBackdrop} type="button" aria-label={t("i18n.close")} onClick={() => setTreeDrawerOpen(false)} /> : null}
         <div id="piora-file-explorer" className={styles.explorer} style={{ gridColumn: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: compactFiles ? treeDrawerOpen ? "flex" : "none" : "flex", flexDirection: "column", ...(compactFiles ? { position: "absolute" as const, zIndex: 12, left: 40, top: 0, bottom: 0, width: "min(320px, calc(100% - 40px))", background: "var(--bg-panel)", boxShadow: "var(--shadow-popover)" } : {}) }}>
-          <div className={styles.fileNavigatorTabs} role="tablist" aria-label={t("files.navigator")}>
-            <button type="button" role="tab" aria-selected={fileNavMode === "tree"} onClick={() => setFileNavMode("tree")}>{t("files.explorer")}</button>
-            <button type="button" role="tab" aria-selected={fileNavMode === "run"} onClick={() => setFileNavMode("run")}>{t("files.thisRun")}{runChanges?.files.length ? ` ${runChanges.files.length}` : ""}</button>
-          </div>
-          <div className={styles.fileNavigatorBody} hidden={fileNavMode !== "tree"} style={{ flex: 1, minHeight: 0, overflow: "auto", display: fileNavMode === "tree" ? undefined : "none" }}>{cwd ? <FileExplorer ref={explorerRef} cwd={cwd} selectedFilePath={fileTabs.find((tab) => tab.id === activeFileTabId)?.filePath ?? null} onOpenFile={(path, name, options) => { props.onOpenFile(path, name, options); setTreeDrawerOpen(false); }} refreshKey={refreshKey} onAtMention={props.onMention} onAtMentions={props.onMentions} changesCollapsed /> : <div className={styles.empty}>{t("workspace.selectProject")}</div>}</div>
-          <div className={styles.fileNavigatorBody} hidden={fileNavMode !== "run"} style={{ flex: 1, minHeight: 0, overflow: "auto", display: fileNavMode === "run" ? undefined : "none" }}>
-            <div className={styles.runSummary}>
-              <span>{runChanges?.status === "running" ? t("files.runRunning") : runChanges?.status === "aborted" ? t("files.runAborted") : runChanges?.status === "error" ? t("files.runError") : runChanges?.status === "unavailable" ? t("files.runUnavailable") : t("files.thisRun")}</span>
-              <button type="button" onClick={() => onActiveTabChange("review")}>{t("files.reviewAll")}</button>
-            </div>
-            {runChanges ? <div className={styles.runScope}>{t("files.runScope")}</div> : null}
-            {runChanges?.partial ? <div className={styles.runNotice}>{t("files.runPartial")}</div> : null}
-            {runChanges?.files.length ? runChanges.files.map((file) => <button key={file.path} className={styles.runFile} type="button" title={file.path} onClick={() => { props.onOpenFile(file.path, file.path.replace(/\\/g, "/").split("/").pop() ?? file.path, file.kind === "deleted" ? { modeHint: "diff" } : undefined); setTreeDrawerOpen(false); }}><AliIcon name="file" size={14} /><span>{file.path.replace(/\\/g, "/").split("/").pop()}</span><small>{t(`files.run.${file.kind}`)}</small></button>) : <div className={styles.runEmpty}>{!runChanges ? t("files.runNever") : runChanges.status === "running" ? t("files.runPending") : runChanges.status === "unavailable" ? t("files.runUnavailable") : t("files.runEmpty")}</div>}
-          </div>
+          <RunChangesPane
+            active={activeTab === "files"}
+            sessionId={props.sessionId}
+            sessionRunning={props.sessionRunning}
+            refreshKey={refreshKey}
+            fileNavMode={fileNavMode}
+            onFileNavModeChange={setFileNavMode}
+            onOpenReview={handleOpenReview}
+            onOpenRunFile={handleOpenRunFile}
+          >
+            {cwd ? <FileExplorer ref={explorerRef} cwd={cwd} selectedFilePath={selectedFilePath} onOpenFile={handleExplorerOpenFile} refreshKey={refreshKey} onAtMention={props.onMention} onAtMentions={props.onMentions} changesCollapsed /> : <div className={styles.empty}>{t("workspace.selectProject")}</div>}
+          </RunChangesPane>
         </div>
         <div className={styles.fileTreeSplitter} style={{ gridColumn: 2, display: compactFiles ? "none" : undefined, position: "relative", cursor: "col-resize", touchAction: "none" }} role="separator" tabIndex={compactFiles ? -1 : 0} aria-hidden={compactFiles} aria-label={t("files.resizeTree")} aria-orientation="vertical" aria-controls="piora-file-explorer piora-file-viewer" aria-valuemin={160} aria-valuemax={maxTreeWidth} aria-valuenow={treeWidth}
           onKeyDown={(event) => {
@@ -394,10 +503,20 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
             onMoveTab={props.onMoveFileTab}
             onReopenClosedTab={props.onReopenClosedFileTab}
           /></div>
-          <div className={styles.fileBody} style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden" }}>{fileTabs.length ? fileTabs.map((tab) => {
-            const selected = tab.id === activeFileTabId;
-            return <div key={tab.id} aria-hidden={!selected} style={{ position: "absolute", inset: 0, display: selected ? "block" : "none", overflow: "hidden" }}><FileViewer filePath={tab.filePath} cwd={tab.cwd ?? cwd ?? undefined} sourceSessionId={tab.sourceSessionId} gitRefreshKey={refreshKey} initialDisplayMode={tab.initialDisplayMode} revealLine={tab.revealLine} revealColumn={tab.revealColumn} revealKey={tab.revealKey} active={active && activeTab === "files" && selected} onDirtyChange={(dirty) => props.onDirtyChange(tab.id, dirty)} onSaved={props.onRefresh} onMentionLines={active && selected ? props.onMentionLines : undefined} onOpenFile={(path, options) => props.onOpenFile(path, path.replace(/\\/g, "/").split("/").pop() ?? path, options)} /></div>;
-          }) : <div className={styles.empty}>{t("files.noneOpen")}</div>}</div>
+          <div className={styles.fileBody} style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden" }}>{fileTabs.length ? fileTabs.map((tab) => (
+            <FileViewerTabSlot
+              key={tab.id}
+              tab={tab}
+              selected={tab.id === activeFileTabId}
+              panelActive={active && activeTab === "files"}
+              cwd={cwd}
+              refreshKey={refreshKey}
+              onDirtyChange={props.onDirtyChange}
+              onRefresh={props.onRefresh}
+              onMentionLines={props.onMentionLines}
+              onOpenFile={props.onOpenFile}
+            />
+          )) : <div className={styles.empty}>{t("files.noneOpen")}</div>}</div>
         </div>
       </div>
       </RenderErrorBoundary> : null}
@@ -409,10 +528,26 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
       {active && activeTab === "ssh" ? <RenderErrorBoundary resetKey={`ssh:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><SSHPanel agentSessionId={props.sessionId} /></RenderErrorBoundary> : null}
     </section>
     <section id="workspace-browser" role="tabpanel" aria-labelledby="workspace-browser-tab" hidden={activeTab !== "browser"} className={styles.panel}>
-      {activeTab === "browser" ? <div className={styles.capabilityPanel}>{capabilityAccess("browser")}<div className={styles.capabilityPanelBody}><RenderErrorBoundary resetKey={`browser:${props.sessionId ?? "manual"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><BrowserPanel active={active && activeTab === "browser"} maximized={props.maximized} sessionId={props.sessionId} navigationRequest={props.answerNavigation ?? browserNavigation} onNavigationConsumed={(id) => {
-        props.onAnswerNavigationConsumed?.(id);
-        setBrowserNavigation(current => current?.id === id ? undefined : current);
-      }} /></RenderErrorBoundary></div></div> : null}
+      {/* Native WebContentsView sits above DOM portals. Keep the panel mounted,
+          but suspend its native surface until the tool menu closes. */}
+      {activeTab === "browser" ? <div className={styles.capabilityPanel}>{capabilityAccess("browser")}<div className={styles.capabilityPanelBody}><RenderErrorBoundary resetKey={`browser:${props.sessionId ?? "manual"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}>
+        <BrowserPanel
+          active={active && !addMenuOpen}
+          maximized={props.maximized}
+          sessionId={props.sessionId}
+          workspace={cwd ? {
+            cwd,
+            openFile: (path, name) => { props.onOpenFile(path, name); selectTool("files"); },
+            openFiles: () => { selectTool("files"); setFileNavMode("tree"); setTreeDrawerOpen(true); },
+            openTerminal: () => selectTool("commands"),
+          } : undefined}
+          navigationRequest={props.answerNavigation ?? browserNavigation}
+          onNavigationConsumed={(id) => {
+            props.onAnswerNavigationConsumed?.(id);
+            setBrowserNavigation(current => current?.id === id ? undefined : current);
+          }}
+        />
+      </RenderErrorBoundary></div></div> : null}
     </section>
     <section id="workspace-harmony" role="tabpanel" aria-labelledby="workspace-harmony-tab" hidden={activeTab !== "harmony"} className={styles.panel}>
       {activeTab === "harmony" ? <div className={styles.capabilityPanel}>{capabilityAccess("device")}<div className={styles.capabilityPanelBody}><RenderErrorBoundary resetKey={`harmony:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><SafeHarmonyPanel active={active && activeTab === "harmony"} maximized={props.maximized} onMaximizedChange={props.onMaximizedChange} cwd={cwd} sessionId={props.sessionId} sessionRunning={props.sessionRunning} onGuideAgent={props.onGuideAgent} onOpenLocalTerminal={() => onActiveTabChange("commands")} /></RenderErrorBoundary></div></div> : null}
@@ -433,5 +568,12 @@ export const RightPanel = forwardRef<RightPanelHandle, Props>(function RightPane
     <section id="workspace-automation" role="tabpanel" aria-labelledby="workspace-automation-tab" hidden={activeTab !== "automation"} className={styles.panel}>
       {active && activeTab === "automation" ? <RenderErrorBoundary resetKey={`automation:${props.selectedAutomationId ?? "list"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><AutomationPanel automationId={props.selectedAutomationId} sessionId={props.sessionId} sessionName={props.sessionName} cwd={cwd} onSelectAutomation={props.onSelectAutomation} onAutomationChanged={props.onAutomationChanged} /></RenderErrorBoundary> : null}
     </section>
+    <section id="workspace-plan" role="tabpanel" aria-labelledby="workspace-plan-tab" hidden={activeTab !== "plan"} className={styles.panel}>
+      {activeTab === "plan" ? <RenderErrorBoundary resetKey={`plan:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><PlanSidePanelTab sessionId={props.sessionId} cwd={cwd} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+    </section>
+    <section id="workspace-goal" role="tabpanel" aria-labelledby="workspace-goal-tab" hidden={activeTab !== "goal"} className={styles.panel}>
+      {activeTab === "goal" ? <RenderErrorBoundary resetKey={`goal:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><GoalSidePanelTab sessionId={props.sessionId} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+    </section>
+    <SideChatTabPanels sideChat={props.sideChat} panelActive={active} activeTab={activeTab} panelClassName={styles.panel} />
   </div>;
-});
+}));

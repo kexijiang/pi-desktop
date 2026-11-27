@@ -2,25 +2,52 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "./useI18n";
-import type { WorkflowAction, WorkflowSnapshot } from "@/lib/workflow-types";
+import type { WorkflowAction, WorkflowCriterion, WorkflowMode, WorkflowSnapshot } from "@/lib/workflow-types";
+
+export interface WorkflowActionExtra {
+  turnBudget?: number;
+  objective?: string;
+  criteria?: WorkflowCriterion[];
+  planMarkdown?: string;
+  feedback?: string;
+}
 
 /** Session and revision checks fence slow requests after switching chats or acting. */
-export function useWorkflow(sessionId: string | null, visible: boolean, running: boolean,
-  executeAction: (action: WorkflowAction) => Promise<WorkflowSnapshot>) {
+export function useWorkflow(
+  sessionId: string | null,
+  visible: boolean,
+  running: boolean,
+  executeAction: (action: WorkflowAction) => Promise<WorkflowSnapshot>,
+  liveSnapshot?: WorkflowSnapshot | null,
+  deferInitialLoad = false,
+) {
   const { t } = useI18n();
   const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const latest = useRef({ sessionId, executeAction, t });
   latest.current = { sessionId, executeAction, t };
   const generation = useRef(0);
   const actionInFlight = useRef(false);
   const request = useRef<AbortController | null>(null);
+  const lastFetchedRef = useRef<{ sid: string; at: number } | null>(null);
+
   const accept = useCallback((next: WorkflowSnapshot) => {
     if (next.sessionId !== latest.current.sessionId) return;
-    setSnapshot(current => current?.sessionId === next.sessionId && current.revision > next.revision ? current : next);
+    setSnapshot(current => {
+      if (current?.sessionId === next.sessionId && current.revision > next.revision) return current;
+      return next;
+    });
   }, []);
-  const refresh = useCallback(async () => {
+
+  useEffect(() => {
+    if (liveSnapshot && liveSnapshot.sessionId === sessionId) {
+      accept(liveSnapshot);
+    }
+  }, [liveSnapshot, sessionId, accept]);
+
+  const reconcile = useCallback(async () => {
     const sid = latest.current.sessionId;
     if (!sid || request.current) return;
     const epoch = generation.current;
@@ -31,49 +58,165 @@ export function useWorkflow(sessionId: string | null, visible: boolean, running:
       if (!response.ok) throw new Error(latest.current.t("workflow.loadError"));
       const next = await response.json() as WorkflowSnapshot;
       if (epoch !== generation.current || controller.signal.aborted || latest.current.sessionId !== sid) return;
+      lastFetchedRef.current = { sid, at: Date.now() };
       accept(next);
-      setError(null);
+      setLoadError(null);
     } catch {
-      if (epoch === generation.current && !controller.signal.aborted) setError(latest.current.t("workflow.loadError"));
+      if (epoch === generation.current && !controller.signal.aborted) setLoadError(latest.current.t("workflow.loadError"));
     } finally { if (request.current === controller) request.current = null; }
   }, [accept]);
+
+  const refresh = useCallback(async () => {
+    // An explicit retry acknowledges the previous action failure. Background
+    // polling only reconciles state and must not erase the failure message.
+    setActionError(null);
+    await reconcile();
+  }, [reconcile]);
+
   useEffect(() => {
     const epoch = ++generation.current;
     request.current?.abort(); request.current = null;
+    lastFetchedRef.current = null;
     actionInFlight.current = false;
-    setSnapshot(null); setError(null); setBusy(false);
-    if (sessionId) void refresh();
+    setSnapshot(null); setLoadError(null); setActionError(null); setBusy(false);
+    if (sessionId && !deferInitialLoad) void reconcile();
     return () => { generation.current = epoch + 1; request.current?.abort(); request.current = null; };
-  }, [sessionId, refresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, reconcile]);
+
+  const hasActiveWorkflow = Boolean(snapshot?.sessionId === sessionId && (snapshot.mode !== "agent" || snapshot.current));
+
   useEffect(() => {
-    if (!sessionId || !visible) return;
-    const reconcile = () => { if (document.visibilityState !== "hidden") void refresh(); };
-    reconcile();
-    const timer = setInterval(reconcile, running ? 1_000 : 3_000);
-    window.addEventListener("online", reconcile);
-    document.addEventListener("visibilitychange", reconcile);
-    return () => { clearInterval(timer); window.removeEventListener("online", reconcile); document.removeEventListener("visibilitychange", reconcile); };
-  }, [sessionId, visible, running, refresh]);
-  const act = useCallback(async (action: WorkflowAction["action"], turnBudget?: number) => {
+    if (!sessionId || !visible || deferInitialLoad) return;
+    const isStale = () => !lastFetchedRef.current || lastFetchedRef.current.sid !== sessionId || Date.now() - lastFetchedRef.current.at >= 5_000;
+    const refreshVisible = () => {
+      if (document.visibilityState !== "hidden" && !request.current && isStale()) void reconcile();
+    };
+    refreshVisible();
+    const pollMs = hasActiveWorkflow ? (running ? 5_000 : 15_000) : (running ? 30_000 : 0);
+    const timer = pollMs > 0 ? setInterval(() => {
+      if (document.visibilityState !== "hidden") void reconcile();
+    }, pollMs) : null;
+    window.addEventListener("online", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      if (timer) clearInterval(timer);
+      window.removeEventListener("online", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  }, [sessionId, visible, running, hasActiveWorkflow, deferInitialLoad, reconcile]);
+
+  const act = useCallback(async (
+    action: WorkflowAction["action"],
+    extra?: number | WorkflowActionExtra,
+  ) => {
     const current = snapshot;
     if (!current?.current || current.sessionId !== latest.current.sessionId || actionInFlight.current) return false;
     const epoch = generation.current;
-    actionInFlight.current = true; setBusy(true); setError(null);
+    const options: WorkflowActionExtra = typeof extra === "number" ? { turnBudget: extra } : (extra ?? {});
+    actionInFlight.current = true; setBusy(true); setLoadError(null); setActionError(null);
     try {
-      const next = await latest.current.executeAction({ action, runId: current.current.id, expectedRevision: current.revision, ...(turnBudget !== undefined ? { turnBudget } : {}) });
+      const next = await latest.current.executeAction({
+        action,
+        runId: current.current.id,
+        expectedRevision: current.revision,
+        ...(options.turnBudget !== undefined ? { turnBudget: options.turnBudget } : {}),
+        ...(options.objective !== undefined ? { objective: options.objective } : {}),
+        ...(options.criteria !== undefined ? { criteria: options.criteria } : {}),
+        ...(options.planMarkdown !== undefined ? { planMarkdown: options.planMarkdown } : {}),
+        ...(options.feedback !== undefined ? { feedback: options.feedback } : {}),
+      });
       if (epoch !== generation.current) return false;
       accept(next);
       return true;
     } catch (cause) {
       if (epoch === generation.current) {
-        setError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
+        setActionError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
         // A 409 may mean another window acted; reload before offering actions.
-        void refresh();
+        void reconcile();
       }
       return false;
     } finally {
       if (epoch === generation.current) { actionInFlight.current = false; setBusy(false); }
     }
-  }, [snapshot, accept, refresh]);
-  return { snapshot: snapshot?.sessionId === sessionId ? snapshot : null, error, busy, act, refresh };
+  }, [snapshot, accept, reconcile]);
+
+  const configureMode = useCallback(async (mode: WorkflowMode, turnBudget?: number) => {
+    const sid = latest.current.sessionId;
+    const current = snapshot;
+    if (!sid || !current || current.sessionId !== sid || actionInFlight.current) return false;
+    const epoch = generation.current;
+    actionInFlight.current = true; setBusy(true); setLoadError(null); setActionError(null);
+    try {
+      const response = await fetch(`/api/agent/${encodeURIComponent(sid)}/workflow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "configure",
+          mode,
+          ...(turnBudget !== undefined ? { turnBudget } : {}),
+          expectedRevision: current.revision,
+        }),
+      });
+      const result = await response.json() as { snapshot?: WorkflowSnapshot; error?: string };
+      if (!response.ok || !result.snapshot) {
+        throw new Error(result.error ?? latest.current.t("workflow.actionError"));
+      }
+      if (epoch !== generation.current) return false;
+      accept(result.snapshot);
+      return true;
+    } catch (cause) {
+      if (epoch === generation.current) {
+        setActionError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
+        void reconcile();
+      }
+      return false;
+    } finally {
+      if (epoch === generation.current) { actionInFlight.current = false; setBusy(false); }
+    }
+  }, [snapshot, accept, reconcile]);
+
+  const savePlanMarkdown = useCallback(async (runId: string, markdown: string) => {
+    const sid = latest.current.sessionId;
+    if (!sid || actionInFlight.current) return false;
+    const epoch = generation.current;
+    actionInFlight.current = true; setBusy(true); setLoadError(null); setActionError(null);
+    try {
+      const response = await fetch(`/api/agent/${encodeURIComponent(sid)}/workflow/plan`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runId,
+          markdown,
+          ...(snapshot?.sessionId === sid ? { expectedRevision: snapshot.revision } : {}),
+        }),
+      });
+      const result = await response.json() as { snapshot?: WorkflowSnapshot; error?: string };
+      if (!response.ok || !result.snapshot) {
+        throw new Error(result.error ?? latest.current.t("workflow.actionError"));
+      }
+      if (epoch !== generation.current) return false;
+      accept(result.snapshot);
+      return true;
+    } catch (cause) {
+      if (epoch === generation.current) {
+        setActionError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
+        void reconcile();
+      }
+      return false;
+    } finally {
+      if (epoch === generation.current) { actionInFlight.current = false; setBusy(false); }
+    }
+  }, [snapshot, accept, reconcile]);
+
+  return {
+    snapshot: snapshot?.sessionId === sessionId ? snapshot : null,
+    error: actionError ?? loadError,
+    busy,
+    act,
+    configureMode,
+    savePlanMarkdown,
+    accept,
+    refresh,
+  };
 }

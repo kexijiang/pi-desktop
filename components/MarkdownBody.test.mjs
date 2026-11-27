@@ -75,7 +75,10 @@ test("keeps wide tables on one line inside a horizontal scroller", () => {
   const html = renderMarkdown("| 第一列 | 第二列 |\n| --- | --- |\n| 很长的内容 | 同样很长的内容 |");
 
   assert.match(html, /class="markdown-table-wrap"/);
-  assert.match(globalCss, /\.markdown-table-wrap\s*\{[^}]*overflow-x:\s*auto;[^}]*scrollbar-gutter:\s*stable;/s);
+  const wrap = globalCss.match(/\.markdown-table-wrap\s*\{([^}]*)\}/s)[1];
+  assert.match(wrap, /overflow-x:\s*auto;/);
+  assert.match(wrap, /background:\s*var\(--bg-panel\)/);
+  assert.doesNotMatch(wrap, /scrollbar-gutter:\s*stable/, "a vertical scrollbar gutter leaves the rows short on Windows");
   assert.match(globalCss, /\.markdown-body table\s*\{[^}]*width:\s*max-content;[^}]*min-width:\s*100%;/s);
   assert.match(globalCss, /\.markdown-body th, \.markdown-body td\s*\{[^}]*white-space:\s*nowrap;/s);
 });
@@ -141,4 +144,18 @@ test("does not normalize escaped delimiters or link destinations", () => {
 
   assert.equal(normalizeDisplayMath(escaped), escaped);
   assert.equal(normalizeDisplayMath(link), link);
+});
+
+test("markdown headings descend above body size and inline code keeps a soft pill background", () => {
+  const h1 = Number(globalCss.match(/\.markdown-body h1\s*\{\s*font-size:\s*([\d.]+)em;/)?.[1]);
+  const h2 = Number(globalCss.match(/\.markdown-body h2\s*\{\s*font-size:\s*([\d.]+)em;/)?.[1]);
+  const h3 = Number(globalCss.match(/\.markdown-body h3\s*\{\s*font-size:\s*([\d.]+)em;/)?.[1]);
+  assert.ok(h1 > h2 && h2 > h3 && h3 >= 1, `expected h1 > h2 > h3 >= 1, got ${h1}, ${h2}, ${h3}`);
+
+  const inlineRule = globalCss.match(/\.markdown-body \.markdown-inline-code\s*\{([^}]*)\}/s)?.[1] ?? "";
+  assert.match(inlineRule, /background:\s*color-mix\(/);
+  assert.doesNotMatch(inlineRule, /background:\s*transparent;/);
+
+  const assistantInlineRule = globalCss.match(/\.markdown-assistant-message \.markdown-inline-code\s*\{([^}]*)\}/s)?.[1] ?? "";
+  assert.doesNotMatch(assistantInlineRule, /background:\s*transparent;/);
 });

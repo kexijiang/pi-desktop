@@ -15,6 +15,7 @@ import { ModelChangeNotice } from "./ModelChangeNotice";
 import { type ModelChangeNotice as ModelChange } from "@/lib/model-change-notices";
 import type { TaskTiming } from "@/lib/task-timing";
 import type { ChatCommandView } from "@/lib/chat-command-types";
+import type { CompletedGoalBadge } from "@/lib/workflow-types";
 
 export interface ChatHistoryHandle { revealEntry(id: string): void; cancelNavigation(): void }
 type MessageProps = ComponentProps<typeof MessageView>;
@@ -38,26 +39,37 @@ interface Props extends Pick<MessageProps, "modelNames" | "cwd" | "onOpenFile" |
   scrollContainer: RefObject<HTMLDivElement | null>;
   handleRef: Ref<ChatHistoryHandle>;
   onDeleteMessage?: (message: AgentMessage, entryId?: string) => Promise<void>;
+  onInsertIntoMain?: (text: string) => void;
   deleteDisabled?: boolean;
   responseTimings?: Map<number, TaskTiming>;
   operations?: ChatCommandView[];
   commandActions?: ChatCommandCardActions;
+  completedGoal?: CompletedGoalBadge | null;
 }
 
 const NO_MODEL_CHANGES: ModelChange[] = [];
 const NO_OPERATIONS: ChatCommandView[] = [];
 
-const HistoryMessage = memo(function HistoryMessage({ originalMessage, allowActions, onBranch, onDeleteMessage, actionsDisabled, deleteDisabled, ...props }: MessageProps & {
+const HistoryMessage = memo(function HistoryMessage({ originalMessage, allowActions, onBranch, onDeleteMessage, onInsertIntoMain, actionsDisabled, deleteDisabled, ...props }: MessageProps & {
   originalMessage: AgentMessage; allowActions: boolean; onBranch?: Props["onBranch"];
-  onDeleteMessage?: Props["onDeleteMessage"]; actionsDisabled: boolean; deleteDisabled: boolean;
+  onDeleteMessage?: Props["onDeleteMessage"]; onInsertIntoMain?: Props["onInsertIntoMain"]; actionsDisabled: boolean; deleteDisabled: boolean;
 }) {
   const { t } = useI18n();
   const { entryId, message, intermediate } = props;
   const actions = useMemo(() => <>
     {onBranch && allowActions && entryId && (message.role === "user" || message.role === "assistant" && !intermediate && !message.content.some(block => block.type === "toolCall")) ?
       <button type="button" className="message-delete-button" disabled={actionsDisabled} title={t("i18n.branchFromHereTitle")} onClick={() => { void onBranch(entryId); }}><AliIcon name="fork" size={11} />{t("i18n.branchFromHere")}</button> : null}
+    {onInsertIntoMain && allowActions && message.role === "assistant" && !intermediate ?
+      <button type="button" className="message-delete-button" title={t("sideChat.insertToMain")} onClick={() => {
+        const text = message.content
+          .filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string")
+          .map((block) => block.text)
+          .join("\n")
+          .trim();
+        if (text) onInsertIntoMain(text);
+      }}><AliIcon name="arrowleft" size={11} />{t("sideChat.insertToMain")}</button> : null}
     {allowActions && onDeleteMessage && (entryId || message.role === "user" && message.clientPromptId) ? <DeleteMessageAction message={originalMessage} entryId={entryId} onDelete={onDeleteMessage} disabled={deleteDisabled} /> : null}
-  </>, [onBranch, allowActions, entryId, message, intermediate, actionsDisabled, onDeleteMessage, originalMessage, deleteDisabled, t]);
+  </>, [onBranch, allowActions, entryId, message, intermediate, actionsDisabled, onInsertIntoMain, onDeleteMessage, originalMessage, deleteDisabled, t]);
   return <MessageView {...props} messageActions={actions} />;
 });
 
@@ -76,41 +88,50 @@ function DeleteMessageAction({ message, entryId, onDelete, disabled }: { message
 }
 
 /** One turn projection for saved history and the live tail in both display modes. */
-function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelChanges = NO_MODEL_CHANGES, compactProcess = true, directProcess = false, streamingMessage, entryIds, busy, streaming, interruptionId, isNew, forkingEntryId, highlightedEntryId, lastUserMsgRef, pendingScrollToUserRef, scrollContainer, handleRef, onBranch, onDeleteMessage, deleteDisabled = false, operations = NO_OPERATIONS, commandActions, responseTimings, ...messageProps }: Props) {
+function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelChanges = NO_MODEL_CHANGES, compactProcess = true, directProcess = false, streamingMessage, entryIds, busy, streaming, interruptionId, isNew, forkingEntryId, highlightedEntryId, lastUserMsgRef, pendingScrollToUserRef, scrollContainer, handleRef, onBranch, onDeleteMessage, deleteDisabled = false, operations = NO_OPERATIONS, commandActions, responseTimings, completedGoal, ...messageProps }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const [inspectCommand, setInspectCommand] = useState<string | null>(null);
   const list = useRef<VirtualListHandle>(null);
   const base = useMemo(() => prepareChatHistory(savedMessages, entryIds, expanded, compactProcess, directProcess, operations, modelChanges),
     [savedMessages, entryIds, expanded, compactProcess, directProcess, operations, modelChanges]);
-  const { messages, rows, entryRows, entryGroups, toolResults, stableKeys } = useMemo(() => projectChatHistoryTail(base, streamingMessage, busy || streaming), [base, streamingMessage, busy, streaming]);
+  const { messages, rows, liveRows, entryRows, entryGroups, toolResults, stableKeys } = useMemo(() => projectChatHistoryTail(base, streamingMessage, busy || streaming), [base, streamingMessage, busy, streaming]);
   const activeGroups = useRef<Set<string>>(new Set());
   const interruptedGroups = useRef<Set<string>>(new Set());
+  const manualGroups = useRef(new Set<string>());
   const lastInterruptionId = useRef<number | null>(null);
   useLayoutEffect(() => {
     if (interruptionId != null && interruptionId !== lastInterruptionId.current) {
-      const latest = rows.findLast(row => row.compactProcess);
+      const latest = liveRows.findLast(row => row.compactProcess) ?? base.rows.findLast(row => row.compactProcess);
       if (latest) interruptedGroups.current.add(latest.key);
       lastInterruptionId.current = interruptionId;
     }
-    const next = new Set(rows.filter(row => row.compactProcess?.active).map(row => row.key));
-    const changes = rows.filter(row => row.compactProcess && row.compactProcess.active !== activeGroups.current.has(row.key));
+    const next = new Set(liveRows.filter(row => row.compactProcess?.active).map(row => row.key));
+    const previous = activeGroups.current;
     activeGroups.current = next;
+    const changes = [...new Set([...previous, ...next])].filter(key => previous.has(key) !== next.has(key));
     if (!compactProcess || directProcess || !changes.length) return;
-    setExpanded(previous => {
-      const updated = new Map(previous);
-      for (const row of changes) {
-        if (!row.compactProcess!.active && (row.compactProcess!.interrupted || interruptedGroups.current.has(row.key))) continue;
-        updated.set(row.key, row.compactProcess!.active);
+    setExpanded(current => {
+      const updated = new Map(current);
+      for (const key of changes) {
+        if (manualGroups.current.has(key)) continue;
+        const row = liveRows.find(candidate => candidate.key === key);
+        if (!next.has(key) && (row?.compactProcess?.interrupted || interruptedGroups.current.has(key))) continue;
+        updated.set(key, next.has(key));
       }
       return updated;
     });
-  }, [rows, compactProcess, directProcess, interruptionId]);
+  }, [base.rows, liveRows, compactProcess, directProcess, interruptionId]);
   const metadata = base.metadata;
-  const visibleRows = rows;
+  const lastAssistantIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "assistant") return i;
+    }
+    return -1;
+  }, [messages]);
   // Text-only deltas retain the key array too: VirtualList need not rebuild
   // every offset or prune its height/disclosure caches on every token.
-  const tailKeysJson = JSON.stringify(rows.slice(stableKeys.length).map(row => row.key));
+  const tailKeysJson = JSON.stringify(liveRows.map(row => row.key));
   const keys = useMemo(() => [...stableKeys, ...JSON.parse(tailKeysJson) as string[]], [stableKeys, tailKeysJson]);
   const pendingReveal = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -131,38 +152,41 @@ function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelC
     },
     cancelNavigation() { pendingReveal.current = null; list.current?.cancelNavigation(); },
   }), [entryRows, entryGroups]);
-  const toggle = useCallback((key: string, open: boolean) => setExpanded(previous => new Map(previous).set(key, open)), []);
+  const toggle = useCallback((key: string, open: boolean) => {
+    manualGroups.current.add(key);
+    setExpanded(previous => new Map(previous).set(key, open));
+  }, []);
 
   // A session can first mount behind settings (e.g. after extension reload).
   // Subsequent hides are handled by the memo boundary without unmounting rows.
   if (_visible === false) return null;
 
   // Mount the newly sent prompt before the session hook's layout scroll runs.
-  const pendingUserKey = pendingScrollToUserRef.current ? rows.find((row) => !row.process && row.index === metadata.lastUser)?.key : undefined;
+  const pendingUserKey = pendingScrollToUserRef.current ? base.userRowKey : undefined;
   return <VirtualList keys={keys} pinnedKeys={pendingUserKey ? [pendingUserKey] : []} estimate={160} initialTail scrollContainer={scrollContainer} handleRef={list} renderItem={(_key, rowIndex) => {
-    const row = visibleRows[rowIndex];
+    const row = rows.get(rowIndex)!;
     if (row.modelChange) return <ModelChangeNotice notice={row.modelChange} modelNames={messageProps.modelNames} />;
     if (row.operation) return commandActions ? <ChatCommandCard record={row.operation} actions={commandActions} /> : null;
     if (row.compactProcess) return <CompactProcessSummary group={row.compactProcess}
       onToggle={() => { setInspectCommand(null); toggle(row.key, !row.compactProcess!.expanded); }}
       onInspectCommand={(id) => {
         setInspectCommand(id);
-        setExpanded(previous => new Map(previous).set(row.key, true));
+        toggle(row.key, true);
       }} />;
     const index = row.index;
     const message = row.message!;
     const showTimestamp = row.showTimestamp ?? (metadata.showTimestamps.has(index) && !(streaming && index === messages.length - 1));
     return <CompactProcessContext.Provider value={true}><RevealProcessCommandContext.Provider value={inspectCommand}><div className={`chat-message-shell${row.secondary ? " compact-process-detail" : ""}${highlightedEntryId === entryIds[index] ? " is-search-target" : ""}`} data-chat-entry-id={entryIds[index]} data-chat-user-index={metadata.userIndices.get(index)}
-      data-process-join-before={Boolean(row.processGroupKey && visibleRows[rowIndex - 1]?.processGroupKey === row.processGroupKey) || undefined}
-      data-process-join-after={Boolean(row.processGroupKey && visibleRows[rowIndex + 1]?.processGroupKey === row.processGroupKey) || undefined}
+      data-process-join-before={Boolean(row.processGroupKey && rows.get(rowIndex - 1)?.processGroupKey === row.processGroupKey) || undefined}
+      data-process-join-after={Boolean(row.processGroupKey && rows.get(rowIndex + 1)?.processGroupKey === row.processGroupKey) || undefined}
       onClickCapture={(event) => {
         if (row.processGroupKey && (event.target as HTMLElement).closest("button, a, input, textarea")) {
-          setExpanded(previous => previous.get(row.processGroupKey!) === true ? previous : new Map(previous).set(row.processGroupKey!, true));
+          toggle(row.processGroupKey, true);
         }
       }}
       ref={index === metadata.lastUser ? (element) => { lastUserMsgRef.current = element; if (element && pendingScrollToUserRef.current) list.current?.cancelNavigation(); } : undefined}>
       <RenderErrorBoundary resetKey={messageFingerprint(message, entryIds[index])} fallbackLabel={t("chat.messageRenderFailed")} errorTitle={t("chat.messageRenderError")}>
-        <HistoryMessage {...messageProps} message={message} intermediate={row.intermediate} isStreaming={row.isStreaming} toolRunActive={(busy || streaming) && index >= metadata.lastUser} toolResults={toolResults} entryId={entryIds[index]}
+        <HistoryMessage {...messageProps} message={message} intermediate={row.intermediate} isStreaming={row.isStreaming} toolRunActive={(busy || streaming) && index >= base.start} toolResults={toolResults} entryId={entryIds[index]}
           retryPrompt={metadata.retryPrompts.get(index)} retryDisabled={messageProps.retryDisabled || busy || streaming}
           originalMessage={messages[index]} allowActions={row.attachRef !== false} onBranch={onBranch} onDeleteMessage={onDeleteMessage}
           actionsDisabled={busy || streaming || isNew || Boolean(forkingEntryId)} deleteDisabled={deleteDisabled || busy || streaming}
@@ -171,7 +195,8 @@ function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelC
           forking={forkingEntryId === entryIds[index]}
           prevAssistantEntryId={!busy && message.role === "user" && messages[index - 1]?.role === "assistant" ? entryIds[index - 1] : undefined}
           showTimestamp={showTimestamp} prevTimestamp={messages[index - 1]?.timestamp}
-          taskTiming={responseTimings?.get(index)} />
+          taskTiming={responseTimings?.get(index)}
+          completedGoal={completedGoal && !busy && !streaming && index === lastAssistantIndex && !row.intermediate ? completedGoal : null} />
       </RenderErrorBoundary>
     </div></RevealProcessCommandContext.Provider></CompactProcessContext.Provider>;
   }} />;

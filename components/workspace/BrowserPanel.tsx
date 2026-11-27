@@ -16,10 +16,16 @@ import type {
 } from "@/components/sidebar/sidebar-types";
 import { useI18n } from "@/hooks/useI18n";
 import { nextFollowState } from "@/lib/browser-follow";
-import { createBrowserViewportSync } from "@/lib/browser-viewport-sync";
+import { createBrowserViewportSync, type BrowserViewportBounds } from "@/lib/browser-viewport-sync";
+import { browserViewportCovered, observeBrowserViewportOverlays } from "@/lib/browser-viewport-overlays";
+import { PANEL_RESIZE_EVENT } from "@/lib/panel-resize-events";
 import { pollVisibleDocument } from "@/lib/visible-poller";
 import { normalizeAnswerLink, type BrowserNavigationRequest } from "@/lib/answer-links";
 import { AliIcon } from "../AliIcon";
+import { BrowserAddress } from "./browser/BrowserAddress";
+import { BrowserControls } from "./browser/BrowserControls";
+import { BrowserHome, type BrowserHomeWorkspace } from "./browser/BrowserHome";
+import { openBrowserSettings, type ToolsBridge } from "./browser/shared";
 import styles from "./WorkspacePanel.module.css";
 
 type BrowserState = {
@@ -50,6 +56,14 @@ type BrowserAction = {
 const BROWSER_ONBOARDING_KEY = "piora-desktop-browser-onboarding-v1";
 const BROWSER_BOOKMARKS_KEY = "piora-desktop-browser-bookmarks-v2";
 const BROWSER_FOLLOW_AGENT_KEY = "piora-browser-follow-agent-v1";
+const LOGIN_NOTICES = {
+  "http-blocked": "browser.loginHttpBlocked", "return-mismatch": "browser.loginReturnMismatch",
+  recovering: "browser.loginRecovering", saved: "browser.loginSaved", restored: "browser.loginRestored",
+  challenge: "browser.loginChallenge", "no-account": "browser.loginNoAccount", "unsupported-form": "browser.loginUnsupported",
+  failed: "browser.loginFailed", timeout: "browser.loginTimeout", cooldown: "browser.loginCooldown",
+  unverified: "browser.loginUnverified", unavailable: "browser.loginUnavailable", "save-failed": "browser.loginSaveFailed",
+  "save-pending": "browser.loginSavePending", disabled: "browser.loginSaveDisabled",
+} as const;
 
 type DesktopBrowserBridge = NonNullable<NonNullable<Window["piDesktop"]>["browser"]>;
 
@@ -151,25 +165,25 @@ function useRequestedNavigation(request: BrowserNavigationProps["navigationReque
   }, [request, ready, navigate, consumed]);
 }
 
-export function BrowserPanel({ active, maximized, sessionId, navigationRequest, onNavigationConsumed }: { active: boolean; maximized: boolean; sessionId: string | null } & BrowserNavigationProps) {
+interface BrowserPanelProps extends BrowserNavigationProps {
+  active: boolean;
+  maximized: boolean;
+  sessionId: string | null;
+  workspace?: BrowserHomeWorkspace;
+}
+
+export function BrowserPanel({ active, maximized, sessionId, workspace, navigationRequest, onNavigationConsumed }: BrowserPanelProps) {
   const { t } = useI18n();
   const [desktopBridge, setDesktopBridge] = useState<DesktopBrowserBridge | null | undefined>(undefined);
-  const [followAgent, setFollowAgent] = useState<boolean | null>(null);
   const [agentBackend, setAgentBackend] = useState<DesktopBrowserAgentBackend | null>(null);
-
-  useEffect(() => {
-    // An explicit link click opens a manual page, including from read-only follow
-    // mode. Do not change the saved follow preference or the Agent's private page.
-    if (navigationRequest && agentBackend !== "desktop") setFollowAgent(false);
-  }, [navigationRequest, agentBackend]);
 
   useEffect(() => {
     const browser = window.piDesktop?.browser ?? null;
     setDesktopBridge(browser);
     try {
-      setFollowAgent(window.localStorage.getItem(BROWSER_FOLLOW_AGENT_KEY) === "true");
+      window.localStorage.removeItem(BROWSER_FOLLOW_AGENT_KEY);
     } catch {
-      setFollowAgent(false);
+      // Storage may be unavailable; the retired preference is never read.
     }
     if (!browser?.getAgentBackend) {
       setAgentBackend("playwright");
@@ -190,97 +204,22 @@ export function BrowserPanel({ active, maximized, sessionId, navigationRequest, 
     };
   }, []);
 
-  if (desktopBridge === undefined || followAgent === null || agentBackend === null) {
+  if (desktopBridge === undefined || agentBackend === null) {
     return <div className={styles.browserLoading}>{t("browser.starting")}</div>;
   }
-  const toggleFollowAgent = () => {
-    const next = !followAgent;
-    setFollowAgent(next);
-    try {
-      window.localStorage.setItem(BROWSER_FOLLOW_AGENT_KEY, String(next));
-    } catch {
-      // The mode still changes for this panel when browser storage is unavailable.
-    }
-  };
   const desktopLinked = agentBackend === "desktop" && desktopBridge !== null;
   return <div className={styles.browserRoot}>
-    {desktopLinked ? null : <div className={styles.browserModeBar}>
-      <div className={styles.browserModeCopy}>
-        <strong>{t("browser.followAgent")}</strong>
-        <span>{t("browser.followAgentDescription")}</span>
-      </div>
-      <button type="button" role="switch" aria-checked={followAgent} aria-label={t("browser.followAgent")} title={t("browser.followAgentDescription")} onClick={toggleFollowAgent}>
-        <span aria-hidden="true" />
-      </button>
-    </div>}
     <div className={styles.browserModeContent}>
       {desktopLinked
-        ? <DesktopBrowserPanel linkAgent active={active} bridge={desktopBridge} maximized={maximized} sessionId={sessionId} navigationRequest={navigationRequest} onNavigationConsumed={onNavigationConsumed} />
-        : followAgent
-        ? <AgentBrowserPanel active={active} sessionId={sessionId} />
+        ? <DesktopBrowserPanel linkAgent active={active} bridge={desktopBridge} maximized={maximized} sessionId={sessionId} workspace={workspace} navigationRequest={navigationRequest} onNavigationConsumed={onNavigationConsumed} />
         : desktopBridge
-        ? <DesktopBrowserPanel active={active} bridge={desktopBridge} maximized={maximized} sessionId={sessionId} navigationRequest={navigationRequest} onNavigationConsumed={onNavigationConsumed} />
+        ? <DesktopBrowserPanel active={active} bridge={desktopBridge} maximized={maximized} sessionId={sessionId} workspace={workspace} navigationRequest={navigationRequest} onNavigationConsumed={onNavigationConsumed} />
         : <ScreenshotBrowserPanel active={active} navigationRequest={navigationRequest} onNavigationConsumed={onNavigationConsumed} />}
     </div>
   </div>;
 }
 
-function AgentBrowserPanel({ active, sessionId }: { active: boolean; sessionId: string | null }) {
-  const { t } = useI18n();
-  const [snapshot, setSnapshot] = useState<{ sessionId: string; state: BrowserState | null } | null>(null);
-  const [error, setError] = useState<{ sessionId: string; message: string } | null>(null);
-  const [screenshotKey, setScreenshotKey] = useState(0);
-
-  useEffect(() => {
-    if (!active || !sessionId) return;
-    const polling = pollVisibleDocument(async (signal) => {
-      try {
-        const response = await fetch(`/api/browser?sessionId=${encodeURIComponent(sessionId)}`, { cache: "no-store", signal });
-        const payload = await response.json() as BrowserState | null | { error: string };
-        if (!response.ok) throw new Error(payload && "error" in payload ? payload.error : t("browser.unavailable"));
-        if (signal.aborted) return;
-        setSnapshot({ sessionId, state: payload as BrowserState | null });
-        setScreenshotKey((key) => key + 1);
-        setError(null);
-      } catch (cause) {
-        if (!signal.aborted) setError({ sessionId, message: cause instanceof Error ? cause.message : t("browser.unavailable") });
-      }
-    }, 900);
-    return () => polling.stop();
-  }, [active, sessionId, t]);
-
-  const state = snapshot?.sessionId === sessionId ? snapshot.state : null;
-  const message = error?.sessionId === sessionId ? error.message : null;
-  const hasPage = state && state.url !== "about:blank";
-  const emptyTitle = !sessionId
-    ? t("browser.agentNoSession")
-    : snapshot?.sessionId !== sessionId && !message
-      ? t("browser.agentConnecting")
-      : t("browser.agentWaiting");
-
-  return <div className={styles.browserRoot} data-agent-browser="true">
-    <div className={styles.browserTabs} aria-label={t("browser.tabs")}>
-      {state?.tabs.map((tab) => <span key={`${tab.index}-${tab.url}`} className={styles.browserAgentTab} data-active={state.activeTabIndex === tab.index ? "true" : undefined} title={tab.url}>
-        <AliIcon name="earth" size={13} /><b>{tab.title || t("browser.newTab")}</b>
-      </span>)}
-    </div>
-    <div className={styles.browserAgentAddress} title={state?.url || undefined} aria-label={t("browser.address")}>
-      <AliIcon name="lock" size={13} />
-      <span>{state?.url && state.url !== "about:blank" ? state.url : t("browser.agentAddressEmpty")}</span>
-    </div>
-    {message ? <div className={styles.browserError} role="alert">{message}</div> : null}
-    <div className={`${styles.browserViewport} ${styles.browserAgentViewport}`}>
-      {hasPage && sessionId ? <img src={`/api/browser/screenshot?sessionId=${encodeURIComponent(sessionId)}&v=${screenshotKey}`} alt={t("browser.agentPagePreview")} draggable={false} /> : <div className={styles.browserStart} role="status">
-        <AliIcon name="earth" size={28} />
-        <strong>{emptyTitle}</strong>
-        <span>{t("browser.agentWaitingDescription")}</span>
-      </div>}
-    </div>
-    <div className={styles.browserPrivacy}>{t("browser.agentReadOnlyNotice")}</div>
-  </div>;
-}
-
-function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationRequest, onNavigationConsumed, linkAgent = false }: { active: boolean; bridge: DesktopBrowserBridge; maximized: boolean; sessionId: string | null; linkAgent?: boolean } & BrowserNavigationProps) {
+function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, navigationRequest, onNavigationConsumed, linkAgent = false }: BrowserPanelProps & { bridge: DesktopBrowserBridge; linkAgent?: boolean }) {
   const { t } = useI18n();
   const [readySession, setReadySession] = useState<string | null | undefined>(undefined);
   const [state, setState] = useState<DesktopBrowserState | null>(null);
@@ -294,10 +233,15 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
   const [followingAgent, setFollowingAgent] = useState(true);
   const [agentActivity, setAgentActivity] = useState<DesktopBrowserAgentActivity | null>(null);
   const followingRef = useRef(true);
+  const resizingRef = useRef(false);
   followingRef.current = followingAgent;
   const viewportRef = useRef<HTMLDivElement>(null);
   const addressRef = useRef<HTMLInputElement>(null);
+  const addressTarget = useRef<Pick<DesktopBrowserState, "sessionId" | "activeTabId"> | null>(null);
+  const [toolSlot, setToolSlot] = useState<HTMLDivElement | null>(null);
+  const [deviceDragging, setDeviceDragging] = useState(false);
   const viewportSyncRef = useRef<ReturnType<typeof createBrowserViewportSync> | null>(null);
+  const viewportLayoutRef = useRef<{ bounds: BrowserViewportBounds; covered: boolean } | null>(null);
   const panelActiveRef = useRef(active);
   panelActiveRef.current = active;
 
@@ -315,7 +259,9 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
   const applyState = useCallback((next: DesktopBrowserState | null) => {
     if (!next) return;
     setState(next);
-    if (document.activeElement !== addressRef.current) {
+    const tabChanged = next.sessionId !== addressTarget.current?.sessionId || next.activeTabId !== addressTarget.current?.activeTabId;
+    addressTarget.current = next;
+    if (tabChanged || document.activeElement !== addressRef.current) {
       setAddress(next.url === "about:blank" ? "" : next.url);
     }
     setError(null);
@@ -333,10 +279,11 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
 
   useEffect(() => {
     let cancelled = false;
-    setBookmarkProfiles(storedBookmarkProfiles());
+    const savedBookmarks = storedBookmarkProfiles();
+    setBookmarkProfiles(savedBookmarks);
     const onboardingComplete = window.localStorage.getItem(BROWSER_ONBOARDING_KEY) === "done";
     setShowOnboarding(!onboardingComplete);
-    if (onboardingComplete) {
+    if (onboardingComplete && savedBookmarks.length > 0) {
       void bridge.importChromeBookmarks().then((result) => {
         if (cancelled || !result || result.bookmarkCount === 0) return;
         storeBookmarkProfiles(result.profiles);
@@ -360,19 +307,36 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
     const element = viewportRef.current;
     if (!element) return;
     const rect = element.getBoundingClientRect();
-    viewportSyncRef.current?.sync({
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    }, panelActiveRef.current && visible && rect.width > 0 && rect.height > 0);
-  }, [state?.url]);
+    const panelRect = element.closest("#file-panel")?.getBoundingClientRect();
+    const left = Math.max(0, rect.left, panelRect?.left ?? rect.left);
+    const top = Math.max(0, rect.top, panelRect?.top ?? rect.top);
+    const right = Math.min(window.innerWidth, rect.right, panelRect?.right ?? rect.right);
+    const bottom = Math.min(window.innerHeight, rect.bottom, panelRect?.bottom ?? rect.bottom);
+    const bounds = {
+      x: Math.ceil(left),
+      y: Math.ceil(top),
+      width: Math.max(0, Math.floor(right) - Math.ceil(left)),
+      height: Math.max(0, Math.floor(bottom) - Math.ceil(top)),
+    };
+    const show = panelActiveRef.current && !deviceDragging && !resizingRef.current && visible && bounds.width > 0 && bounds.height > 0;
+    const covered = show && browserViewportCovered(element.ownerDocument, bounds);
+    viewportLayoutRef.current = { bounds, covered };
+    if (covered) viewportSyncRef.current?.suspend(bounds);
+    else viewportSyncRef.current?.sync(bounds, show);
+  }, [deviceDragging, state?.url]);
 
   useLayoutEffect(() => {
     // WebContentsView lives above the renderer DOM and is not clipped by the
     // panel's width animation. Queue an explicit hide before paint so a widened
     // browser view cannot remain over the chat after the panel is collapsed.
     syncViewport(active && state?.url !== "about:blank");
+    const document = viewportRef.current?.ownerDocument;
+    if (!document || !active || !state?.url || state.url === "about:blank") return;
+    // Dialogs rendered into portals do not resize the browser's DOM viewport.
+    return observeBrowserViewportOverlays(document, () => {
+      const layout = viewportLayoutRef.current;
+      if (layout && browserViewportCovered(document, layout.bounds) !== layout.covered) syncViewport();
+    });
   }, [active, state?.url, syncViewport]);
 
   useEffect(() => {
@@ -386,6 +350,14 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
     const observer = new ResizeObserver(scheduleSync);
     const panel = element.closest("#file-panel");
     observer.observe(element);
+    if (panel) observer.observe(panel);
+    const resizeChange = (event: Event) => {
+      resizingRef.current = (event as CustomEvent<{ resizing: boolean }>).detail?.resizing === true;
+      // Hide is sent immediately, including while a prior viewport IPC is in flight.
+      // On release measure the committed DOM bounds on the next frame.
+      if (resizingRef.current) syncViewport(false); else scheduleSync();
+    };
+    window.addEventListener(PANEL_RESIZE_EVENT, resizeChange);
     window.addEventListener("resize", scheduleSync);
     window.addEventListener("scroll", scheduleSync, true);
     panel?.addEventListener("transitionend", scheduleSync);
@@ -404,6 +376,7 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
       window.clearInterval(positionCheck);
       window.cancelAnimationFrame(frame);
       observer.disconnect();
+      window.removeEventListener(PANEL_RESIZE_EVENT, resizeChange);
       window.removeEventListener("resize", scheduleSync);
       window.removeEventListener("scroll", scheduleSync, true);
       panel?.removeEventListener("transitionend", scheduleSync);
@@ -498,6 +471,8 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
   };
 
   const blank = !state || state.url === "about:blank";
+  const ready = readySession === sessionId;
+  const showHome = ready && blank && !state?.vaultProtected;
   const barNodes = bookmarkBarNodes(bookmarkProfiles);
   const openBookmarkMenu = async (node: ImportedChromeBookmarkNode, button: HTMLButtonElement) => {
     if (node.type !== "folder") return;
@@ -553,7 +528,10 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
       setError(decideError instanceof Error ? decideError.message : t("browser.actionFailed"));
     }
   };
-  return <div className={styles.browserRoot} data-native-browser="true">
+  return <div className={styles.browserRoot} data-native-browser="true" data-browser-chrome={bridge.tools ? "menu" : undefined}>
+    {state?.loginNotice ? <div className={styles.browserAgentOperating} role="status" data-browser-login-notice={state.loginNotice}>
+      <span>{t(LOGIN_NOTICES[state.loginNotice as keyof typeof LOGIN_NOTICES] ?? "browser.loginUnverified")}</span>
+    </div> : null}
     {state?.vaultProtected ? <div className={styles.browserAgentOperating} role="status">
       <span>{t("browser.vaultProtected")}</span>
       <button type="button" onClick={() => { void window.piDesktop?.vault?.request({ action: "release" }).catch(() => setError(t("browser.actionFailed"))); }}>{t("browser.vaultRelease")}</button>
@@ -607,16 +585,26 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
       <button className={styles.browserNewTab} type="button" aria-label={t("browser.newTab")} disabled={state?.tabCount !== undefined && state.tabCount >= (state.tabLimit ?? 20) && !state.idleTabCount} onClick={() => void act({ action: "new_tab" })}><AliIcon name="plus" size={14} /></button>
     </div>
     {state?.tabCount !== undefined && state.tabCount >= (state.tabLimit ?? 20) ? <div className={styles.browserError} role="status">{t("browser.tabLimitReached", { limit: state.tabLimit ?? 20 })}</div> : null}
-    <div className={styles.browserToolbar}>
+    <div className={styles.browserToolbar} data-home={showHome ? "true" : undefined}>
+      {(!showHome || state?.canGoBack || state?.canGoForward) && <div className={styles.browserNavigation}>
       <button type="button" aria-label={t("browser.back")} disabled={!state?.canGoBack} onClick={() => void act({ action: "back" })}><AliIcon name="arrowleft" size={14} /></button>
       <button type="button" aria-label={t("browser.forward")} disabled={!state?.canGoForward} onClick={() => void act({ action: "forward" })}><AliIcon name="arrowright" size={14} /></button>
-      <button type="button" aria-label={t("browser.reload")} disabled={!state} onClick={() => void act({ action: "reload" })}><AliIcon name="reload" size={14} /></button>
-      <form onSubmit={(event) => { event.preventDefault(); if (address.trim()) void act({ action: "navigate", url: address.trim() }); }}>
-        <input ref={addressRef} value={address} aria-label={t("browser.address")} placeholder={t("browser.addressPlaceholder")} onChange={(event) => setAddress(event.target.value)} />
-      </form>
-      <button type="button" aria-label={t("browser.siteLogin")} title={t("browser.siteLogin")} disabled={!state || blank} onClick={() => void act({ action: "configure_login" })}><AliIcon name="lock" size={14} /></button>
+      {!showHome && <button type="button" aria-label={t("browser.reload")} disabled={!state} onClick={() => void act({ action: "reload" })}><AliIcon name="reload" size={14} /></button>}
+      </div>}
+      {ready && !showHome && <BrowserAddress key={state?.activeTabId ?? "starting"} value={address} change={setAddress} inputRef={addressRef} label={t("browser.address")}
+        placeholder={t("browser.searchOrAddressPlaceholder")} invoke={bridge.tools} slot={toolSlot} navigate={url => void act({action:"navigate", url})} />}
+      {!showHome && <button type="button" aria-label={t("browser.siteLogin")} title={t("browser.siteLogin")} disabled={!state || blank} onClick={() => void act({ action: "configure_login" })}><AliIcon name="lock" size={14} /></button>}
+      {bridge.tools && !barNodes.length && !(showHome && showOnboarding) && <button type="button" disabled={importing} aria-label={t("browser.refreshBookmarks")} title={t("browser.refreshBookmarks")} onClick={() => void importChromeBookmarks()}><AliIcon name="bookmark" size={15} /></button>}
+      {state && bridge.tools && <BrowserControls key={[state.sessionId, state.activeTabId, state.navigationEpoch].join("/")} bridge={bridge as ToolsBridge} navigationEpoch={state.navigationEpoch ?? 0}
+        sessionId={state.sessionId} tabId={state.activeTabId} active={active} slot={toolSlot} viewport={viewportRef.current}
+        suspend={setDeviceDragging} report={setError} />}
     </div>
-    <div className={styles.browserBookmarkBar} aria-label={t("browser.bookmarkBar")}>
+    {(!bridge.tools || barNodes.length > 0) && <div className={styles.browserBookmarkBar} aria-label={t("browser.bookmarkBar")}>
+      {!bridge.tools && <div className={styles.browserZoom} role="group" aria-label={t("browserPreferences.zoom")}>
+        <button type="button" disabled={!state || blank} aria-label={t("browserPreferences.zoomOut")} onClick={() => void act({ action: "zoom_out" })}>−</button>
+        <button type="button" disabled={!state || blank} title={t("browserPreferences.zoomReset")} aria-label={t("browserPreferences.zoomReset")} onClick={() => void act({ action: "zoom_reset" })}>{Math.round((state?.zoomFactor ?? 1) * 100)}%</button>
+        <button type="button" disabled={!state || blank} aria-label={t("browserPreferences.zoomIn")} onClick={() => void act({ action: "zoom_in" })}>+</button>
+      </div>}
       <div className={styles.browserBookmarkBarItems}>
         {barNodes.length ? barNodes.map((node) => node.type === "bookmark" ? (
           <button key={node.id} type="button" title={`${node.title}\n${node.url}`} onClick={() => void act({ action: "navigate", url: node.url })}>
@@ -645,27 +633,29 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, navigationR
       >
         <AliIcon name="reload" size={12} />
       </button>
-    </div>
+    </div>}
     {error ? <div className={styles.browserError} role="alert">{error}</div> : null}
-    <div ref={viewportRef} className={styles.browserViewport} data-busy={state?.loading ? "true" : undefined}>
-      {blank ? <div className={styles.browserStart} data-onboarding={showOnboarding ? "true" : undefined}>
-        <AliIcon name="earth" size={28} />
-        <strong>{showOnboarding ? t("browser.welcomeTitle") : t("browser.startTitle")}</strong>
-        <span>{showOnboarding ? t("browser.welcomeDescription") : t("browser.startDescription")}</span>
-        {showOnboarding ? <div className={styles.browserOnboardingActions}>
-          <button type="button" disabled={importing} onClick={() => void importChromeBookmarks()}>{importing ? t("browser.importing") : t("browser.importChrome")}</button>
-          <button type="button" onClick={finishOnboarding}>{t("browser.skipImport")}</button>
-          <small>{t("browser.importSafety")}</small>
-        </div> : <>
-          <button className={styles.browserImportLink} type="button" disabled={importing} onClick={() => void importChromeBookmarks()}>{t("browser.importChrome")}</button>
-        </>}
-      </div> : null}
+    <div ref={setToolSlot} style={{ flex: "0 1 auto", minHeight: 0, maxHeight: "55%", overflow: "auto" }} />
+    <div ref={viewportRef} className={styles.browserViewport} data-browser-viewport="" data-busy={state?.loading ? "true" : undefined}>
+      {!ready && !error && <div className={styles.browserLoading} role="status">{t("browser.starting")}</div>}
+      {showHome && <BrowserHome
+        key={state?.activeTabId ?? "empty"}
+        active={active}
+        address={address}
+        changeAddress={setAddress}
+        addressRef={addressRef}
+        navigate={url => void act({ action: "navigate", url })}
+        history={bridge.tools}
+        workspace={workspace}
+        onHistory={bridge.tools ? () => openBrowserSettings("history") : undefined}
+        bookmarks={showOnboarding ? { importing, onImport: () => void importChromeBookmarks(), onDismiss: finishOnboarding } : undefined}
+      />}
     </div>
-    <div className={styles.browserPrivacy}>
+    {(!showHome || download) && <div className={styles.browserPrivacy}>
       {download ? <button type="button" onClick={() => download.path && window.piDesktop?.revealPath?.(download.path)}>
         {downloadLabel}
       </button> : t("browser.profileNotice")}
-    </div>
+    </div>}
   </div>;
 }
 

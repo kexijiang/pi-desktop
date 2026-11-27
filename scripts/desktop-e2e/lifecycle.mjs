@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer, createConnection } from 'node:net';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export function abortable(work, signal) {
@@ -43,7 +43,12 @@ export function isolatedEnvironment(source, paths) {
     PIORA_DEV_TSCONFIG: paths.tsconfig,
     PIORA_DESKTOP_DEV_PORT: String(paths.port),
     PIORA_DESKTOP_DEV_DEBUG_PORT: String(paths.debugPort),
+    // Keep the SDK from downloading missing fd/rg binaries during a test.
+    // Explicitly configured model calls (including real-provider scenarios)
+    // remain available; this does not block arbitrary application traffic.
+    PI_OFFLINE: '1',
     NEXT_TELEMETRY_DISABLED: '1',
+    ...(paths.electronDist ? { ELECTRON_OVERRIDE_DIST_PATH: paths.electronDist } : {}),
   };
 }
 
@@ -65,13 +70,21 @@ export async function acquireRunLock(directory) {
   };
 }
 
-export async function reservePort(port = 0) {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen({ host: '127.0.0.1', port, exclusive: true }, resolve);
-  });
-  return { port: server.address().port, release: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+export async function reservePort(port = 0, minimumPort = 0) {
+  if (!Number.isInteger(minimumPort) || minimumPort < 0 || minimumPort > 65535) throw new RangeError('Invalid minimum port');
+  if (port !== 0 && port < minimumPort) throw new RangeError(`Application port must be ${minimumPort}–65535`);
+  for (let attempt = 0; ; attempt++) {
+    const server = createServer(socket => socket.destroy());
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen({ host: '127.0.0.1', port: port || (minimumPort ? randomInt(minimumPort, 65536) : 0), exclusive: true }, resolve);
+      });
+      return { port: server.address().port, release: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+    } catch (error) {
+      if (port || attempt >= 63 || !['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
+    }
+  }
 }
 
 export function portOpen(port) {
@@ -85,7 +98,7 @@ export function portOpen(port) {
 }
 
 export function startProcess(command, args, options) {
-  const child = spawn(command, args, { ...options, detached: process.platform !== 'win32', windowsHide: true });
+  const child = spawn(command, args, { windowsHide: true, ...options, detached: process.platform !== 'win32' });
   // Observe errors immediately, including ENOENT before a caller starts waiting.
   const exited = new Promise(resolve => {
     child.once('error', error => resolve({ error: error.message }));

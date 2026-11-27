@@ -8,7 +8,7 @@ const taskStatusSource = await readFile(new URL("../hooks/useTaskStatus.ts", imp
 const globalStyles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 const sidebarStyles = await readFile(new URL("./SessionSidebar.module.css", import.meta.url), "utf8");
 const splitSources = await Promise.all([
-  "ProjectList.tsx", "SidebarNavigation.tsx", "SidebarProjectArea.tsx", "SidebarFileArea.tsx",
+  "ProjectList.tsx", "SidebarNavigation.tsx", "SidebarProjectArea.tsx",
   "SidebarChatArea.tsx",
   "useSessionCatalog.ts", "sidebar-utils.ts", "sidebar-types.ts", "useProjectPicker.ts",
 ].map((file) => readFile(new URL(`./sidebar/${file}`, import.meta.url), "utf8")));
@@ -48,7 +48,7 @@ test("does not register row-level session deletion shortcuts", () => {
 test("shares bounded visible status polling without reserving an idle SSE connection", () => {
   assert.doesNotMatch(source, /fetch\("\/api\/agent\/running"/);
   assert.doesNotMatch(taskStatusSource, /new EventSource/);
-  assert.match(taskStatusSource, /fetch\("\/api\/agent\/running", \{ cache: "no-store", signal: controller.signal \}\)/);
+  assert.match(taskStatusSource, /fetch\("\/api\/agent\/running" \+ query, \{ cache: "no-store", signal: controller.signal \}\)/);
   assert.match(taskStatusSource, /pollController \|\| listenerCount\(\) === 0/);
   assert.match(taskStatusSource, /controller\.abort\(\), 10_000/);
   assert.match(taskStatusSource, /document\.visibilityState !== "visible"/);
@@ -56,8 +56,11 @@ test("shares bounded visible status polling without reserving an idle SSE connec
 });
 
 test("settles the project loading state when a background refresh supersedes the initial request", () => {
-  assert.match(source, /if \(loadSessionsRequestIdRef\.current === requestId\) setLoading\(false\)/);
-  assert.doesNotMatch(source, /if \(showLoading && loadSessionsRequestIdRef\.current === requestId\) setLoading\(false\)/);
+  const catalog = splitSources[4];
+  assert.match(catalog, /loadSessionsRequest\.current\?\.abort\(\);\s*const request = new AbortController\(\);\s*loadSessionsRequest\.current = request/);
+  assert.match(catalog, /setError\(null\);\s*setCatalogComplete\(true\)/);
+  assert.match(catalog, /catch \(caught\) \{\s*if \(!request\.signal\.aborted\) \{\s*setCatalogComplete\(false\);\s*setError\(String\(caught\)\);\s*\}\s*\}/);
+  assert.match(catalog, /finally \{\s*if \(loadSessionsRequest\.current === request\) \{\s*loadSessionsRequest\.current = null;\s*setLoading\(false\)/);
   assert.match(globalStyles, /\.sidebar-project-scroll\s*\{[^}]*background:\s*inherit/s);
 });
 
@@ -141,7 +144,7 @@ test("matches the Codex project rail with real pin, metadata, edit, and new-chat
   assert.match(source, /sidebar\.openProjectInExplorer/);
   assert.match(source, /disabled=\{!window\.piDesktop\?\.openPath\}/);
   assert.match(source, /void openPath\(group\.projectRoot\)/);
-  assert.match(source, /sidebar\.newSessionTitle[\s\S]{0,180}<AliIcon name="chat-bubble-plus" size=\{16\} strokeWidth=\{1\.5\}/);
+  assert.match(source, /sidebar\.newSessionTitle[\s\S]{0,180}<AliIcon name="square-pen" size=\{16\} strokeWidth=\{1\.5\}/);
   assert.match(sidebarStyles, /button\.menuItem:disabled\s*\{[^}]*cursor:\s*default;[^}]*opacity:\s*0\.45/s);
   assert.match(source, /styles\.pinnedUnpin/);
   assert.match(source, /togglePinnedProject\(group\.projectRoot\)/);

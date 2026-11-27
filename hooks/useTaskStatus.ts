@@ -22,6 +22,9 @@ const snapshotSignatures = new Map<string, string>();
 const sessionListeners = new Map<string, Set<() => void>>();
 const storeListeners = new Set<() => void>();
 let runtimeStoreState: { ready: boolean; snapshots: TaskRuntimeSnapshot[] } = { ready: false, snapshots: [] };
+let subagentRefreshEpoch: string | undefined;
+let subagentRefreshCursor: number | undefined;
+const subagentListeners = new Map<string, Set<() => void>>();
 let pollController: AbortController | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let visibilityBound = false;
@@ -29,7 +32,39 @@ let visibilityBound = false;
 function listenerCount(): number {
   let count = storeListeners.size;
   for (const listeners of sessionListeners.values()) count += listeners.size;
+  for (const listeners of subagentListeners.values()) count += listeners.size;
   return count;
+}
+
+export function markSubagentChanged(parentId: string): void {
+  const listeners = subagentListeners.get(parentId);
+  if (!listeners) return;
+  for (const listener of listeners) listener();
+}
+
+export function getSubagentRefreshEpoch(): string | undefined { return subagentRefreshEpoch; }
+
+function applySubagentUpdates(payload: Partial<RunningSessionsPayload>): void {
+  if (typeof payload.subagentRefreshEpoch !== "string") return;
+  subagentRefreshEpoch = payload.subagentRefreshEpoch;
+  subagentRefreshCursor = payload.subagentRefreshCursor;
+  if (payload.subagentRefreshReset) {
+    for (const listeners of subagentListeners.values()) for (const listener of listeners) listener();
+  } else {
+    for (const id of payload.subagentChanges ?? []) markSubagentChanged(id);
+  }
+}
+
+export function subscribeSubagentChanges(parentId: string, listener: () => void): () => void {
+  const listeners = subagentListeners.get(parentId) ?? new Set<() => void>();
+  listeners.add(listener);
+  subagentListeners.set(parentId, listeners);
+  connect();
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) subagentListeners.delete(parentId);
+    disconnect();
+  };
 }
 
 function emitChange(changedSessionIds: Set<string>): void {
@@ -92,10 +127,15 @@ async function pollSnapshot(): Promise<void> {
   pollController = controller;
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch("/api/agent/running", { cache: "no-store", signal: controller.signal });
+    const query = subagentRefreshEpoch && subagentRefreshCursor !== undefined
+      ? "?subagentsEpoch=" + encodeURIComponent(subagentRefreshEpoch) + "&subagentsAfter=" + subagentRefreshCursor : "";
+    const response = await fetch("/api/agent/running" + query, { cache: "no-store", signal: controller.signal });
     if (response.ok) {
       const payload = await response.json() as RunningSessionsPayload;
-      if (!controller.signal.aborted) applyPayload(payload);
+      if (!controller.signal.aborted) {
+        applyPayload(payload);
+        applySubagentUpdates(payload);
+      }
     }
   } catch {
     // The next visible poll retries transient failures.
@@ -199,7 +239,9 @@ export function useTaskStatus({
   const runtime = snapshot?.runtime ?? fallbackRuntime;
   const runningIds = runtime === "running" || runtime === "stopping" ? new Set([sessionId]) : new Set<string>();
   const compactingIds = runtime === "compacting" ? new Set([sessionId]) : new Set<string>();
-  const pendingApprovalIds = snapshot?.pendingApproval ? new Set([sessionId]) : new Set<string>();
+  const pendingApprovalIds = snapshot?.pendingApproval || snapshot?.awaitingPlanApproval
+    ? new Set([sessionId])
+    : new Set<string>();
 
   const status = deriveTaskStatus({
     sessionId,
@@ -215,6 +257,8 @@ export function useTaskStatus({
   const statusWithStartedAt = {
     ...status,
     ...(snapshot?.startedAt !== undefined ? { startedAt: snapshot.startedAt } : {}),
+    ...(snapshot?.activeGoal ? { activeGoal: true } : {}),
+    ...(snapshot?.awaitingPlanApproval ? { awaitingPlanApproval: true } : {}),
   };
   return runtime === "stopping" ? { ...statusWithStartedAt, runtime: "stopping" } : statusWithStartedAt;
 }

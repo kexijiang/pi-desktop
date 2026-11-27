@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { abortable, acquireRunLock, isolatedEnvironment, portOpen, reservePort, startProcess, stopProcess, waitUntil } from './lifecycle.mjs';
 
@@ -11,8 +11,20 @@ function gitIdentity(root) {
   catch { return { unavailable: true }; }
 }
 
-async function launchDesktop({ root, directory, signal, registerCleanup, report, stepTimeoutMs, port, debugPort, scenario }) {
-  const appPort = await reservePort(port);
+async function launchDesktop({ root, directory, signal, registerCleanup, report, stepTimeoutMs, port, debugPort, scenario, electronDist, executable }) {
+  if (!executable) {
+    // Requiring the Electron package can install its runtime as a side effect.
+    // A desktop test should fail at setup when the local runtime is absent.
+    const electronPackage = join(root, 'node_modules', 'electron');
+    electronDist = electronDist ? resolve(electronDist) : join(electronPackage, 'dist');
+    const binary = (await readFile(join(electronPackage, 'path.txt'), 'utf8').catch(() => '')).trim() || 'electron';
+    if (!await stat(join(electronDist, binary)).then(info => info.isFile(), () => false)) {
+      throw new Error(`Local Electron runtime unavailable at ${join(electronDist, binary)}. Pass --electron-dist pointing to an existing Electron installation.`);
+    }
+  }
+  // Packaged desktop rejects lower ports and would silently choose a different
+  // origin. Some Windows hosts also allocate low OS ephemeral ports.
+  const appPort = await reservePort(port, executable ? 20000 : 0);
   let debugLease;
   try { debugLease = await reservePort(debugPort); }
   catch (error) { await appPort.release(); throw error; }
@@ -20,17 +32,30 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   registerCleanup(async () => { if (leased) { leased = false; await Promise.all([appPort.release(), debugLease.release()]); } });
   const paths = { profile: join(directory, 'profile'), agent: join(directory, 'agent'),
     dist: relative(root, join(directory, 'next')).replaceAll('\\', '/'),
-    tsconfig: relative(root, join(directory, 'tsconfig.json')).replaceAll('\\', '/'), port: appPort.port, debugPort: debugLease.port };
+    tsconfig: relative(root, join(directory, 'tsconfig.json')).replaceAll('\\', '/'), port: appPort.port, debugPort: debugLease.port, electronDist };
   await mkdir(paths.agent);
   await writeFile(join(paths.agent, 'settings.json'), JSON.stringify({ packages: [], extensions: [], skills: [], retry: { enabled: false } }));
   await writeFile(join(directory, 'tsconfig.json'), JSON.stringify({ extends: '../../tsconfig.json',
     compilerOptions: { tsBuildInfoFile: './web.tsbuildinfo' }, include: ['../../**/*.ts', '../../**/*.tsx'] }));
   const env = isolatedEnvironment(process.env, paths);
+  if (executable) {
+    await mkdir(paths.profile, { recursive: true });
+    await writeFile(join(paths.profile, 'desktop-state.json'), JSON.stringify({ serverPort: paths.port }));
+    env.PIORA_COMPANION_UI_TEST = '1';
+    env.PIORA_COMPANION_UI_TEST_USER_DATA = paths.profile;
+    report.executable = executable;
+    // The executable may be installed or extracted from a published installer.
+    // Installation provenance is supplied by the caller's artifact verification.
+    report.application = 'packaged';
+  } else {
+    report.application = 'development';
+    env.PIORA_DESKTOP_DEV_NEXT_READY_TIMEOUT_MS = String(Math.min(300_000, Math.max(60_000, stepTimeoutMs)));
+  }
   const origin = `http://127.0.0.1:${appPort.port}`, debugging = `http://127.0.0.1:${debugLease.port}`;
   report.origin = origin;
   report.debugging = debugging;
   report.credentials = 'not-copied-or-injected';
-  if (scenario?.prepare) await scenario.prepare({ paths, directory, signal, registerCleanup, report });
+  if (scenario?.prepare) await scenario.prepare({ paths, directory, env, signal, registerCleanup, report });
   const log = createWriteStream(join(directory, 'desktop.log'), { flags: 'wx' });
   let logError;
   log.on('error', error => { logError = error; });
@@ -38,16 +63,23 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
     if (logError) return reject(logError);
     log.end(() => logError ? reject(logError) : resolve());
   }));
-  const start = script => {
+  const start = (script, packaged = false) => {
     signal.throwIfAborted();
-    const handle = startProcess(process.execPath, [join(root, script)], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const handle = startProcess(packaged ? executable : process.execPath,
+      packaged ? [`--remote-debugging-port=${paths.debugPort}`] : [join(root, script)], {
+        cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'],
+        // Win32 SW_HIDE also hides the packaged GUI. Its WebContentsViews attach only to a visible host.
+        windowsHide: !packaged,
+      });
     handle.child.stdout.pipe(log, { end: false }); handle.child.stderr.pipe(log, { end: false });
     registerCleanup(() => stopProcess(handle));
     return handle;
   };
-  const preparation = start('scripts/prepare-development.mjs');
-  const prepared = await abortable(() => preparation.exited, signal);
-  if (prepared.code !== 0) throw new Error(`Development preparation failed: ${JSON.stringify(prepared)}; see desktop.log`);
+  if (!executable) {
+    const preparation = start('scripts/prepare-development.mjs');
+    const prepared = await abortable(() => preparation.exited, signal);
+    if (prepared.code !== 0) throw new Error(`Development preparation failed: ${JSON.stringify(prepared)}; see desktop.log`);
+  }
   await Promise.all([appPort.release(), debugLease.release()]); leased = false;
   // This runs after stopProcess (reverse cleanup order), even when startup failed.
   const checkPorts = async () => {
@@ -55,7 +87,7 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   };
   // start() registers termination after this check, so reverse cleanup stops first.
   registerCleanup(checkPorts);
-  let desktop = start('scripts/dev-desktop.mjs');
+  let desktop = start('scripts/dev-desktop.mjs', Boolean(executable));
   report.launchPid = desktop.child.pid;
   const checkAlive = () => {
     signal.throwIfAborted();
@@ -76,8 +108,10 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
     checkAlive();
     page = await waitUntil(() => {
       checkAlive();
+      if (!browser.isConnected()) throw new Error('Electron disconnected before its application window opened');
       return browser.contexts().flatMap(context => context.pages()).find(candidate => candidate.url().startsWith(origin + '/'));
     }, { signal, timeoutMs: 600_000, label: 'Piora application window' });
+    await page.bringToFront();
     page.setDefaultTimeout(stepTimeoutMs);
     page.setDefaultNavigationTimeout(stepTimeoutMs);
     page.on('pageerror', error => pageErrors.push(error.message));
@@ -115,12 +149,22 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
   };
   await connect();
   return {
-    page, origin, pageErrors,
+    page, origin, pageErrors, paths,
     getBrowser: () => browser,
     // Restart only this run's owned process tree, retaining its isolated profile.
-    restart: async () => {
+    restart: async ({ graceful = false } = {}) => {
+      if (graceful) {
+        const session = await browser.newBrowserCDPSession();
+        const quit = session.send('Browser.close').catch(error => {
+          if (!/target.*closed|session closed/i.test(error.message)) throw error;
+        });
+        await Promise.all([quit, waitUntil(() => desktop.outcome(), {
+          signal, timeoutMs: 60_000, label: 'owned desktop to finish normal shutdown',
+        })]);
+        if (desktop.outcome().code !== 0) throw new Error('Desktop did not exit cleanly during restart');
+      }
       await browser.close(); await stopProcess(desktop); await checkPorts();
-      desktop = start('scripts/dev-desktop.mjs');
+      desktop = start('scripts/dev-desktop.mjs', Boolean(executable));
       (report.restartPids ??= []).push(desktop.child.pid);
       await connect();
       return page;
@@ -132,7 +176,7 @@ async function launchDesktop({ root, directory, signal, registerCleanup, report,
 
 /** launch is injectable for lifecycle tests; the CLI always uses the real Electron adapter. */
 export async function runDesktopScenario({ root, scenario, timeoutMs = 600_000, stepTimeoutMs = 30_000,
-  signal: externalSignal, failAt, port, debugPort, launch = launchDesktop, cleanupTimeoutMs = 15_000 }) {
+  signal: externalSignal, failAt, port, debugPort, electronDist, executable, launch = launchDesktop, cleanupTimeoutMs = 15_000 }) {
   const parent = join(root, '.verification');
   await mkdir(parent, { recursive: true });
   const releaseLock = await acquireRunLock(join(parent, 'desktop-e2e.lock'));
@@ -172,7 +216,7 @@ export async function runDesktopScenario({ root, scenario, timeoutMs = 600_000, 
     } catch (error) { if (!finishing) { row.status = 'failed'; row.durationMs = Date.now() - began; } throw error; }
   }
   try {
-    driver = await step('launch', () => launch({ root, directory, signal, report, stepTimeoutMs, port, debugPort, scenario,
+    driver = await step('launch', () => launch({ root, directory, signal, report, stepTimeoutMs, port, debugPort, scenario, electronDist, executable,
       registerCleanup: fn => cleanup.push(fn) }));
     await abortable(() => scenario.run({ ...driver, directory, signal, step,
       waitUntil: (predicate, label) => waitUntil(predicate, { signal, timeoutMs: stepTimeoutMs, label }) }), signal);

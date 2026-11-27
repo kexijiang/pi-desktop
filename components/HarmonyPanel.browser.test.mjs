@@ -241,7 +241,17 @@ test("Harmony workspace keeps device tools, drafts and fenced control in a full 
     try { await page.getByRole("region", {name:"侧栏投屏"}).locator("canvas").waitFor(); } catch (error) { console.error("Sidebar diagnosis", errors, await page.locator("#root").innerText(), await page.locator(".embeddedMirror").count()); throw error; }
     if (process.env.PIORA_HARMONY_SCREENSHOT_DIR) await page.screenshot({path:path.join(process.env.PIORA_HARMONY_SCREENSHOT_DIR,"sidebar-mirror.png")});
     assert.deepEqual(await page.evaluate(()=>window.mirrorCalls), ["phone"], "docking reuses the viewer state without opening another floating window");
-    assert.equal(await page.getByRole("region",{name:"侧栏投屏"}).getByRole("button",{name:"显示选项",exact:true}).count(),1);
+    const sidebarMirror = page.getByRole("region", { name: "侧栏投屏" });
+    const sidebarControl = sidebarMirror.getByRole("button", { name: "操控手机", exact: true });
+    const sidebarDisplayOptions = sidebarMirror.getByRole("button", { name: "显示选项", exact: true });
+    assert.equal(await sidebarControl.getAttribute("aria-pressed"), "false", "docked mirror starts in viewing mode");
+    assert.equal(await sidebarDisplayOptions.count(), 0, "control toolbar stays hidden while viewing");
+    await sidebarControl.click();
+    assert.equal(await sidebarControl.getAttribute("aria-pressed"), "true");
+    assert.equal(await sidebarDisplayOptions.count(), 1);
+    await sidebarControl.click();
+    assert.equal(await sidebarControl.getAttribute("aria-pressed"), "false");
+    assert.equal(await sidebarDisplayOptions.count(), 0, "disabling control restores the viewing layout");
     await page.getByRole("button", {name:"独立悬浮窗", exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('.embeddedMirror canvas'));
     assert.equal(await page.evaluate(() => window.maximized), false, "switching between sidebar and floating mirror does not expand the workspace");
@@ -308,26 +318,26 @@ test("Harmony workspace keeps device tools, drafts and fenced control in a full 
     await recorder.click(); await recorder.press("Control+p");
     await page.getByRole("status").filter({ hasText: /这个键位已分配给/ }).waitFor();
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("piora-keyboard-shortcuts:v1")).overrides["harmony.screenshot"]), "Alt+Shift+S", "a conflicting assignment is not persisted");
-    await recorder.press("Control+Alt+s");
+    await recorder.press("Control+Alt+Shift+s");
     await page.evaluate(() => window.setFixtureShortcuts(false));
-    await page.waitForFunction(() => document.querySelector('.toolbarActions button[title^="截图"]')?.title === "截图 · Ctrl+Alt+S");
+    await page.waitForFunction(() => document.querySelector('.toolbarActions button[title^="截图"]')?.title === "截图 · Ctrl+Alt+Shift+S");
     await page.locator(".overview h2").click(); await page.keyboard.press("Alt+Shift+S");
     await page.waitForTimeout(100);
     assert.equal(captureCount(), countBeforeSettings, "the old binding stops immediately after customization");
-    await captureShortcut("Control+Alt+s");
+    await captureShortcut("Control+Alt+Shift+s");
     await page.reload();
     assert.equal(await page.locator(".workbenchTabs").isHidden(), true);
     assert.equal(await page.locator(".workbenchContent").isHidden(), true);
     // Exercise retained workbench components in isolation, outside the normal UI.
     await page.evaluate(() => { document.querySelector(".workbenchTabs").hidden=false; document.querySelector(".workbenchContent").hidden=false; });
     await page.getByRole("tab", { name: "概览", exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelector('.toolbarActions button[title^="截图"]')?.title === "截图 · Ctrl+Alt+S");
-    await captureShortcut("Control+Alt+s");
+    await page.waitForFunction(() => document.querySelector('.toolbarActions button[title^="截图"]')?.title === "截图 · Ctrl+Alt+Shift+S");
+    await captureShortcut("Control+Alt+Shift+s");
     const protectedCount = captureCount();
     const protectedEvents = await page.evaluate(() => {
       const outcomes = [];
       const dispatch = (target, extra = {}) => {
-        const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, bubbles: true, cancelable: true, ...extra });
+        const event = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, shiftKey: true, bubbles: true, cancelable: true, ...extra });
         target.dispatchEvent(event); outcomes.push(event.defaultPrevented);
       };
       for (const html of ['<input>', '<textarea>', '<select>', '<div contenteditable="true"></div>', '<div contenteditable></div>', '<div contenteditable="plaintext-only"></div>', '<div role="textbox"></div>', '<div class="xterm"></div>', '<button data-app-shortcuts="preserve"></button>']) {
@@ -338,7 +348,7 @@ test("Harmony workspace keeps device tools, drafts and fenced control in a full 
       const dialog = document.createElement("div"); dialog.setAttribute("aria-modal", "true"); dialog.textContent = "Modal"; document.body.append(dialog);
       dispatch(document.body); dialog.remove();
       const panel = document.querySelector('.toolbarActions').closest('.root'); panel.style.display = "none"; dispatch(document.body); panel.style.display = "";
-      const prevented = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, bubbles: true, cancelable: true }); prevented.preventDefault(); document.body.dispatchEvent(prevented);
+      const prevented = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, altKey: true, shiftKey: true, bubbles: true, cancelable: true }); prevented.preventDefault(); document.body.dispatchEvent(prevented);
       return outcomes;
     });
     assert.deepEqual(protectedEvents, Array(13).fill(false), "protected contexts retain their keys");
@@ -348,7 +358,7 @@ test("Harmony workspace keeps device tools, drafts and fenced control in a full 
     await recorder.click(); await recorder.press("Backspace");
     await page.evaluate(() => window.setFixtureShortcuts(false));
     await page.waitForFunction(() => document.querySelector('.toolbarActions button[title^="截图"]')?.title === "截图");
-    await page.locator(".overview h2").click(); await page.keyboard.press("Control+Alt+s");
+    await page.locator(".overview h2").click(); await page.keyboard.press("Control+Alt+Shift+s");
     await page.waitForTimeout(100);
     assert.equal(captureCount(), protectedCount, "a cleared binding stays disabled");
     await page.evaluate(() => window.setFixtureShortcuts(true));

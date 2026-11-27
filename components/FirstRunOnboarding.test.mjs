@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [guide, shell, picker, chat, settings, css] = await Promise.all([
+const [guide, shell, picker, contextMenu, chat, settings, css] = await Promise.all([
   readFile(new URL("./FirstRunOnboarding.tsx", import.meta.url), "utf8"),
   readFile(new URL("./AppShell.tsx", import.meta.url), "utf8"),
   readFile(new URL("./NewSessionProjectPicker.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./new-session/NewSessionContextMenu.tsx", import.meta.url), "utf8"),
   readFile(new URL("./ChatWindow.tsx", import.meta.url), "utf8"),
   readFile(new URL("./SettingsDialog.tsx", import.meta.url), "utf8"),
   readFile(new URL("./FirstRunOnboarding.module.css", import.meta.url), "utf8"),
@@ -24,7 +25,7 @@ test("first-run guide covers the real model, project, and first-message path", (
 });
 
 test("guide resumes safely and existing users are not auto-interrupted", () => {
-  assert.match(guide, /fetch\("\/api\/sessions"/);
+  assert.match(guide, /fetch\("\/api\/sessions\?view=metadata&presence=1", \{ cache: "no-store" \}\)/);
   assert.match(guide, /sessionCount === null/);
   assert.match(guide, /presentation === "paused"/);
   assert.match(guide, /className=\{styles\.resumePill\}/);
@@ -34,9 +35,9 @@ test("guide resumes safely and existing users are not auto-interrupted", () => {
 });
 
 test("project chooser is explicitly controlled by the guide without duplicating the composer", () => {
-  assert.match(picker, /projectPickerRequestKey/);
-  assert.match(picker, /setProjectMenuOpen\(true\)/);
-  assert.match(picker, /onProjectSelected\?\.\(project\.cwd\)/);
+  assert.match(picker, /requestKey=\{projectPickerRequestKey\}/);
+  assert.match(contextMenu, /if \(requestKey > 0\) \{[\s\S]*?setPanel\("projects"\)[\s\S]*?\}, \[requestKey\]\)/);
+  assert.match(picker, /onProjectSelected\?\.\(project\?\.cwd \?\? null\)/);
   assert.equal((picker.match(/<ChatInput\s*\n/g) ?? []).length, 1);
 });
 

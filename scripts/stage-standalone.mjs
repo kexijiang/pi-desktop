@@ -71,11 +71,16 @@ const assets = [
     ["Piora Plan and Goal workflows", "extensions/piora-workflows.ts"],
     ["Piora user-input extension", "extensions/piora-user-input.ts"],
     ["Piora collaboration-room extension", "extensions/piora-room.ts"],
+    ["Piora side-chat extension", "extensions/piora-side-chat.ts"],
     ["Piora meme extension", "extensions/piora-meme.ts"],
     // First-party extensions execute from source at runtime and resolve their
     // relative imports through this tree. Stage the complete Piora library so
     // adding a transitive helper cannot silently break only packaged builds.
     ["Piora runtime support modules", "lib"],
+    ["Browser agent upload helpers", "desktop/src/browser-agent-logic.ts"],
+    ["Browser login observation", "desktop/src/browser-login.ts"],
+    ["Browser login recovery", "desktop/src/browser-login-recovery.ts"],
+    ["Piora analytics shared store", "desktop/src/analytics-store.mts"],
     ["Isolated Harmony driver worker", ".harmony-worker"],
   ].map(([name, relativePath]) => ({
     name,
@@ -394,6 +399,9 @@ async function main() {
     // The source-loaded Harmony extension parses signing project metadata.
     // This is a shared Piora runtime dependency, independent of DevEco CLI.
     join(projectRoot, "node_modules", "json5"),
+    // Telemetry is reached transitively from source-loaded first-party
+    // extensions, independently of the Webpack copy of this dependency.
+    join(projectRoot, "node_modules", "diff"),
     // sharp resolves its versioned native bindings and optional platform
     // packages dynamically; the static trace can omit those binaries.
     join(projectRoot, "node_modules", "sharp"),

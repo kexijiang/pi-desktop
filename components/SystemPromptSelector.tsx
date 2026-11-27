@@ -16,6 +16,7 @@ import styles from "./SystemPromptSelector.module.css";
 interface Props {
   selection: SystemPromptSelection;
   binding?: SessionSystemPromptBinding | null;
+  sessionId?: string;
   disabled?: boolean;
   onChange: (selection: SystemPromptSelection) => void | Promise<void>;
 }
@@ -34,15 +35,19 @@ function selectionValue(selection: SystemPromptSelection): string {
   return selection.mode === "template" ? selection.templateId : DEFAULT_VALUE;
 }
 
-export function SystemPromptSelector({ selection, binding, disabled = false, onChange }: Props) {
+export function SystemPromptSelector({ selection, binding, sessionId, disabled = false, onChange }: Props) {
   const { t } = useI18n();
   const popupId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const catalog = useSyncExternalStore(subscribeSystemPromptCatalog, getSystemPromptCatalog, getServerSystemPromptCatalog);
   const loading = catalog === null;
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [previewId, setPreviewId] = useState(DEFAULT_VALUE);
   const [position, setPosition] = useState<PopupPosition | null>(null);
+  const [savedPrompt, setSavedPrompt] = useState<{ key: string; text: string | null } | null>(null);
 
   useEffect(() => {
     if (catalog?.selectorVisible === false) setOpen(false);
@@ -54,7 +59,7 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
     const rect = trigger.getBoundingClientRect();
     const viewportMargin = 8;
     const availableWidth = Math.max(240, window.innerWidth - viewportMargin * 2);
-    const width = Math.min(380, Math.max(300, rect.width), availableWidth);
+    const width = Math.min(420, Math.max(330, rect.width), availableWidth);
     const left = Math.min(
       Math.max(viewportMargin, rect.left),
       Math.max(viewportMargin, window.innerWidth - width - viewportMargin),
@@ -69,7 +74,7 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
         ? { bottom: window.innerHeight - rect.top + 6 }
         : { top: rect.bottom + 6 }),
       width,
-      maxHeight: Math.max(120, Math.min(360, availableHeight)),
+      maxHeight: Math.max(120, Math.min(520, availableHeight)),
     });
   }, []);
 
@@ -96,6 +101,8 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     };
@@ -109,7 +116,7 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
 
   useEffect(() => {
     if (!open || !position) return;
-    popupRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+    searchRef.current?.focus();
   }, [open, position]);
 
   const defaultTemplate = catalog?.templates.find((template) => template.id === catalog.defaultTemplateId);
@@ -122,7 +129,36 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
     : defaultTemplate?.name ?? t("system.piDefault");
   const selectedValue = selectionValue(selection);
   const unavailableSnapshot = selection.mode === "template" && !selectedTemplateExists;
+  const snapshotKey = sessionId && binding?.promptDeferred ? sessionId + ":" + binding.revision : null;
+  const bindingRevision = binding?.revision;
+  useEffect(() => {
+    if (!open || !unavailableSnapshot || !snapshotKey || !sessionId || savedPrompt?.key === snapshotKey) return;
+    const request = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/system-prompt", {
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]),
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const body = await response.json() as { binding?: SessionSystemPromptBinding };
+        if (!request.signal.aborted) setSavedPrompt({ key: snapshotKey, text: body.binding?.revision === bindingRevision ? body.binding?.prompt ?? null : null });
+      } catch {
+        if (!request.signal.aborted) setSavedPrompt({ key: snapshotKey, text: null });
+      }
+    })();
+    return () => request.abort();
+  }, [bindingRevision, open, savedPrompt?.key, sessionId, snapshotKey, unavailableSnapshot]);
+  const snapshotPrompt = snapshotKey && savedPrompt?.key === snapshotKey ? savedPrompt.text : binding?.prompt;
+  const snapshotDisplay = snapshotPrompt || (snapshotKey
+    ? t(savedPrompt?.key === snapshotKey ? "system.snapshotLoadFailed" : "system.snapshotLoading")
+    : t("system.emptyTemplate"));
   const isDisabled = disabled || loading;
+  const matches = (name: string, prompt: string) => `${name} ${prompt}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+  const templates = catalog?.templates.filter(template => matches(template.name, template.prompt)) ?? [];
+  const showDefault = matches(defaultTemplate?.name ?? t("system.piDefault"), t("system.defaultPreset"));
+  const previewTemplate = catalog?.templates.find(template => template.id === previewId);
+  const previewName = previewId === DEFAULT_VALUE ? defaultTemplate?.name ?? t("system.piDefault") : previewTemplate?.name ?? binding?.templateName ?? t("system.snapshot");
+  const previewText = previewId === DEFAULT_VALUE ? defaultTemplate?.prompt || t("system.piDefaultDescription") : previewTemplate?.prompt || snapshotDisplay;
 
   const select = (next: SystemPromptSelection) => {
     setOpen(false);
@@ -155,6 +191,14 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
           <AliIcon name="close" size={14} />
         </button>
       </div>
+      <label className={styles.search}>
+        <AliIcon name="search" size={14} />
+        <input ref={searchRef} type="search" value={query} placeholder={t("system.searchTemplates")} aria-label={t("system.searchTemplates")}
+          onChange={event => setQuery(event.target.value)} onKeyDown={event => {
+            if (event.key !== "ArrowDown") return;
+            event.preventDefault(); popupRef.current?.querySelector<HTMLElement>('[role="option"]')?.focus();
+          }} />
+      </label>
       <div
         id={popupId}
         className={styles.optionList}
@@ -176,46 +220,54 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
           options[nextIndex]?.focus();
         }}
       >
-        <button
+        {showDefault ? <button
           type="button"
           role="option"
           aria-selected={selectedValue === DEFAULT_VALUE}
           onClick={() => select({ mode: "default" })}
+          onFocus={() => setPreviewId(DEFAULT_VALUE)} onMouseEnter={() => setPreviewId(DEFAULT_VALUE)}
         >
           <span className={styles.optionIcon}><AliIcon name="setting" size={15} /></span>
           <span className={styles.optionCopy}>
-            <strong>{t("system.defaultOption", { name: defaultTemplate?.name ?? t("system.piDefault") })}</strong>
-            <small>{defaultTemplate?.prompt || t("system.piDefaultDescription")}</small>
+            <strong>{defaultTemplate?.name ?? t("system.piDefault")}</strong>
+            <small>{t("system.defaultPreset")}</small>
           </span>
           {selectedValue === DEFAULT_VALUE ? <AliIcon name="check" size={15} /> : null}
-        </button>
-        {catalog?.templates.map((template) => (
+        </button> : null}
+        {templates.map((template) => (
           <button
             key={template.id}
             type="button"
             role="option"
             aria-selected={selectedValue === template.id}
             onClick={() => select({ mode: "template", templateId: template.id })}
+            onFocus={() => setPreviewId(template.id)} onMouseEnter={() => setPreviewId(template.id)}
           >
             <span className={styles.optionIcon}><AliIcon name="file" size={15} /></span>
             <span className={styles.optionCopy}>
               <strong>{template.name}</strong>
-              <small>{template.prompt || t("system.emptyTemplate")}</small>
+              <small>{template.prompt.replace(/\s+/g, " ").slice(0, 120) || t("system.emptyTemplate")}</small>
             </span>
             {selectedValue === template.id ? <AliIcon name="check" size={15} /> : null}
           </button>
         ))}
-        {unavailableSnapshot ? (
+        {unavailableSnapshot && matches(binding?.templateName ?? "", snapshotPrompt ?? "") ? (
           <button type="button" role="option" aria-selected="true" onClick={() => setOpen(false)}>
             <span className={styles.optionIcon}><AliIcon name="archive" size={15} /></span>
             <span className={styles.optionCopy}>
               <strong>{binding?.templateName ?? t("system.snapshot")}</strong>
-              <small>{binding?.prompt || t("system.emptyTemplate")}</small>
+              <small>{snapshotDisplay}</small>
             </span>
             <AliIcon name="check" size={15} />
           </button>
         ) : null}
+        {!showDefault && templates.length === 0 && !(unavailableSnapshot && matches(binding?.templateName ?? "", snapshotPrompt ?? "")) ? <p className={styles.empty}>{t("system.noMatchingTemplates")}</p> : null}
       </div>
+      <details className={styles.preview}>
+        <summary>{t("system.previewTemplate")}</summary>
+        <strong>{previewName}</strong>
+        <pre>{previewText}</pre>
+      </details>
     </div>,
     document.body,
   ) : null;
@@ -232,7 +284,7 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
         aria-haspopup="listbox"
         aria-controls={open ? popupId : undefined}
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => { setQuery(""); setPreviewId(selectedValue); setOpen((current) => !current); }}
         onKeyDown={(event) => {
           if (event.key !== "ArrowDown") return;
           event.preventDefault();
@@ -240,6 +292,7 @@ export function SystemPromptSelector({ selection, binding, disabled = false, onC
         }}
       >
         <AliIcon name="file" size={13} />
+        <span className={styles.prefix}>{t("system.promptShort")}</span><span aria-hidden="true">·</span>
         <span className={styles.visualLabel}>{label}</span>
         <span className={styles.caret} data-open={open || undefined}>
           <AliIcon name="chevron-right" size={11} />
