@@ -17,7 +17,7 @@ test("moves files and review into a Codex-style launcher and tool-tab workspace"
   assert.match(rightPanel, /className=\{styles\.toolMenu\} role="menu"/);
   assert.match(rightPanel, /const \[openTools, setOpenTools\]/);
   assert.match(rightPanel, /current\.includes\(tab\) \? current : \[\.\.\.current, tab\]/);
-  assert.match(rightPanel, /openTools\.map/);
+  assert.match(rightPanel, /shownTools\.map\(/);
   assert.match(rightPanel, /draggable/);
   assert.match(rightPanel, /text\/piora-tool-tab/);
   assert.match(rightPanel, /moveTool\(source, tool\.id\)/);
