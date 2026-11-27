@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { bindSessionAgentRuntimeProfile, readSessionAgentRuntimeProfile } from "../agent-profile-store";
-import { readRemoteSessionPolicy } from "../remote-session-policy";
+import { isLegacyNotesSession } from "../notes-session";
 import { listRooms } from "../room-store";
 import { getRuntimeAgentDataDirectory } from "../runtime-home";
 import { isDeletedUserMessage } from "../session-message-delete";
@@ -193,7 +193,7 @@ export async function createSideChatFromParent(options: CreateSideChatOptions): 
     if (liveParent.isSideConversation?.()) {
       throw new SideChatError("NESTED_SIDE_CHAT_FORBIDDEN", 400, "Side chats cannot be opened inside another side chat.");
     }
-    if (liveParent.runtimeProfile !== "normal" || liveParent.remotePolicy === "notes") {
+    if (liveParent.runtimeProfile !== "normal" || liveParent.notesOnly) {
       throw new SideChatError("SIDE_CHAT_FORBIDDEN", 403, "Side chats are only available in standard conversations.");
     }
     const sm = liveParent.inner.sessionManager;
@@ -219,7 +219,7 @@ export async function createSideChatFromParent(options: CreateSideChatOptions): 
   if (readSideChatMetaFromEntries(entries)) {
     throw new SideChatError("NESTED_SIDE_CHAT_FORBIDDEN", 400, "Side chats cannot be opened inside another side chat.");
   }
-  if (readRemoteSessionPolicy(entries) === "notes") {
+  if (isLegacyNotesSession(entries)) {
     throw new SideChatError("SIDE_CHAT_FORBIDDEN", 403, "Side chats are only available in standard conversations.");
   }
   if (!hasStartedConversation(entries, leafId)) {

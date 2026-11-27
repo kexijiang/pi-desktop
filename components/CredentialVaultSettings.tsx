@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AliIcon } from "./AliIcon";
+import settingsStyles from "./settings/SettingsPrimitives.module.css";
 import browserStyles from "./workspace/browser/BrowserTools.module.css";
 import { useI18n } from "@/hooks/useI18n";
 import type { VaultEntry, VaultRequest, VaultSnapshot } from "@/desktop/src/credential-vault-types";
@@ -68,7 +69,7 @@ export function CredentialVaultSettings({ browserPage = false, importPasswords }
     {!browserPage && <h3>{copy("网页登录账户", "Website accounts")}</h3>}
     {!browserPage && <p>{copy("登录后默认加密保存账户并自动登录；解锁凭据库可管理详情与加密备份。", "Remembered sign-ins stay encrypted and sign in automatically. Unlock the vault for manual editing and backups.")}</p>}
     {!state.available && <p role="status">{copy("系统加密不可用，无法保存网页登录账户。", "System encryption is unavailable; website accounts cannot be saved.")}</p>}
-    {browserPage && tab === "settings" && <div className={browserStyles.settingsRows}>
+    {browserPage && tab === "settings" && <div className={`${settingsStyles.sectionCard} ${browserStyles.settingsRows}`}>
       <label className={browserStyles.option}><span>{copy("自动保存网页登录账户并自动登录", "Remember website accounts and sign in automatically")}<small>{copy("在支持的网站登录成功后，加密保存账户供下次使用。", "Save accounts locally after signing in to supported sites.")}</small></span>
         <input className={browserStyles.switch} aria-label={copy("自动保存网页登录账户并自动登录", "Remember website accounts and sign in automatically")} type="checkbox" checked={state.remembered?.enabled ?? true} disabled={busy || !state.available} onChange={e => void request({ action: "remember-configure", enabled: e.target.checked })} /></label>
       <label className={browserStyles.option}><span>{copy("自动填写密码", "Fill passwords automatically")}<small>{copy("凭据库解锁后，自动填写有唯一匹配账户的登录页。", "Fill a sign-in page with one matching account while the vault is unlocked.")}</small></span>
@@ -108,7 +109,7 @@ export function CredentialVaultSettings({ browserPage = false, importPasswords }
       {browserPage && <button className={browserStyles.outlineButton} type="button" onClick={() => {setTab("settings"); setManagerOpen(true);}}>{state.unlocked ? copy("管理凭据库", "Manage vault") : copy("解锁或创建凭据库", "Open vault")}</button>}
     </fieldset>}
 
-    {(!browserPage || tab === "settings") && <div className={browserPage ? browserStyles.advanced : undefined}>
+    {(!browserPage || tab === "settings") && <div className={browserPage ? `${settingsStyles.sectionCard} ${browserStyles.advanced}` : undefined}>
     <details data-settings-id="data.credentialVault" open={managerOpen} onToggle={event => setManagerOpen(event.currentTarget.open)}>
       <summary>{copy("凭据库（本地加密）", "Credential vault (locally encrypted)")}</summary>
       <p>{copy("主密码至少 12 位，解锁持续 10 分钟；密码始终遮盖，导出备份同样使用主密码加密。", "Master password requires 12+ characters and unlocks for 10 minutes. Backups are encrypted with the same password.")}</p>

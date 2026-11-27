@@ -7,6 +7,7 @@ import { AliIcon } from "./AliIcon";
 import { ProfileSettingsHome } from "./workspace/browser/BrowserProfileSection";
 import { reopenFromSettings, type ToolsBridge } from "./workspace/browser/shared";
 import styles from "./SettingsDialog.module.css";
+import settingsStyles from "./settings/SettingsPrimitives.module.css";
 
 export function BrowserSettings({ requestedPage }: { requestedPage?: string } = {}) {
   const bridge = typeof window === "undefined" ? undefined : window.piDesktop?.browser;
@@ -53,7 +54,7 @@ function BrowserPreferences() {
       <div className={styles.contentHeading}>
         <h2>{t("browserPreferences.title")}</h2>
       </div>
-      <section data-settings-id="browser.downloads" className={`${styles.promptCard} ${styles.browserPreferencesCard}`} aria-labelledby="browser-download-label">
+      <section data-settings-id="browser.downloads" className={`${settingsStyles.sectionCard} ${styles.browserPreferencesCard}`} aria-labelledby="browser-download-label">
         <form onSubmit={event => { event.preventDefault(); void save(); }}>
           <div className={styles.browserDownloadPath}>
             <label id="browser-download-label" className={styles.rowTitle} htmlFor="browser-download-directory">
@@ -110,7 +111,7 @@ function BrowserPreferences() {
           </div>
         </form>
       </section>
-      <section className={`${styles.promptCard} ${styles.browserPreferencesCard}`} aria-labelledby="browser-zoom-label">
+      <section className={`${settingsStyles.sectionCard} ${styles.browserPreferencesCard}`} aria-labelledby="browser-zoom-label">
         <div className={styles.promptCardHeader}>
           <h3 id="browser-zoom-label">{t("browserPreferences.zoom")}</h3>
           <p>{t("browserPreferences.zoomHelp")}</p>

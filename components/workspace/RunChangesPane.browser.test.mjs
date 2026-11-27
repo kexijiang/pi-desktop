@@ -140,6 +140,7 @@ test("run file changes settle after Stop, open exact diffs, and reset per run", 
     const summary = page.locator("[data-run-changes-summary]");
     const summaryButton = summary.getByRole("button", { name: /已更改 2 个文件/ });
     const detail = page.getByRole("region", { name: "本轮文件差异" });
+    assert.match(await summaryButton.locator(":scope > :first-child").textContent(), /^已更改 2 个文件$/);
     assert.match(await summaryButton.textContent(), /\+2.*−2/);
     assert.equal(await summaryButton.getAttribute("aria-expanded"), "true");
     await detail.getByText("new line", { exact: true }).waitFor();

@@ -5,18 +5,10 @@ import { parseWorkflowAction, parseWorkflowPromptOptions } from "../workflow-inp
 import type {
   SessionCommandStatus,
   SessionMessageInput,
-  SessionMessageSourceKind,
 } from "../session-message-types";
-
-export interface SessionRoutePrincipal {
-  kind?: SessionMessageSourceKind;
-  allowedSessionIds?: ReadonlySet<string>;
-  scopes?: ReadonlySet<string>;
-}
 
 export type SessionMessageRouterErrorCode =
   | "SESSION_NOT_FOUND"
-  | "SESSION_NOT_ALLOWED"
   | "SESSION_PROFILE_MISMATCH"
   | "SESSION_FILE_INVALID"
   | "INVALID_SESSION_ID"
@@ -152,11 +144,5 @@ export function validateSessionMessageInput(input: SessionMessageInput, maxMessa
     )
   ) {
     throw new SessionMessageRouterError("INVALID_SESSION_MESSAGE", "Prompt material references are invalid.");
-  }
-}
-
-export function assertPrincipal(input: SessionMessageInput, principal?: SessionRoutePrincipal): void {
-  if (principal?.allowedSessionIds && !principal.allowedSessionIds.has(input.targetSessionId)) {
-    throw new SessionMessageRouterError("SESSION_NOT_ALLOWED", "The caller is not allowed to control this Session.");
   }
 }

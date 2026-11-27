@@ -2,6 +2,7 @@ import type { PersistedTeamExecutionRef, TeamExecutionContext } from "./team-typ
 import type { PromptMaterialReference } from "./prompt-material-format";
 import type { ChatCommandOperation } from "./chat-command-types";
 
+/** Historical journals can still contain the retired remote source. */
 export type SessionMessageSourceKind = "ui" | "room" | "remote" | "extension" | "system";
 export type SessionDeliveryMode = "next_turn" | "steer";
 
@@ -37,7 +38,7 @@ export interface SessionMessageInput {
   targetSessionId: string;
   content: string;
   delivery?: SessionDeliveryMode;
-  source: SessionMessageSourceKind;
+  source: Exclude<SessionMessageSourceKind, "remote">;
   roomContext?: SessionRoomContext;
   idempotencyKey: string;
   images?: SessionMessageImage[];
