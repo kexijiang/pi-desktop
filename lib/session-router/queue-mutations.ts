@@ -212,7 +212,7 @@ export async function performQueuedInputAction(
           }
           patch.operation = createChatCommandOperation(text, catalog, parsed, command.operation.inputOptions);
         }
-        validateSessionMessageInput({ ...command, ...patch, teamExecution: undefined }, host.maxMessageBytes);
+        validateSessionMessageInput({ ...command, ...patch, source: command.source, teamExecution: undefined }, host.maxMessageBytes);
       }
       const previous = { ...command };
       const inbox = host.inbox(sessionId);

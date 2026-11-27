@@ -507,7 +507,7 @@
 
 .browserPreferencesCard {
   max-width: 760px;
-  overflow: visible;
+  margin-block-start: 14px;
 }
 
 .browserDownloadPath {

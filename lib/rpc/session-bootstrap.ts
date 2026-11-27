@@ -1,5 +1,4 @@
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -34,7 +33,7 @@ import {
   readProjectToolSettings,
 } from "../project-tool-settings";
 import { installProviderPayloadValidation } from "../provider-payload";
-import { readRemoteSessionPolicy, remotePolicyResources } from "../remote-session-policy";
+import { isLegacyNotesSession, notesSessionResourceOptions } from "../notes-session";
 import {
   appendSessionCapabilityPolicy,
   buildSessionCapabilityCatalog,
@@ -130,22 +129,9 @@ export async function startRpcSession(
 
     const sessionManager = sessionFile
       ? SessionManager.open(sessionFile, undefined)
-      : options.preparedSessionFile
-        ? SessionManager.open(options.preparedSessionFile, undefined)
-        : SessionManager.create(cwd, options.subagentDirectory);
+      : SessionManager.create(cwd, options.subagentDirectory);
 
-    if (options.preparedSessionFile && (sessionManager.getSessionId() !== sessionId
-      || resolve(sessionManager.getCwd()) !== resolve(cwd)
-      || readRemoteSessionPolicy(sessionManager.getEntries()) !== options.remotePolicy)) {
-      throw new Error("Prepared remote session identity or policy does not match the creation request.");
-    }
-
-    if (!sessionFile && options.remotePolicy === "notes") {
-      if (runtimeProfile !== "normal") throw new Error("Notes-only sessions require the normal process runtime");
-      if (readRemoteSessionPolicy(sessionManager.getEntries()) !== "notes") sessionManager.appendCustomEntry("piora-remote-policy", { policy: "notes" });
-    }
-    const remotePolicy = readRemoteSessionPolicy(sessionManager.getEntries());
-    const notesOnly = remotePolicy === "notes";
+    const notesOnly = isLegacyNotesSession(sessionManager.getEntries());
     const sideChatMeta = readSideChatMetaFromEntries(sessionManager.getEntries());
     if (sideChatMeta) {
       if (runtimeProfile !== "normal") {
@@ -195,7 +181,7 @@ export async function startRpcSession(
     // mutable and must never be shared with another task in the same cwd.
     let services = getServicesCache().get(sessionServicesKey);
     if (!services && notesOnly) {
-      services = await createAgentSessionServices({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir), resourceLoaderOptions: remotePolicyResources(remotePolicy) });
+      services = await createAgentSessionServices({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir), resourceLoaderOptions: notesSessionResourceOptions() });
       getServicesCache().set(sessionServicesKey, services);
     }
     if (!services) {

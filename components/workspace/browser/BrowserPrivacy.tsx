@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import settingsStyles from "@/components/settings/SettingsPrimitives.module.css";
 import type { ClearCategory, ClearPreview, ClearRange } from "@/desktop/src/browser/contracts";
 import { errorText, useBrowserCopy, type ToolsBridge } from "./shared";
 import styles from "./BrowserTools.module.css";
@@ -65,7 +66,7 @@ export function PrivacyControls({ bridge, close }: { bridge: ToolsBridge; close?
   };
   return (
     <div className={styles.form}>
-      <fieldset className={styles.options} aria-label={copy("数据类别", "Data types")} disabled={busy}>
+      <fieldset className={`${settingsStyles.sectionCard} ${styles.options}`} aria-label={copy("数据类别", "Data types")} disabled={busy}>
         {(Object.keys(labels) as ClearCategory[]).map((key) => (
           <label className={styles.option} key={key}>
             <span>{labels[key]}</span>

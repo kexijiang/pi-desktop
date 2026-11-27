@@ -5,7 +5,7 @@ import { join } from "node:path";
 export const browserSettings = {
   id: "browser-settings",
   scope: "Real Electron settings renderer and persisted browser download preferences.",
-  coverage: ["single browser heading", "styled download controls and zoom help", "keyboard toggle", "save, reload, invalid input and reset", "light, dark and narrow layouts"],
+  coverage: ["single browser heading", "styled download controls and zoom help", "keyboard toggle", "save, reload, invalid input and reset", "matching settings cards in light, dark and narrow layouts"],
   limits: ["native directory chooser interaction", "actual downloads"],
   async run({ page, directory, reload, screenshot, step, waitUntil }) {
     const dialog = page.getByRole("dialog", { name: /^(Settings|设置)$/ });
@@ -15,6 +15,28 @@ export const browserSettings = {
     const save = downloads.getByRole("button", { name: /^(Save download settings|保存下载设置)$/ });
     const reset = downloads.getByRole("button", { name: /^(Use system default location|使用系统默认位置)$/ });
     const status = downloads.getByRole("status");
+    const assertSettingsCards = async () => {
+      const cards = await dialog.locator('[data-profile-section="browser"]').evaluate(section => {
+        const elements = [
+          section.querySelector('[data-settings-id="browser.downloads"]'),
+          section.querySelector("#browser-zoom-label")?.closest("section"),
+          section.querySelector('[class*="navList"]'),
+        ];
+        return elements.filter(Boolean).map(element => {
+          const style = getComputedStyle(element);
+          return {
+            radius: style.borderRadius,
+            expectedRadius: style.getPropertyValue("--radius-panel").trim(),
+            background: style.backgroundColor,
+          };
+        });
+      });
+      assert.equal(cards.length, 3);
+      for (const card of cards) {
+        assert.equal(card.radius, card.expectedRadius);
+        assert.equal(card.background, cards[0].background);
+      }
+    };
     const open = async () => {
       await page.getByRole("button", { name: /^(Settings|设置)$/ }).click();
       await dialog.getByTestId("settings-browser").click();
@@ -28,6 +50,7 @@ export const browserSettings = {
       assert.equal(await dialog.getByRole("heading", { name: /^(Browser|浏览器)$/ }).count(), 1);
       assert.equal(await dialog.getByRole("heading", { name: /^(Page zoom|页面缩放)$/ }).count(), 1);
       assert.equal(await downloads.getByRole("button", { name: /^(Browse…|浏览…)$/ }).isVisible(), true);
+      await assertSettingsCards();
       const layout = await downloads.evaluate(card => {
         const input = card.querySelector("input");
         const style = getComputedStyle(input);
@@ -68,6 +91,7 @@ export const browserSettings = {
       await dialog.getByTestId("settings-browser").click();
       await location.waitFor();
       await page.setViewportSize({ width: 640, height: 740 });
+      await assertSettingsCards();
       const geometry = await downloads.evaluate(card => {
         const { left, right } = card.getBoundingClientRect();
         return { left, right, clientWidth: document.documentElement.clientWidth, contentWidth: card.scrollWidth, width: card.clientWidth };
@@ -75,6 +99,19 @@ export const browserSettings = {
       assert.ok(geometry.left >= 0 && geometry.right <= geometry.clientWidth + 1, JSON.stringify(geometry));
       assert.ok(geometry.contentWidth <= geometry.width + 1, JSON.stringify(geometry));
       await screenshot("browser-settings-dark-narrow.png");
+    });
+
+    await step("password-manager-settings-cards", async () => {
+      await dialog.getByRole("button", { name: /^(Password manager|密码管理器)$/ }).click();
+      await dialog.getByRole("button", { name: /^(Manage passwords|管理密码)$/ }).click();
+      const vault = dialog.locator('[data-profile-section="vault"]');
+      await vault.getByRole("tab", { name: /^(Settings|设置)$/ }).click();
+      const cards = await vault.locator('[class*="sectionCard"]').evaluateAll(elements => elements.map(element => {
+        const style = getComputedStyle(element);
+        return [style.borderRadius, style.getPropertyValue("--radius-panel").trim()];
+      }));
+      assert.equal(cards.length, 2);
+      for (const [radius, expected] of cards) assert.equal(radius, expected);
     });
   },
 };

@@ -66,12 +66,9 @@
 }
 .chromeMark { display: block; width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(from -25deg,#ea4335 0 33.3%,#fbbc04 33.3% 66.6%,#34a853 66.6% 100%); }
 .chromeMark::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: #4285f4; border: 1px solid white; }
-.options, .previewBox, .settingsRows, .navList {
-  padding: 0 15px; border: 1px solid var(--border-soft); border-radius: 13px; background: var(--bg);
-}
+.options { padding: 0 15px; }
 .option, .option span { min-width: 0; }
 .option { display: flex; align-items: center; gap: 13px; min-height: 45px; padding: 8px 0; cursor: pointer; }
-.option + .option, .navRow + .navRow { border-top: 1px solid var(--border-soft); }
 .option > svg { flex: none; color: var(--text-muted); }
 .option > span { flex: 1; font-size: var(--text-base); font-weight: 500; }
 .option small { display: block; font-weight: 400; font-size: var(--text-xs); }
@@ -102,7 +99,7 @@
 .form button:disabled, .device button:disabled, .find button:disabled { opacity: .45; cursor: default; }
 .check { display: flex; gap: 8px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .check input { accent-color: var(--accent); }
-.previewBox { max-height: 180px; overflow: auto; padding-block: 6px 10px; }
+.previewBox { max-height: 180px; overflow: auto; padding: 6px 15px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-panel); background: var(--bg); }
 .previewBox legend { font-weight: 570; padding: 0 4px; overflow-wrap: anywhere; }
 .previewBox .check { margin-top: 6px; }
 .feedback { margin: 0; padding: 8px 12px; background: var(--bg); border-radius: var(--radius-control); list-style: none; }
@@ -146,7 +143,8 @@
 .sideHandle { width: 6px; cursor: ew-resize; }
 .bottomHandle { height: 6px; cursor: ns-resize; }
 .navList { display: grid; }
-.home .navRow { width: 100%; padding: 10px 1px; justify-content: flex-start; gap: 12px; border-radius: 0; text-align: start; }
+.home .navRow { width: 100%; min-height: 46px; padding: 10px 16px; justify-content: flex-start; gap: 12px; border-radius: 0; text-align: start; }
+.home .navRow:focus-visible { outline-offset: -3px; }
 .navRow > svg:first-child, .navRow > svg:last-child { color: var(--text-muted); }
 .navRow > svg:last-child { margin-left: auto; }
 .crumbs { gap: 9px; flex-wrap: wrap; color: var(--text-muted); font-size: var(--text-sm); }
@@ -177,14 +175,12 @@
 .passwordPage > fieldset > ul { padding: 0; margin: 0; list-style: none; }
 .passwordPage > fieldset > ul > li { display: grid; gap: 6px; padding-block: 12px; border-bottom: 1px solid var(--border-soft); }
 .passwordPage > fieldset > p { color: var(--text-muted); margin: 12px 0; }
-.settingsRows { padding: 0; border-radius: var(--radius-control); }
 .settingsRows .option { padding: 13px 18px; }
 .settingsRows .option > span { font-size: var(--text-sm); }
 .settingsRows .option small { margin-top: 4px; }
 .outlineButton { flex: none; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 18px; background: var(--bg); padding: 7px 13px; min-height: 32px; font: inherit; cursor: pointer; }
 .outlineButton:hover { background: var(--bg-hover); }
-.advanced { border: 1px solid var(--border-soft); border-radius: var(--radius-control); padding: 0 16px; }
-.advanced > details + details { border-top: 1px solid var(--border-soft); }
+.advanced { padding: 0 16px; }
 .advanced summary { color: var(--text); padding: 12px 0; cursor: pointer; }
 .advanced fieldset { display: grid; gap: 8px; padding-block: 8px 14px; }
 .advanced fieldset > button { justify-self: start; }

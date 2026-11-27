@@ -16,6 +16,8 @@ import { ClipboardDatabase } from "../desktop/src/clipboard-database";
 import { importClipboardArchive } from "../desktop/src/clipboard-archive";
 
 export { backupControlRoot, backupJob, newBackupJob } from "./app-backup-state";
+const legacyRemoteState = "piora/remote-control";
+
 function relativeInside(root: string, file: string) { const result = path.relative(root, file); return result === "" || (!result.startsWith("..") && !path.isAbsolute(result)); }
 function clipboardRestoreTarget(agent: string) {
   if (!process.env.PIORA_DESKTOP_USER_DATA_DIR) return null;
@@ -46,7 +48,7 @@ export async function exportApplicationBackup(password: string, client: unknown,
   }
   const speech = await readSpeechSettings(); add({ id: "speech", source: speech.packDirectory, destination: "piora/migrated/speech" });
   add({ id: "skills", source: path.join(getRuntimeHomeDirectory(), ".agents", "skills"), destination: "piora/migrated/skills" });
-  for (const [env, id, destination] of [["PIORA_ROOMS_ROOT", "rooms", "piora/rooms"], ["PIORA_SESSION_CONTROL_ROOT", "session-control", "piora/session-control"], ["PIORA_REMOTE_CONTROL_ROOT", "remote-control", "piora/remote-control"]]) {
+  for (const [env, id, destination] of [["PIORA_ROOMS_ROOT", "rooms", "piora/rooms"], ["PIORA_SESSION_CONTROL_ROOT", "session-control", "piora/session-control"]]) {
     const source = process.env[env]; if (source) add({ id, source: path.resolve(source), destination });
   }
   const desktopData = process.env.PIORA_DESKTOP_DATA_DIR;
@@ -68,7 +70,11 @@ export async function exportApplicationBackup(password: string, client: unknown,
   const clientRoot = path.join(backupJob(id), "client"); await mkdir(clientRoot);
   await writeFile(path.join(clientRoot, "state.json"), JSON.stringify(client), { mode: 0o600 });
   roots.push({ id: "client", source: clientRoot, destination: "piora/migrated/client" });
-  const entries = (await backupInventory(roots, warnings)).filter(entry => !roots.some(root => root.id === "clipboard") || entry.name !== "agent/piora/migrated/clipboard/history.piora-clipboard");
+  const hasExternalClipboard = roots.some(root => root.id === "clipboard");
+  const entries = (await backupInventory(roots, warnings)).filter(({ name }) =>
+    !name.toLowerCase().startsWith(`agent/${legacyRemoteState}/`)
+    && (!hasExternalClipboard || name !== "agent/piora/migrated/clipboard/history.piora-clipboard"),
+  );
   const manifest: BackupManifest = { product: "piora", version: 1, platform: process.platform, exportedAt: new Date().toISOString(), roots, projects: [...new Set(projects)], warnings, files: entries.length, bytes: entries.reduce((sum, entry) => sum + entry.size, 0) };
   await createBackupArchive(path.join(backupJob(id), "backup.piora"), password, manifest, entries);
   return { id, manifest };
@@ -82,7 +88,7 @@ export async function previewApplicationBackup(id: string, password: string) {
 }
 export function readBackupPreview(id: string): { attempt: string; manifest: BackupManifest } { return JSON.parse(readFileSync(path.join(backupJob(id), "preview.json"), "utf8")); }
 
-const destinations: Record<string, string> = { agent: ".", companion: "piora/migrated/companion", library: "piora/migrated/library", json: "piora/migrated/json", speech: "piora/migrated/speech", skills: "piora/migrated/skills", rooms: "piora/rooms", "session-control": "piora/session-control", "remote-control": "piora/remote-control", "desktop-runtime": "piora/migrated/desktop-runtime", desktop: "piora/migrated/desktop", clipboard: "piora/migrated/clipboard", client: "piora/migrated/client" };
+const destinations: Record<string, string> = { agent: ".", companion: "piora/migrated/companion", library: "piora/migrated/library", json: "piora/migrated/json", speech: "piora/migrated/speech", skills: "piora/migrated/skills", rooms: "piora/rooms", "session-control": "piora/session-control", "desktop-runtime": "piora/migrated/desktop-runtime", desktop: "piora/migrated/desktop", clipboard: "piora/migrated/clipboard", client: "piora/migrated/client" };
 export interface BackupPathMapping { from: string; to: string }
 export function remapBackupPath(value: string, mappings: BackupPathMapping[]): string {
   const normalized = value.replace(/\\/g, "/");
@@ -154,11 +160,20 @@ export async function prepareApplicationRestore(id: string, requestedMappings: B
   const seen = new Set<string>();
   for (const root of [...manifest.roots].sort((a, b) => Number(b.id === "agent") - Number(a.id === "agent"))) {
     const projectMatch = /^project-(\d+)$/.exec(root.id);
-    if ((!Object.hasOwn(destinations, root.id) && !(projectMatch && Number(projectMatch[1]) < manifest.projects.length)) || seen.has(root.id)) throw new Error("backup_format"); seen.add(root.id);
+    const retiredRemoteComponent = root.id === "remote-control";
+    if ((!retiredRemoteComponent && !Object.hasOwn(destinations, root.id)
+      && !(projectMatch && Number(projectMatch[1]) < manifest.projects.length)) || seen.has(root.id)) throw new Error("backup_format");
+    seen.add(root.id);
+    if (retiredRemoteComponent) continue;
     const destination = projectMatch ? `piora/migrated/projects/${projectMatch[1]}` : destinations[root.id]; const src = safeBackupPath(extracted, root.id);
     // Re-exported applications already contain migrated snapshots. Refresh those
     // snapshots with the current external configuration inside this staging copy.
-    if (root.id !== "client" && existsSync(src)) await cp(src, destination === "." ? staged : safeBackupPath(staged, destination), { recursive: true, force: destination !== ".", errorOnExist: destination === "." });
+    if (root.id !== "client" && existsSync(src)) await cp(src, destination === "." ? staged : safeBackupPath(staged, destination), {
+      recursive: true,
+      force: destination !== ".",
+      errorOnExist: destination === ".",
+      ...(root.id === "agent" ? { filter: (file: string) => !relativeInside(path.join(src, legacyRemoteState), file) } : {}),
+    });
     if (root.id !== "client" && !projectMatch) mappings.push({ from: root.source, to: destination === "." ? target : safeBackupPath(target, destination) });
   }
   await mapJsonFiles(staged, mappings);

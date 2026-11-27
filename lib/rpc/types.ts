@@ -1,6 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentRuntimeProfile } from "../agent-runtime-profile";
-import type { RemoteSessionPolicy } from "../remote-session-policy";
 import type { SessionCapabilitySelection } from "../session-capabilities";
 import type { SystemPromptSelection } from "../system-prompt-types";
 import type { ExtensionUiRequest, ExtensionUiResponse } from "../types";
@@ -56,8 +55,6 @@ export interface RpcSessionStartOptions {
   subagentParent?: AgentSessionWrapper;
   subagentSystemPrompt?: string;
   subagentDirectory?: string;
-  preparedSessionFile?: string;
-  remotePolicy?: RemoteSessionPolicy;
   /** Pinned Team profiles prohibit startup model fallback. */
   allowModelFallback?: boolean;
   toolNames?: string[];
