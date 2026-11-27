@@ -1,0 +1,64 @@
+name: Verify published beta.34 on Windows
+
+on:
+  push:
+    branches: [codex/qa-install-beta34-ui-20261127]
+
+permissions:
+  contents: read
+
+jobs:
+  installed-ui:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+      - name: Install locked test dependencies
+        uses: ./.github/actions/install-ci-dependencies
+      - name: Install the exact GitHub Beta and run desktop verification
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pioraRoot = Join-Path $env:RUNNER_TEMP 'piora-beta34-ui'
+          $pioraInstall = Join-Path $pioraRoot 'installed'
+          New-Item -ItemType Directory -Path $pioraRoot | Out-Null
+          gh release download v0.5.11-beta.34 -R $env:GITHUB_REPOSITORY --pattern 'Piora-0.5.11-beta.34-win-x64-setup.exe' --dir $pioraRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to download the published installer' }
+          $pioraPackage = Join-Path $pioraRoot 'Piora-0.5.11-beta.34-win-x64-setup.exe'
+          $pioraHash = (Get-FileHash -LiteralPath $pioraPackage -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($pioraHash -ne '38f4c097402f085884a8e96d8a608dae65f504f3c9cce3f7a2412aaccce98794') { throw 'Unexpected installer SHA-256' }
+          $pioraProcess = Start-Process -FilePath $pioraPackage -ArgumentList "/S /D=$pioraInstall" -WindowStyle Hidden -Wait -PassThru
+          if ($pioraProcess.ExitCode -ne 0) { throw "NSIS exited with $($pioraProcess.ExitCode)" }
+          $pioraExecutable = Join-Path $pioraInstall 'Piora.exe'
+          $pioraVersion = (Get-Item -LiteralPath $pioraExecutable).VersionInfo.FileVersion
+          if ($pioraVersion -ne '0.5.11-beta.34') { throw "Unexpected installed executable version $pioraVersion" }
+          New-Item -ItemType Directory -Path '.verification' -Force | Out-Null
+          @{
+            tag = 'v0.5.11-beta.34'
+            installerSha256 = $pioraHash
+            installExitCode = $pioraProcess.ExitCode
+            executableVersion = $pioraVersion
+          } | ConvertTo-Json | Set-Content -LiteralPath '.verification/beta34-actual-install.json' -Encoding utf8
+          node scripts/desktop-e2e/repro-published-beta-settings.mjs $pioraExecutable installed
+          if ($LASTEXITCODE -ne 0) { throw 'Installed desktop verification failed' }
+      - name: Upload synthetic desktop evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: beta34-installed-settings
+          include-hidden-files: true
+          path: |
+            .verification/beta34-actual-install.json
+            .verification/desktop-e2e-*/result.json
+            .verification/desktop-e2e-*/installed-settings-evidence.json
+            .verification/desktop-e2e-*/browser-settings.png
+            .verification/desktop-e2e-*/trash-*.png
+            .verification/desktop-e2e-*/failure.png
