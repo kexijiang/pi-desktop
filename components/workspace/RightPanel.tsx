@@ -18,6 +18,7 @@ import { AutomationPanel } from "../AutomationPanel";
 import { SSHPanel } from "./SSHPanel";
 import { PlanSidePanelTab } from "../workflow/PlanSidePanelTab";
 import { GoalSidePanelTab } from "../workflow/GoalSidePanelTab";
+import { isWorkflowSidePanelTab } from "../workflow/workflow-events";
 import { RunChangesPane } from "./RunChangesPane";
 import { RunChangesDetail } from "./RunChangesDetail";
 import {
@@ -185,7 +186,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   const browsingRunFiles = fileNavMode === "run";
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuPosition, setAddMenuPosition] = useState({ left: 8, top: 48, width: 278 });
-  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" || isSideChatTab(activeTab) ? [] : [activeTab]);
+  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" || isSideChatTab(activeTab) || isWorkflowSidePanelTab(activeTab) ? [] : [activeTab]);
   const [filesHasOpened, setFilesHasOpened] = useState(activeTab === "files");
   const [draggedTool, setDraggedTool] = useState<ToolTab | null>(null);
   const [dropTargetTool, setDropTargetTool] = useState<ToolTab | null>(null);
@@ -329,7 +330,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "home" || isSideChatTab(activeTab)) return;
+    if (activeTab === "home" || isSideChatTab(activeTab) || isWorkflowSidePanelTab(activeTab)) return;
     setOpenTools((current) => current.includes(activeTab) ? current : [...current, activeTab]);
   }, [activeTab]);
 
@@ -344,6 +345,10 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   }, [activeTab, openTools]);
 
   const closeTool = (tab: ToolTab) => {
+    if (isWorkflowSidePanelTab(tab)) {
+      onActiveTabChange(openTools.at(-1) ?? "home");
+      return;
+    }
     const closingIndex = openTools.indexOf(tab);
     const remaining = openTools.filter((openTool) => openTool !== tab);
     setOpenTools(remaining);
@@ -372,7 +377,8 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
         ...props.sideChat.pendingCreates.map((entry) => toSideChatLoadingTabId(entry.clientId)),
       ]
     : [];
-  const allRenderedTabs: RightPanelTab[] = [...openTools, ...sideChatTabIds];
+  const shownTools = active && isWorkflowSidePanelTab(activeTab) ? [...openTools, activeTab] : openTools;
+  const allRenderedTabs: RightPanelTab[] = [...shownTools, ...sideChatTabIds];
 
   const moveToolTabFocus = (event: React.KeyboardEvent<HTMLButtonElement>, tab: RightPanelTab) => {
     const currentIndex = allRenderedTabs.indexOf(tab);
@@ -395,24 +401,25 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     {props.contextHeader}
     <div className={`${styles.panelChrome} right-panel-chrome`}>
       <div className={styles.toolTabs} role="tablist" aria-label={t("workspace.panelTabs")}>
-        {openTools.map((toolId) => {
+        {shownTools.map((toolId) => {
           const tool = ALL_TOOLS.find((candidate) => candidate.id === toolId);
           if (!tool) return null;
           const selected = activeTab === tool.id;
+          const contextual = isWorkflowSidePanelTab(tool.id);
           return <div
             key={tool.id}
             className={styles.activeToolTab}
             data-active={selected ? "true" : "false"}
             data-dragging={draggedTool === tool.id ? "true" : undefined}
             data-drop-target={dropTargetTool === tool.id ? "true" : undefined}
-            draggable
+            draggable={!contextual}
             onDragStart={(event) => {
               setDraggedTool(tool.id);
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData("text/piora-tool-tab", tool.id);
             }}
             onDragOver={(event) => {
-              if (!draggedTool || draggedTool === tool.id) return;
+              if (contextual || !draggedTool || draggedTool === tool.id) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
               setDropTargetTool(tool.id);
@@ -581,10 +588,10 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
       {active && activeTab === "automation" ? <RenderErrorBoundary resetKey={`automation:${props.selectedAutomationId ?? "list"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><AutomationPanel automationId={props.selectedAutomationId} sessionId={props.sessionId} sessionName={props.sessionName} cwd={cwd} onSelectAutomation={props.onSelectAutomation} onAutomationChanged={props.onAutomationChanged} /></RenderErrorBoundary> : null}
     </section>
     <section id="workspace-plan" role="tabpanel" aria-labelledby="workspace-plan-tab" hidden={activeTab !== "plan"} className={styles.panel}>
-      {activeTab === "plan" ? <RenderErrorBoundary resetKey={`plan:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><PlanSidePanelTab sessionId={props.sessionId} cwd={cwd} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+      {active && activeTab === "plan" ? <RenderErrorBoundary resetKey={`plan:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><PlanSidePanelTab sessionId={props.sessionId} cwd={cwd} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
     </section>
     <section id="workspace-goal" role="tabpanel" aria-labelledby="workspace-goal-tab" hidden={activeTab !== "goal"} className={styles.panel}>
-      {activeTab === "goal" ? <RenderErrorBoundary resetKey={`goal:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><GoalSidePanelTab sessionId={props.sessionId} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+      {active && activeTab === "goal" ? <RenderErrorBoundary resetKey={`goal:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><GoalSidePanelTab sessionId={props.sessionId} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
     </section>
     <SideChatTabPanels sideChat={props.sideChat} panelActive={active} activeTab={activeTab} panelClassName={styles.panel} />
   </div>;

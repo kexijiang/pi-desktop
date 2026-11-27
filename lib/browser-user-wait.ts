@@ -7,7 +7,7 @@ export type BrowserUserWaitStatus = "continued" | "cancelled" | "timeout" | "abo
 export const BROWSER_USER_WAIT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const BROWSER_USER_WAIT_TEXT: Record<BrowserUserWaitStatus, string> = {
-  continued: "Browser step completed. Take a new snapshot before continuing.",
+  continued: "The browser is ready to check again. Take a new snapshot and verify the result before continuing. Do not replay the previous action based on this signal.",
   cancelled: "The user cancelled and did not complete the requested step. Do not assume the user is signed in or that the page is ready.",
   timeout: "The wait timed out and the user did not complete the requested step. Do not assume the user is signed in or that the page is ready.",
   aborted: "The wait was aborted because the session stopped. The user did not complete the requested step. Do not assume the user is signed in.",
@@ -81,10 +81,10 @@ export function noteBrowserUserWaitBackend(sessionId: string, backend: "desktop"
   if (entry) entry.backend = backend;
 }
 
-export function resolveBrowserUserWait(sessionId: string, decision: "continue" | "cancel", toolCallId: string): boolean {
+export function cancelBrowserUserWait(sessionId: string, toolCallId: string): boolean {
   const entry = state().waits.get(sessionId);
   if (!entry || entry.toolCallId !== toolCallId) return false;
-  settle(entry, decision === "continue" ? "continued" : "cancelled");
+  settle(entry, "cancelled");
   return true;
 }
 
@@ -122,7 +122,7 @@ export function waitForUser(input: {
     state().waits.set(input.sessionId, entry);
     input.signal?.addEventListener("abort", entry.onAbort, { once: true });
     // Only one read-only check at a time. Late checks cannot settle a replacement wait.
-    if (input.purpose === "login" && input.checkCompletion) {
+    if (input.checkCompletion) {
       const check = async () => {
         if (state().waits.get(entry.sessionId) !== entry) return;
         let completed = false;

@@ -4,18 +4,28 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const fixtureTitlePrompt = "Give this fixture a short title. Marker: PIORA_BROWSER_LOGIN_TITLE.";
+const reviewReason = "Submit the review form on the local test page.";
 let fixture;
 export const browserLogin = {
   id: 'browser-login',
   mode: 'local-model-fixture',
-  scope: 'real Electron chat and embedded browser; deterministic local model and login website',
-  coverage: ['explicit one-time approval to open the page', 'automatic browser reveal without login cards', 'user sign-in through UI', 'automatic continuation through the real SDK', 'current permission control and removed legacy launcher content'],
+  scope: 'real Electron chat and embedded browser with a deterministic local model and site',
+  coverage: ['explicit one-time approval to open the page', 'automatic browser reveal without login cards', 'sign-in and form submission through browser UI', 'ordinary input leaves the wait pending', 'automatic continuation through the real SDK', 'current permission control and removed legacy launcher content'],
   limits: ['real model providers', 'third-party login providers and SSO', 'packaged releases', 'background Playwright handoff', 'non-Windows platforms'],
   async prepare({ paths, registerCleanup, report }) {
     const requests = [], metadataRequests = [];
     const server = createServer(async (req, res) => {
-      if (!req.url.startsWith('/v1/')) {
+      const pathname = new URL(req.url, 'http://fixture.local').pathname;
+      if (!pathname.startsWith('/v1/')) {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        if (pathname === '/review') {
+          res.end('<!doctype html><title>Review</title><h1>Review</h1><button type="button">Read the form</button><form action="/review-complete"><button>Submit review</button></form>');
+          return;
+        }
+        if (pathname === '/review-complete') {
+          res.end('<!doctype html><title>Review complete</title><h1>Review complete</h1><p role="status">Review submitted successfully.</p>');
+          return;
+        }
         if (req.method === 'POST') { res.writeHead(303, { 'Set-Cookie': 'fixture_login=yes; HttpOnly; SameSite=Lax; Path=/', Location: '/home' }); res.end(); return; }
         const signedIn = req.headers.cookie?.includes('fixture_login=yes');
         res.end(signedIn ? '<!doctype html><title>Signed in</title><h1>Signed in</h1><button>Log out</button>' : '<!doctype html><title>Sign in</title><form method="post"><label>User <input autocomplete="username" name="user"></label><label>Password <input type="password" name="password"></label><button>Sign in</button></form>');
@@ -24,22 +34,27 @@ export const browserLogin = {
       try {
         const chunks = []; for await (const chunk of req) chunks.push(chunk);
         const body = JSON.parse(Buffer.concat(chunks).toString());
-        const tools = body.messages.filter(message => message.role === 'tool').length;
+        const promptIndex = body.messages.findLastIndex(message => message.role === 'user');
+        const prompt = body.messages[promptIndex]?.content;
+        const review = JSON.stringify(prompt ?? '').includes('PIORA_REVIEW_FIXTURE');
+        const flow = review ? 'review' : 'login';
+        const tools = body.messages.slice(promptIndex + 1).filter(message => message.role === 'tool').length;
         const last = body.messages.at(-1);
         const lastText = typeof last?.content === 'string' ? last.content : (Array.isArray(last?.content) ? last.content.map(part => part.text ?? '').join('\n') : '');
         // A title request can inherit the chat's browser tool schemas and all three tool results.
         const titleRequest = last?.role === 'user' && lastText.includes(fixtureTitlePrompt);
         const browserRequest = !titleRequest && body.tools?.some(tool => tool.function?.name === 'browser') === true;
-        const action = !browserRequest ? null : tools === 0 ? { action: 'open', url: fixture.origin + '/login' }
-          : tools === 1 ? { action: 'wait_for_user', purpose: 'login', reason: 'Sign in to the local test site' }
+        const action = !browserRequest ? null : tools === 0 ? { action: 'open', url: fixture.origin + '/' + flow }
+          : tools === 1 ? { action: 'wait_for_user', ...(review ? { purpose: 'confirmation', reason: reviewReason } : { purpose: 'login', reason: 'Sign in to the local test site' }) }
           : tools === 2 ? { action: 'snapshot' } : null;
-        if (browserRequest) requests.push({ action: action?.action ?? 'final', tools });
+        if (browserRequest) requests.push({ action: action?.action ?? 'final', tools, flow });
         else metadataRequests.push({ kind: 'session-title' });
-        assert.ok(requests.length <= 4, 'No extra browser-tool requests or repeated handoffs');
+        assert.ok(requests.filter(request => request.flow === flow).length <= 4, 'No extra browser-tool requests or repeated handoffs');
+        if (review && tools === 3) assert.match(lastText, /Review complete/, 'Continuation re-reads the finished page');
         if (action) assert.ok(body.tools.some(tool => tool.function.name === 'browser'), 'Browser tool must be enabled');
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         const emit = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: 'login-fixture', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'browser-login', choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
-        emit({ role: 'assistant', ...(action ? { tool_calls: [{ index: 0, id: `login-${tools}`, type: 'function', function: { name: 'browser', arguments: JSON.stringify(action) } }] } : { content: browserRequest ? 'LOGIN_AUTO_RESUMED' : 'Local browser login fixture' }) });
+        emit({ role: 'assistant', ...(action ? { tool_calls: [{ index: 0, id: `${flow}-${tools}`, type: 'function', function: { name: 'browser', arguments: JSON.stringify(action) } }] } : { content: browserRequest ? `${flow.toUpperCase()}_AUTO_RESUMED` : 'Local browser login fixture' }) });
         emit({}, action ? 'tool_calls' : 'stop'); res.end('data: [DONE]\n\n');
       } catch (error) { if (!res.headersSent) res.writeHead(500); res.end(JSON.stringify({ error: { message: error.message } })); }
     });
@@ -111,6 +126,30 @@ export const browserLogin = {
       assert.deepEqual(fixture.requests.map(request => request.action), ['open', 'wait_for_user', 'snapshot', 'final']);
       assert.equal(await page.locator('.browser-user-wait, .browser-handoff-notice').count(), 0);
       await screenshot('login-resumed.png');
+    });
+
+    await step('reveal-review-and-wait-through-ordinary-input', async () => {
+      await page.getByRole('button', { name: /^(隐藏文件面板|Hide file panel)$/ }).last().click();
+      await page.locator('textarea').first().fill('PIORA_REVIEW_FIXTURE: Open the review form and wait for me to submit.');
+      await page.getByRole('button', { name: /^(Send|发送)$/ }).click();
+      await page.getByRole('button', { name: /^(Allow once|允许本次)$/ }).click();
+      await page.getByRole('combobox', { name: /^(Address|地址)$/ }).waitFor({ state: 'visible' });
+      await page.locator('.browser-handoff-notice').getByText(reviewReason, { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: /我已完成，继续|Done, continue/ }).count(), 0);
+      const site = await waitUntil(() => getBrowser().contexts().flatMap(context => context.pages()).find(candidate => candidate.url() === fixture.origin + '/review'), 'native review page');
+      await site.getByRole('button', { name: 'Read the form', exact: true }).click();
+      await site.waitForTimeout(1200); // Longer than the stable page window.
+      assert.deepEqual(fixture.requests.filter(request => request.flow === 'review').map(request => request.action), ['open', 'wait_for_user']);
+      await screenshot('review-waiting.png');
+    });
+    await step('submit-review-and-resume-through-native-browser', async () => {
+      const site = await waitUntil(() => getBrowser().contexts().flatMap(context => context.pages()).find(candidate => candidate.url() === fixture.origin + '/review'), 'native review page');
+      await site.getByRole('button', { name: 'Submit review', exact: true }).click();
+      await site.getByRole('heading', { name: 'Review complete' }).waitFor();
+      await page.getByText('REVIEW_AUTO_RESUMED', { exact: true }).waitFor({ timeout: 30_000 });
+      await waitUntil(() => page.getByRole('button', { name: /^(Send|发送)$/ }).isVisible(), 'review session idle');
+      assert.deepEqual(fixture.requests.filter(request => request.flow === 'review').map(request => request.action), ['open', 'wait_for_user', 'snapshot', 'final']);
+      await screenshot('review-resumed.png');
     });
   },
 };

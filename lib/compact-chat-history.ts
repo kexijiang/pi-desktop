@@ -38,7 +38,7 @@ export function commandPreviewTail(output: string): string {
 function needsAttention(block: AssistantContentBlock, result: ToolResultMessage | undefined, active: boolean): boolean {
   if (block.type !== "toolCall") return false;
   if (!active && (!result || result.isStreaming)) return true;
-  // User handoff remains actionable even while the surrounding process is folded.
+  // Keep human browser steps visible while the surrounding process is folded.
   return block.toolName === "browser" && block.input?.action === "wait_for_user"
     && browserWaitPurpose(String(block.input.reason ?? ""), block.input.purpose) !== "login"
     && (!result || result.isStreaming === true || (result.details as { status?: string } | undefined)?.status === "unsupported");
