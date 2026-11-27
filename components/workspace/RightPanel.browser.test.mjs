@@ -53,7 +53,7 @@ return <I18nProvider><div style={{display:'flex',flexWrap:'wrap',width:'calc(100
 <ProposedPlanCard block={plan} pending={false} sessionId={sessionId}/>
 <GoalComposerRail snapshot={goal} sessionId={sessionId} enabled busy={false} running={false} error={null} onAction={async()=>true} onRefresh={async()=>{}} onOpenEditModal={noop}/>
 </div>
-<div id='file-panel' data-maximized={String(maximized)} style={{height:'calc(100vh - 130px)',marginTop:90,display:active?'flex':'none',flexDirection:'column'}}><RightPanel activeTab={tab} onActiveTabChange={setTab} openTools={tools} onOpenToolsChange={setTools} onCloseWorkflowTab={closeWorkflowTab} active={active} maximized={maximized} onMaximizedChange={setMaximized} onClosePanel={()=>setActive(false)} cwd={null} refreshKey={0} fileNavMode='tree' onFileNavModeChange={noop} runFileChanges={null} fileTabs={[]} activeFileTabId={null} canReopenClosedFileTab={false} onSelectFileTab={noop} onCloseFileTab={noop} onCloseOtherFileTabs={noop} onCloseFileTabsToRight={noop} onMoveFileTab={noop} onReopenClosedFileTab={noop} onOpenFile={noop} onDirtyChange={noop} onRefresh={noop} onMention={noop} onMentions={noop} onMentionLines={noop} selectedAutomationId={null} sessionId={sessionId} capabilities={null}/></div></I18nProvider>}
+<div id='file-panel' data-layout-scope={layoutScope} data-maximized={String(maximized)} style={{height:'calc(100vh - 130px)',marginTop:90,display:active?'flex':'none',flexDirection:'column'}}><RightPanel activeTab={tab} onActiveTabChange={setTab} openTools={tools} onOpenToolsChange={setTools} onCloseWorkflowTab={closeWorkflowTab} active={active} maximized={maximized} onMaximizedChange={setMaximized} onClosePanel={()=>setActive(false)} cwd={null} refreshKey={0} fileNavMode='tree' onFileNavModeChange={noop} runFileChanges={null} fileTabs={[]} activeFileTabId={null} canReopenClosedFileTab={false} onSelectFileTab={noop} onCloseFileTab={noop} onCloseOtherFileTabs={noop} onCloseFileTabsToRight={noop} onMoveFileTab={noop} onReopenClosedFileTab={noop} onOpenFile={noop} onDirtyChange={noop} onRefresh={noop} onMention={noop} onMentions={noop} onMentionLines={noop} selectedAutomationId={null} sessionId={sessionId} capabilities={null}/></div></I18nProvider>}
 createRoot(document.getElementById('root')).render(<App/>);`);
     const alias = Object.fromEntries(['../FileExplorer', '../FileViewer', '../TabBar', './ReviewPanel', './CommandPanel', './HarmonyPanel', '../AutomationPanel', './SSHPanel', './design-to-harmony/DesignToHarmonyPanel', './RunChangesPane', '../side-chat/SideChatRightPanelSlots', '../MarkdownBody', 'next/dynamic'].map(name => [name + '$', stubs]));
     const compiler = webpack({ mode: 'development', target: 'web', devtool: false, entry: path.join(directory, 'entry.tsx'), output: { path: directory, filename: 'bundle.js' }, resolve: { extensions: ['.tsx', '.ts', '.js'], modules: ['node_modules', path.join(repo, 'node_modules')], alias: { ...alias, '@': repo } }, module: { rules: [{ test: /\.tsx?$/, exclude: /node_modules/, use: path.join(directory, 'ts.cjs') }, { test: /\.css$/, use: path.join(directory, 'css.cjs') }] } });
@@ -83,7 +83,8 @@ createRoot(document.getElementById('root')).render(<App/>);`);
         window.emitNativeState = () => { state.url = 'https://example.test/redirected'; window.nativeStateListener?.({ ...state }); };
         window.piDesktop = { browser: {
           setViewport: async (bounds, visible) => {
-            window.nativeViewports.push({ ...bounds, visible }); window.nativeVisible = visible;
+            const layoutScope = document.getElementById('file-panel')?.dataset.layoutScope;
+            window.nativeViewports.push({ ...bounds, visible, layoutScope }); window.nativeVisible = visible;
             if (visible && window.delayNextShow) { window.delayNextShow = false; await new Promise(resolve => { window.finishShow = resolve; }); }
           },
           action: async input => {
@@ -301,7 +302,9 @@ createRoot(document.getElementById('root')).render(<App/>);`);
       await select('Session A');
       await page.waitForFunction(() => typeof window.finishSession === 'function');
       await nativeVisible(false);
-      assert.equal(await page.evaluate(index => window.nativeViewports.slice(index).some(view => view.visible), resumeViewports), false);
+      const showedBeforeSessionReady = await page.evaluate(index => window.nativeViewports.slice(index)
+        .some(view => view.layoutScope === 'session:fixture' && view.visible), resumeViewports);
+      assert.equal(showedBeforeSessionReady, false, 'the restored layout must wait for its own native browser session');
       await page.evaluate(() => window.finishSession());
       await nativeVisible(true);
       assert.deepEqual(await toolTabs.allTextContents(), [browserLabel, terminalLabel]);
