@@ -19,7 +19,7 @@ import {
   type WorkflowTodoStep,
 } from "./workflow-types.ts";
 
-export { readWorkflowSnapshot } from "./workflow-store.ts";
+export { readWorkflowSnapshot, resetCorruptWorkflowState, WorkflowStateCorruptError } from "./workflow-store.ts";
 const terminal = new Set(["completed", "cancelled", "failed"]);
 export class WorkflowError extends Error {
   constructor(message: string, readonly code = "WORKFLOW_CONFLICT", readonly status = 409) { super(message); }
@@ -30,8 +30,8 @@ export function isWorkflowError(error: unknown): error is WorkflowError {
   const value = error as { message?: unknown; code?: unknown; status?: unknown };
   return typeof value.message === "string"
     && typeof value.code === "string" && typeof value.status === "number"
-    && ["INVALID_WORKFLOW", "WORKFLOW_CONFLICT", "WORKFLOW_UNAVAILABLE", "WORKFLOW_LABORATORY_DISABLED", "WORKFLOW_EXTENSION_COMMAND", "WORKFLOW_SHELL_COMMAND"].includes(value.code)
-    && [400, 403, 409, 503].includes(value.status);
+    && ["INVALID_WORKFLOW", "WORKFLOW_CONFLICT", "WORKFLOW_UNAVAILABLE", "WORKFLOW_LABORATORY_DISABLED", "WORKFLOW_EXTENSION_COMMAND", "WORKFLOW_SHELL_COMMAND", "WORKFLOW_STATE_CORRUPT"].includes(value.code)
+    && [400, 403, 409, 500, 503].includes(value.status);
 }
 export function validateWorkflowBudget(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_WORKFLOW_TURN_BUDGET) throw new WorkflowError("Turn budget must be an integer from 1 to 100", "INVALID_WORKFLOW", 400);

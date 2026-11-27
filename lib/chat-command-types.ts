@@ -74,6 +74,7 @@ export interface ChatInputOptions {
   commandKey?: string;
   catalogRevision?: string;
   afterPrompt?: string;
+  resumeInterrupted?: boolean;
 }
 
 export interface ChatCommandView {
@@ -90,5 +91,6 @@ export interface ChatCommandView {
   attachments?: number;
   errorCode?: string;
   errorMessage?: string;
+  errorDetails?: Record<string, unknown>;
   local?: boolean;
 }

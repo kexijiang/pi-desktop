@@ -79,6 +79,8 @@ import {
   ModelErrorBanner,
   PromptOptimizationReview,
 } from "./chat-input/ComposerBanners";
+import { ImageUnsupportedComposerWarning } from "./chat-input/ImageUnsupportedNotice";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { FileMentionMenu, InputHistoryMenu, SlashCommandMenu } from "./chat-input/ComposerMenus";
 import { ContextUsageRing, SessionStatsBadge } from "./chat-input/ComposerMetrics";
 import { ModelSettingsMenu } from "./chat-input/ModelSettingsMenu";
@@ -118,9 +120,10 @@ interface Props {
   model?: { provider: string; modelId: string } | null;
   isAutoModelSelection?: boolean;
   modelNames?: Record<string, string>;
-  modelList?: { id: string; name: string; provider: string; contextWindow?: number; isDefault?: boolean }[];
+  modelList?: { id: string; name: string; provider: string; contextWindow?: number; isDefault?: boolean; supportsImages?: boolean }[];
   modelError?: string | null;
   onModelChange?: (provider: string, modelId: string) => Promise<boolean>;
+  onOpenModels?: (target?: ModelSettingsFocusTarget) => void;
   onCompact?: () => void;
   onAbortCompaction?: () => void;
   isCompacting?: boolean;
@@ -143,6 +146,7 @@ interface Props {
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
   contextUsage?: ContextUsage | null;
+  promptBudget?: import("@/lib/prompt-runtime/budget").PromptBudgetReport | null;
   sessionStats?: SessionStatsInfo | null;
   extensionStatuses?: ExtensionStatusItem[];
   /** Reuses the production composer in a spacious new-task launch surface. */
@@ -193,7 +197,7 @@ export interface ChatInputHandle {
 }
 
 export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, sendDisabled = false, model, isAutoModelSelection, modelNames, modelList, modelError, onModelChange,
+  onSend, onAbort, onSteer, onFollowUp, isStreaming, sendDisabled = false, model, isAutoModelSelection, modelNames, modelList, modelError, onModelChange, onOpenModels,
   onCompact, onAbortCompaction, isCompacting, compactionStartedAt = null, compactError, onDismissCompactError, compactResult, onDismissCompactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, inputHistory = [],
@@ -204,6 +208,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   draftKey,
   cwd,
   contextUsage,
+  promptBudget,
   sessionStats,
   extensionStatuses = [],
   variant = "conversation",
@@ -1482,7 +1487,13 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   // Build model options: prefer modelList (has provider info), fallback to modelNames
   const modelOptions: ModelOption[] = (() => {
     if (modelList && modelList.length > 0) {
-      return modelList.map((m) => ({ provider: m.provider, modelId: m.id, name: m.name, isDefault: m.isDefault }));
+      return modelList.map((m) => ({
+        provider: m.provider,
+        modelId: m.id,
+        name: m.name,
+        isDefault: m.isDefault,
+        supportsImages: m.supportsImages,
+      }));
     }
     return Object.entries(modelNames ?? {}).map(([modelId, name]) => ({
         provider: model?.provider ?? "unknown",
@@ -1490,6 +1501,9 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
         name,
       }));
   })();
+  const activeModelOption = model && !isAutoModelSelection
+    ? modelOptions.find((o) => o.modelId === model.modelId && o.provider === model.provider) ?? null
+    : null;
   const filteredModelOptions = filterModelOptions(modelOptions, modelFilter);
   const showModelFilter = modelOptions.length > MODEL_FILTER_THRESHOLD;
 
@@ -1609,6 +1623,16 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
           </div>
         )}
         {isProcessingFiles && <div role="status" style={{ marginBottom: 6, color: "var(--text-muted)", fontSize: "var(--text-xs)" }}>{t("chat.processingFiles")}</div>}
+        {attachedImages.length > 0 && activeModelOption && activeModelOption.supportsImages === false && (
+          <ImageUnsupportedComposerWarning
+            currentModel={activeModelOption}
+            modelOptions={modelOptions}
+            disabled={isStreaming}
+            onOpenModels={onOpenModels}
+            onSelectModel={onModelChange}
+            onClearImages={clearImages}
+          />
+        )}
         <ComposerAttachmentsBar
           attachedImages={attachedImages}
           previewImage={previewImage}
@@ -1873,7 +1897,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
             <div style={{ flex: 1 }} />
             {variant === "conversation" ? <ExtensionStatusBar statuses={extensionStatuses} /> : null}
             {variant === "conversation" ? <SessionStatsBadge sessionStats={sessionStats} /> : null}
-            {variant === "conversation" ? <ContextUsageRing contextUsage={contextUsage} /> : null}
+            {variant === "conversation" ? <ContextUsageRing contextUsage={contextUsage} promptBudget={promptBudget} /> : null}
             <div className="composer-submit-controls">
             {/* Codex-style model settings: one compact summary chip with focused submenus. */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (

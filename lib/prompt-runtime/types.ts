@@ -1,3 +1,11 @@
+import {
+  createDefaultPromptBudgetConfig,
+  DEFAULT_PROMPT_BUDGET_CONFIG,
+  type PromptBudgetConfig,
+} from "./budget.ts";
+
+export { createDefaultPromptBudgetConfig, DEFAULT_PROMPT_BUDGET_CONFIG, type PromptBudgetConfig };
+
 export const RUNTIME_PROMPT_EXTENSION_KEYS = [
   "browser",
   "automations",
@@ -19,12 +27,14 @@ export interface RuntimePromptSettings {
   mergeCompact: boolean;
   alignCliCompaction: boolean;
   extensions: Record<RuntimePromptExtensionKey, boolean>;
+  budget: PromptBudgetConfig;
 }
 
 export interface RuntimePromptSettingsPatch {
   mergeCompact?: boolean;
   alignCliCompaction?: boolean;
   extensions?: Partial<Record<RuntimePromptExtensionKey, boolean>>;
+  budget?: Partial<PromptBudgetConfig>;
 }
 
 export const DEFAULT_RUNTIME_PROMPT_SETTINGS: RuntimePromptSettings = {
@@ -40,10 +50,11 @@ export const DEFAULT_RUNTIME_PROMPT_SETTINGS: RuntimePromptSettings = {
     subagents: true,
     ssh: true,
     harmony: false,
-    computer: true,
+    computer: false,
     room: false,
     meme: false,
   },
+  budget: { ...DEFAULT_PROMPT_BUDGET_CONFIG },
 };
 
 export function createDefaultRuntimePromptSettings(): RuntimePromptSettings {
@@ -52,6 +63,7 @@ export function createDefaultRuntimePromptSettings(): RuntimePromptSettings {
     mergeCompact: DEFAULT_RUNTIME_PROMPT_SETTINGS.mergeCompact,
     alignCliCompaction: DEFAULT_RUNTIME_PROMPT_SETTINGS.alignCliCompaction,
     extensions: { ...DEFAULT_RUNTIME_PROMPT_SETTINGS.extensions },
+    budget: createDefaultPromptBudgetConfig(),
   };
 }
 
@@ -73,5 +85,6 @@ export function createCliAlignedPresetSettings(): RuntimePromptSettings {
       room: false,
       meme: false,
     },
+    budget: createDefaultPromptBudgetConfig(),
   };
 }

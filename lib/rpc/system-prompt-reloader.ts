@@ -1,6 +1,7 @@
 import type { AgentRuntimeProfile } from "../agent-runtime-profile";
 import { invalidateModelsCache } from "../models-cache";
 import type { AgentSessionLike, ExtensionUiContextLike } from "../pi-types";
+import type { PromptBudgetReport } from "../prompt-runtime/budget";
 import { invalidateSessionListCache } from "../session-reader";
 import {
   appendSessionSystemPromptBinding,
@@ -22,6 +23,7 @@ export interface SystemPromptReloaderHost {
   clearUiStatusesAndWidgets: () => void;
   createExtensionUiContext: () => ExtensionUiContextLike;
   reapplySessionCapabilities: () => void;
+  getPromptBudget?: () => PromptBudgetReport | null;
   emit: (event: AgentEvent) => void;
 }
 
@@ -120,10 +122,12 @@ export class SystemPromptReloader {
       this.host.reapplySessionCapabilities();
       this.reloadApplied = revision;
       invalidateModelsCache();
+      const promptBudget = this.host.getPromptBudget?.() ?? null;
       this.host.emit({
         type: "system_prompt_reloaded",
         sessionId: this.host.sessionId,
-        systemPrompt: inner.agent.state?.systemPrompt ?? "",
+        systemPrompt: inner.systemPrompt ?? inner.agent.state?.systemPrompt ?? "",
+        ...(promptBudget ? { promptBudget } : {}),
       });
     } finally {
       this.reloading = false;

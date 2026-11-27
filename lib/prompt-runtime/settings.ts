@@ -3,8 +3,15 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "../atomic-file.ts";
 import {
+  normalizePromptBudgetConfig,
+  parsePromptBudgetConfigPatch,
+  type PromptBudgetConfig,
+} from "./budget.ts";
+import {
   createCliAlignedPresetSettings,
+  createDefaultPromptBudgetConfig,
   createDefaultRuntimePromptSettings,
+  DEFAULT_PROMPT_BUDGET_CONFIG,
   DEFAULT_RUNTIME_PROMPT_SETTINGS,
   RUNTIME_PROMPT_EXTENSION_KEYS,
   type RuntimePromptExtensionKey,
@@ -14,16 +21,19 @@ import {
 
 export {
   createCliAlignedPresetSettings,
+  createDefaultPromptBudgetConfig,
   createDefaultRuntimePromptSettings,
+  DEFAULT_PROMPT_BUDGET_CONFIG,
   DEFAULT_RUNTIME_PROMPT_SETTINGS,
   RUNTIME_PROMPT_EXTENSION_KEYS,
+  type PromptBudgetConfig,
   type RuntimePromptExtensionKey,
   type RuntimePromptSettings,
   type RuntimePromptSettingsPatch,
 };
 
 const EXTENSION_KEY_SET = new Set<string>(RUNTIME_PROMPT_EXTENSION_KEYS);
-const TOP_LEVEL_KEY_SET = new Set(["version", "mergeCompact", "alignCliCompaction", "extensions"]);
+const TOP_LEVEL_KEY_SET = new Set(["version", "mergeCompact", "alignCliCompaction", "extensions", "budget"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -48,6 +58,9 @@ export function readRuntimePromptSettings(agentDir = getAgentDir()): RuntimeProm
           result.extensions[key] = parsed.extensions[key];
         }
       }
+    }
+    if (parsed.budget !== undefined) {
+      result.budget = normalizePromptBudgetConfig(parsed.budget);
     }
     return result;
   } catch {
@@ -97,6 +110,9 @@ export function parseRuntimePromptSettingsPatch(raw: unknown): RuntimePromptSett
     }
     patch.extensions = extensions;
   }
+  if (raw.budget !== undefined) {
+    patch.budget = parsePromptBudgetConfigPatch(raw.budget);
+  }
   return patch;
 }
 
@@ -110,6 +126,10 @@ export function writeRuntimePromptSettings(patch: unknown, agentDir = getAgentDi
     extensions: {
       ...current.extensions,
       ...(validated.extensions ?? {}),
+    },
+    budget: {
+      ...current.budget,
+      ...(validated.budget ?? {}),
     },
   };
   const path = runtimePromptSettingsPath(agentDir);

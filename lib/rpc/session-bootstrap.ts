@@ -50,8 +50,10 @@ import {
   buildSessionAppendSystemPrompt,
   createSessionSystemPromptBinding,
   readLatestSessionSystemPromptBinding,
+  resolveSessionAppendTemplatePrompt,
   resolveSessionSystemPrompt,
 } from "../session-system-prompt";
+import { bindPromptBudgetTracker, createSessionPromptBudgetTracker } from "../prompt-runtime/session-budget";
 import { listSSHSessionSummariesForAgent, subscribeSSHRegistry } from "../ssh/session-manager";
 import { readRuntimePromptSettings } from "../prompt-runtime/settings";
 import { readSystemPromptConfig } from "../system-prompt-config";
@@ -63,9 +65,23 @@ import { readDefaultToolPermission, writeToolPermission } from "../tool-permissi
 import { DEVICE_CONTROL_AGENT_TOOLS, resolveAgentToolsForRuntimeProfile } from "../tool-presets";
 import { ensureWindowsBashShellPath } from "../windows-bash";
 import { resolveProject } from "../worktree";
-import { getLocks, getRegistry, getServicesCache, trackStartingSession } from "./registry";
+import { evictIdleRpcSessions, getLocks, getRegistry, getServicesCache, trackStartingSession } from "./registry";
 import { AgentSessionWrapper, registerRpcSessionStarter } from "./session-wrapper";
 import type { RpcSessionStartOptions } from "./types";
+
+const NATIVE_MCP_SUBAGENT_TOOLS = new Set([
+  "codemode",
+  "tool_search",
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+function needsNativeMcpForSession(runtimeProfile: string, options: RpcSessionStartOptions): boolean {
+  if (runtimeProfile !== "normal") return false;
+  if (!options.subagentParent || !options.toolNames) return true;
+  return options.toolNames.some((name) => name.startsWith("mcp__") || NATIVE_MCP_SUBAGENT_TOOLS.has(name));
+}
 
 /**
  * Get or create an AgentSession for the given session.
@@ -187,7 +203,8 @@ export async function startRpcSession(
     if (!services) {
       const settingsManager = SettingsManager.create(cwd, agentDir);
       const extensionPlan = await resolveExtensionLoadPlan({ cwd, agentDir, settingsManager, profile: runtimeProfile, installMissing: true });
-      const nativeMcp = runtimeProfile === "normal" ? new NativeMcpController(cwd, agentDir) : undefined;
+      const nativeMcp = needsNativeMcpForSession(runtimeProfile, options) ? new NativeMcpController(cwd, agentDir) : undefined;
+      const budgetTracker = runtimeProfile === "normal" && !notesOnly ? createSessionPromptBudgetTracker() : undefined;
       services = await createAgentSessionServices({
         cwd,
         agentDir,
@@ -213,12 +230,20 @@ export async function startRpcSession(
                 noExtensions: true,
                 extensionFactories: nativeMcp?.factories,
                 extensionsOverride: (result) => applyExtensionLoadPlan(result, extensionPlan),
+                ...(budgetTracker ? {
+                  agentsFilesOverride: budgetTracker.agentsFilesOverride,
+                  skillsOverride: budgetTracker.skillsOverride,
+                } : {}),
                 systemPromptOverride: (base) => resolveSessionSystemPrompt(
                   sessionManager.getEntries(),
                   base,
                   readSystemPromptConfig(),
                 ),
                 appendSystemPromptOverride: (baseAppend) => buildSessionAppendSystemPrompt(baseAppend, {
+                  customInstructions: resolveSessionAppendTemplatePrompt(
+                    sessionManager.getEntries(),
+                    readSystemPromptConfig(),
+                  ),
                   fileReferenceInstructions: readRuntimePromptSettings().extensions.fileReferences
                     ? FILE_REFERENCE_INSTRUCTIONS
                     : undefined,
@@ -234,6 +259,7 @@ export async function startRpcSession(
         await settingsManager.reload();
         return resolveExtensionLoadPlan({ cwd, agentDir, settingsManager, profile: runtimeProfile, installMissing: true });
       });
+      if (budgetTracker) bindPromptBudgetTracker(services.resourceLoader, budgetTracker);
       if (nativeMcp) setNativeMcpController(services, nativeMcp);
       if (runtimeProfile === "device-control") {
         if (
@@ -391,6 +417,7 @@ export async function startRpcSession(
     if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);
 
     registry.set(realSessionId, wrapper);
+    void evictIdleRpcSessions(realSessionId);
     let previousSSHInventory = JSON.stringify(listSSHSessionSummariesForAgent(realSessionId).map(item => [item.id, item.connected]));
     const unsubscribeSSH = subscribeSSHRegistry((owner) => {
       if (owner && owner !== realSessionId) return;

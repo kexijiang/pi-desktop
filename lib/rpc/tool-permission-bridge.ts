@@ -22,7 +22,7 @@ export interface ToolPermissionBridgeHost {
   getActivePromptRunId: () => string | undefined;
   isToolAllowedByCapability: (name: string) => boolean;
   emit: (event: AgentEvent) => void;
-  abortSession: () => void;
+  abortSession: (reason?: string, detail?: string) => void;
   releaseToolApprovals: () => void;
   requestToolApprovalUi: (toolName: string, message: string, signal?: AbortSignal) => Promise<"once" | "full" | "deny">;
 }
@@ -47,7 +47,7 @@ export class ToolPermissionBridge {
       sessionId: this.host.sessionId,
       reviewer: input => this.reviewInvoker(input),
       emit: review => this.host.emit({ type: "tool_review", review }),
-      stop: () => { this.host.abortSession(); },
+      stop: (detail?: string) => { this.host.abortSession("tool_review_denied", detail); },
     });
   }
 

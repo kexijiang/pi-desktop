@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { WorkflowSnapshot } from "@/lib/workflow-types";
+import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
 import { AliIcon } from "../AliIcon";
 import { MarkdownBody } from "../MarkdownBody";
 import {
@@ -70,7 +71,7 @@ export function PlanSidePanelTab({
         cache: "no-store",
         signal,
       });
-      if (!response.ok) throw new Error(t("workflow.loadError"));
+      if (!response.ok) throw await parseWorkflowLoadResponseError(response, t);
       const data = await response.json() as PlanDocumentResponse;
       if (signal?.aborted) return;
       setPlan(data.plan);
@@ -85,7 +86,9 @@ export function PlanSidePanelTab({
       if (data.plan && !data.plan.editable) setMode("preview");
     } catch (cause) {
       if (!signal?.aborted) {
-        setError(cause instanceof Error ? cause.message : t("workflow.loadError"));
+        const failure = classifyWorkflowLoadException(cause, t);
+        console.warn("[workflow:plan-panel] load failed", { sessionId, status: failure.status, code: failure.code, message: failure.rawMessage ?? failure.message });
+        setError(failure.message);
       }
     } finally {
       if (!signal?.aborted) setLoading(false);
@@ -151,6 +154,22 @@ export function PlanSidePanelTab({
   };
 
   if (!sessionId || (!loading && !plan)) {
+    if (sessionId && !loading && error) {
+      return (
+        <div className={styles.sidePanel} data-testid="plan-side-panel">
+          <div className={styles.sidePanelBody}>
+            <div className={styles.goalRailError} role="alert">
+              <span>{error}</span>
+              <div className={styles.goalRailErrorActions}>
+                <button type="button" className={styles.btnGhost} onClick={() => void loadPlan()}>
+                  {t("workflow.refresh")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={styles.emptyState} data-testid="plan-side-panel-empty">
         <AliIcon name="list-check" size={22} />

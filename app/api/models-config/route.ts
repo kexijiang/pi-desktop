@@ -9,6 +9,7 @@ import { normalizeModelConfigCosts } from "@/lib/model-config-cost";
 import { omitUnchangedIncompleteModels, stripModelLimitUiMeta, validateCustomModelLimits } from "@/lib/model-limits";
 import { validateModelSamplingConfig } from "@/lib/model-sampling";
 import { stripJsonComments } from "@/lib/mcp-capabilities";
+import { clearConfiguredImageInputOverrides, modelCapabilityKey } from "@/lib/model-capabilities";
 import { setProviderRemoved } from "@/lib/removed-providers";
 
 export const dynamic = "force-dynamic";
@@ -69,9 +70,22 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: String(error) }, { status: 400 });
   }
   try {
-    writeModelsJson(stripModelLimitUiMeta(body));
-    for (const provider of Object.keys((body.providers ?? {}) as object)) {
-      if (!Object.hasOwn((previous.providers ?? {}) as object, provider)) setProviderRemoved(provider, false);
+    const cleaned = stripModelLimitUiMeta(body);
+    writeModelsJson(cleaned);
+    const syncedOverrideKeys: string[] = [];
+    const savedProviders = (cleaned.providers ?? {}) as Record<string, { models?: Array<{ id?: string; input?: unknown }> }>;
+    for (const [providerName, entry] of Object.entries(savedProviders)) {
+      if (!Object.hasOwn((previous.providers ?? {}) as object, providerName)) setProviderRemoved(providerName, false);
+      if (Array.isArray(entry?.models)) {
+        for (const model of entry.models) {
+          if (typeof model?.id === "string" && Array.isArray(model.input)) {
+            syncedOverrideKeys.push(modelCapabilityKey(providerName, model.id));
+          }
+        }
+      }
+    }
+    if (syncedOverrideKeys.length > 0) {
+      clearConfiguredImageInputOverrides(syncedOverrideKeys);
     }
     invalidateModelsCache();
     invalidateServicesCache();

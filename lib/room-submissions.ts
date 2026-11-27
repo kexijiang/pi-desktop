@@ -10,7 +10,7 @@ import { isRoomBroadcast, resolveRoomMentions } from "./room-chat-routing";
 import { TeamError } from "./team-errors";
 import { isCurrentRoomQuestion } from "./room-question";
 import { publishRoomMemberSelection, selectRoomMessageHandler, type RoomSelectionServices } from "./room-member-selection";
-import type { RoomAttachment, RoomMention, RoomSubmission } from "./room-types";
+import type { CollaborationRoom, RoomAttachment, RoomMention, RoomSubmission } from "./room-types";
 
 export interface RoomSubmissionInput {
   sessionId: string;
@@ -222,6 +222,15 @@ async function processSubmission(roomId: string, id: string, services?: RoomSele
   })();
   flights.set(key, flight);
   try { return await flight; } finally { if (flights.get(key) === flight) flights.delete(key); }
+}
+
+export function canRetryRoomSubmissionBySession(roomId: string, clientPromptId: unknown, sessionId: unknown): boolean {
+  if (typeof clientPromptId !== "string" || !/^[\w-]{8,160}$/u.test(clientPromptId) || typeof sessionId !== "string" || !sessionId) return false;
+  let room: CollaborationRoom;
+  try { room = getRoom(roomId); } catch { return false; }
+  const known = readRecord(roomId, clientPromptId);
+  if (!known?.actorMemberId || known.input.sessionId !== sessionId) return false;
+  return room.members.some((member) => member.memberId === known.actorMemberId);
 }
 
 export async function submitRoomMessage(roomId: string, input: RoomSubmissionInput, services?: RoomSelectionServices, background = false) {

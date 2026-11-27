@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "./useI18n";
+import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
 import type { WorkflowAction, WorkflowCriterion, WorkflowMode, WorkflowSnapshot } from "@/lib/workflow-types";
 
 const WORKFLOW_RETRY_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
@@ -27,6 +28,7 @@ export function useWorkflow(
   const { t } = useI18n();
   const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const latest = useRef({ sessionId, visible, deferInitialLoad, executeAction, t });
@@ -37,6 +39,7 @@ export function useWorkflow(
   const acceptedSnapshot = useRef<WorkflowSnapshot | null>(null);
   const lastReadAt = useRef<number | null>(null);
   const readFailures = useRef(0);
+  const lastLoggedFailure = useRef<string | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearRetry = useCallback(() => {
@@ -49,8 +52,10 @@ export function useWorkflow(
     const current = acceptedSnapshot.current;
     if (current?.sessionId === next.sessionId && current.revision > next.revision) return;
     acceptedSnapshot.current = next;
+    lastLoggedFailure.current = null;
     setSnapshot(next);
     setLoadError(null);
+    setLoadErrorCode(null);
   }, []);
 
   const reconcile = useCallback(async function readWorkflow(explicit = false) {
@@ -64,7 +69,7 @@ export function useWorkflow(
     const isCurrent = () => epoch === generation.current && !controller.signal.aborted && latest.current.sessionId === sid;
     try {
       const response = await fetch(`/api/agent/${encodeURIComponent(sid)}/workflow`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
-      if (!response.ok) throw new Error(latest.current.t("workflow.loadError"));
+      if (!response.ok) throw await parseWorkflowLoadResponseError(response, latest.current.t);
       const next = await response.json() as WorkflowSnapshot | null;
       if (!isCurrent()) return;
       if (!next || next.sessionId !== sid || !Number.isSafeInteger(next.revision)
@@ -74,12 +79,30 @@ export function useWorkflow(
       lastReadAt.current = Date.now();
       readFailures.current = 0;
       accept(next);
-    } catch {
+    } catch (cause) {
       if (!isCurrent()) return;
+      const failure = classifyWorkflowLoadException(cause, latest.current.t);
+      const signature = `${sid}:${failure.status ?? ""}:${failure.code ?? ""}:${failure.rawMessage ?? ""}`;
+      if (explicit || lastLoggedFailure.current !== signature) {
+        lastLoggedFailure.current = signature;
+        console.warn("[workflow] load failed", {
+          sid,
+          status: failure.status,
+          code: failure.code,
+          retryable: failure.retryable,
+          message: failure.rawMessage ?? failure.message,
+        });
+      }
       const failures = ++readFailures.current;
+      if (!failure.retryable) {
+        setLoadError(failure.message);
+        setLoadErrorCode(failure.code ?? null);
+        return;
+      }
       // Keep the last usable state during a failed background read.
       if (acceptedSnapshot.current?.sessionId !== sid && failures >= INITIAL_LOAD_FAILURE_LIMIT) {
-        setLoadError(latest.current.t("workflow.loadError"));
+        setLoadError(failure.message);
+        setLoadErrorCode(failure.code ?? null);
       }
       const delay = WORKFLOW_RETRY_DELAYS[Math.min(failures - 1, WORKFLOW_RETRY_DELAYS.length - 1)];
       retryTimer.current = setTimeout(() => {
@@ -96,13 +119,45 @@ export function useWorkflow(
     await reconcile(true);
   }, [reconcile]);
 
+  const resetCorrupt = useCallback(async () => {
+    const sid = latest.current.sessionId;
+    if (!sid || actionInFlight.current) return false;
+    const epoch = generation.current;
+    actionInFlight.current = true;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/agent/${encodeURIComponent(sid)}/workflow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset_corrupt" }),
+      });
+      const result = await response.json() as { snapshot?: WorkflowSnapshot; error?: string };
+      if (!response.ok || !result.snapshot) {
+        throw new Error(result.error ?? latest.current.t("workflow.actionError"));
+      }
+      if (epoch !== generation.current) return false;
+      readFailures.current = 0;
+      accept(result.snapshot);
+      return true;
+    } catch (cause) {
+      if (epoch === generation.current) {
+        setActionError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
+      }
+      return false;
+    } finally {
+      if (epoch === generation.current) { actionInFlight.current = false; setBusy(false); }
+    }
+  }, [accept]);
+
   useEffect(() => {
     const epoch = ++generation.current;
     acceptedSnapshot.current = null;
     lastReadAt.current = null;
     readFailures.current = 0;
+    lastLoggedFailure.current = null;
     actionInFlight.current = false;
-    setSnapshot(null); setLoadError(null); setActionError(null); setBusy(false);
+    setSnapshot(null); setLoadError(null); setLoadErrorCode(null); setActionError(null); setBusy(false);
     return () => {
       generation.current = epoch + 1;
       request.current?.abort();
@@ -242,11 +297,13 @@ export function useWorkflow(
   return {
     snapshot: snapshot?.sessionId === sessionId ? snapshot : null,
     error: actionError ?? loadError,
+    loadErrorCode: actionError ? null : loadErrorCode,
     busy,
     act,
     configureMode,
     savePlanMarkdown,
     accept,
     refresh,
+    resetCorrupt,
   };
 }

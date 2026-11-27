@@ -24,6 +24,7 @@ export interface ChatWorkflowDockProps {
   enabled: boolean;
   settingsReady: boolean;
   error: string | null;
+  errorCode?: string | null;
   isMobile?: boolean;
   userInputRequest?: UserInputRequest | null;
   onRespondUserInput: (request: UserInputRequest, response: { answers: UserInputAnswers } | { cancelled: true }) => void;
@@ -33,6 +34,7 @@ export interface ChatWorkflowDockProps {
   onAction: (action: WorkflowActionName, extra?: number | WorkflowActionExtra) => Promise<boolean>;
   onAcceptSnapshot: (snapshot: WorkflowSnapshot) => void;
   onRefresh: () => Promise<void>;
+  onResetCorrupt?: () => Promise<boolean>;
   onOpenTaskChanges?: () => void;
   onFocusComposer: () => void;
   onEnterGoalDraft: (inlineObjective?: string) => void;
@@ -55,6 +57,7 @@ export function ChatWorkflowDock({
   enabled,
   settingsReady,
   error,
+  errorCode,
   isMobile = false,
   userInputRequest,
   onRespondUserInput,
@@ -64,6 +67,7 @@ export function ChatWorkflowDock({
   onAction,
   onAcceptSnapshot,
   onRefresh,
+  onResetCorrupt,
   onOpenTaskChanges,
   onFocusComposer,
   onEnterGoalDraft,
@@ -163,9 +167,11 @@ export function ChatWorkflowDock({
         enabled={enabled}
         settingsReady={settingsReady}
         error={error}
+        errorCode={errorCode}
         isMobile={isMobile}
         onAction={onAction}
         onRefresh={onRefresh}
+        onResetCorrupt={onResetCorrupt}
         onOpenEditModal={() => setEditModalOpen(true)}
       />
 

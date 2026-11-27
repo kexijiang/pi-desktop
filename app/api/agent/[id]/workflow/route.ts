@@ -5,18 +5,23 @@ import { resolveOrStartRpcSession, SessionRuntimeResolverError } from "@/lib/ses
 import { resolveSessionAgentRuntimeProfile } from "@/lib/agent-profile-store";
 import { getAgentRuntimeProfile } from "@/lib/agent-runtime-profile";
 import { getSessionMessageRouter } from "@/lib/session-message-router";
-import { readWorkflowSnapshot, WorkflowError, isWorkflowError } from "@/lib/workflow-runtime";
+import { readWorkflowSnapshot, resetCorruptWorkflowState, WorkflowError, isWorkflowError } from "@/lib/workflow-runtime";
 import { readLaboratorySettings } from "@/lib/laboratory-settings";
 import { parseWorkflowAction, parseWorkflowPromptOptions, parseWorkflowRevision, WorkflowInputError } from "@/lib/workflow-input";
 
 type Context = { params: Promise<{ id: string }> };
 const noStore = { "Cache-Control": "no-store" };
 
-function failure(error: unknown) {
+function failure(error: unknown, sessionId?: string) {
   const status = error instanceof WorkflowInputError || error instanceof SyntaxError ? 400 : isWorkflowError(error) ? error.status
     : error instanceof SessionRuntimeResolverError && error.code === "SESSION_NOT_FOUND" ? 404
       : /busy|stopping|running/i.test(error instanceof Error ? error.message : "") ? 409 : 500;
-  return NextResponse.json({ error: error instanceof Error ? error.message : String(error), code: (error as { code?: string })?.code }, { status, headers: noStore });
+  const code = (error as { code?: string })?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  if (status >= 500) {
+    console.warn("[workflow] request failed", { sessionId, status, code, error: message });
+  }
+  return NextResponse.json({ error: message, code }, { status, headers: noStore });
 }
 
 async function assertSession(id: string) {
@@ -27,19 +32,28 @@ async function assertSession(id: string) {
 
 /** History hydration never creates an AgentSession or requests a model. */
 export async function GET(_request: Request, context: Context) {
+  let id: string | undefined;
   try {
-    const { id } = await context.params;
+    ({ id } = await context.params);
     await assertSession(id);
     return NextResponse.json(readWorkflowSnapshot(id), { headers: noStore });
-  } catch (error) { return failure(error); }
+  } catch (error) { return failure(error, id); }
 }
 
 export async function POST(request: Request, context: Context) {
+  let id: string | undefined;
   try {
-    const { id } = await context.params;
+    ({ id } = await context.params);
     await assertSession(id);
     const body = await request.json() as Record<string, unknown>;
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new WorkflowInputError("Invalid workflow request.");
+    if (body.action === "reset_corrupt") {
+      if (getRpcSession(id)?.isRunning()) {
+        throw new WorkflowError("Cannot reset workflow state while the session is running.", "WORKFLOW_CONFLICT", 409);
+      }
+      const snapshot = resetCorruptWorkflowState(id);
+      return NextResponse.json({ snapshot }, { headers: noStore });
+    }
     if (body.action === "configure") {
       const workflow = parseWorkflowPromptOptions({ mode: body.mode, turnBudget: body.turnBudget });
       const expectedRevision = parseWorkflowRevision(body.expectedRevision);
@@ -74,5 +88,5 @@ export async function POST(request: Request, context: Context) {
     const { session } = await resolveOrStartRpcSession(id);
     const result = await session.send({ type: "workflow_action", workflowAction: action });
     return NextResponse.json(result, { headers: noStore });
-  } catch (error) { return failure(error); }
+  } catch (error) { return failure(error, id); }
 }

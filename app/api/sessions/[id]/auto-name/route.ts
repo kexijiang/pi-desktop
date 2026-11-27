@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
-import { generateSessionTitle } from "@/lib/session-title";
+import { createSavedSessionTitleAgent, generateSessionTitle } from "@/lib/session-title";
 import {
   SESSION_TITLE_PROMPT_MAX_LENGTH,
   extractEarlySessionTitleQuery,
@@ -13,7 +13,7 @@ function readLiveSessionName(session: { inner: unknown }): string | undefined {
   };
   return inner.sessionManager?.getSessionName?.()?.trim() || undefined;
 }
-import { getRpcSession, startRpcSession } from "@/lib/rpc-manager";
+import { getRpcSession } from "@/lib/rpc-manager";
 import { invalidateSessionListCache, resolveSessionPath } from "@/lib/session-reader";
 
 export async function POST(
@@ -92,22 +92,18 @@ export async function POST(
       return NextResponse.json({ title: currentName, applied: false, skipped: true, usage: null });
     }
 
-    const cwd = manager?.getHeader()?.cwd ?? liveSession?.cwd ?? process.cwd();
-    const { session } = liveSession
-      ? { session: liveSession }
-      : await startRpcSession(id, filePath!, cwd);
-
-    // globalThis keeps wrappers alive across dev hot reloads; older instances
-    // may predate waitUntilReady(), but those have already completed startup.
-    await session.waitUntilReady?.();
-    const agentSession = session.inner as unknown as AgentSession;
-    const titleModel = provider && modelId
-      ? agentSession.modelRuntime.getModel(provider, modelId)
-      : undefined;
-    if (provider && modelId && !titleModel) {
-      return NextResponse.json({ error: `Model not found: ${provider}/${modelId}` }, { status: 404 });
+    const requestedModel = provider && modelId ? { provider, modelId } : undefined;
+    await liveSession?.waitUntilReady?.();
+    const liveAgentSession = liveSession?.inner as AgentSession | undefined;
+    const titleModel = liveAgentSession && requestedModel ? liveAgentSession.modelRuntime.getModel(provider, modelId) : undefined;
+    const agent = liveAgentSession?.agent ?? await createSavedSessionTitleAgent(manager!, requestedModel);
+    if (!agent || (liveAgentSession && requestedModel && !titleModel)) {
+      return NextResponse.json(
+        { error: requestedModel ? `Model not found: ${provider}/${modelId}` : "No available model for session naming" },
+        { status: requestedModel ? 404 : 422 },
+      );
     }
-    const result = await generateSessionTitle(agentSession, {
+    const result = await generateSessionTitle({ agent }, {
       ...(typeof body.instructions === "string" ? { instructions: normalizeSessionTitlePrompt(body.instructions) } : {}),
       ...(typeof body.currentTitle === "string" ? { currentTitle: Array.from(body.currentTitle).slice(0, 200).join("") } : {}),
       ...(seedQuery ? { seedQuery } : {}),
@@ -115,28 +111,29 @@ export async function POST(
       signal: req.signal,
     });
 
-    if (!session.isAlive()) {
-      return NextResponse.json(
-        { error: "The session was closed while its title was being generated. Please try again." },
-        { status: 409 },
-      );
-    }
-
+    req.signal.throwIfAborted();
     const apply = body.apply !== false;
     if (apply) {
       // A manual rename may land while the model is generating. Re-read both
       // the live session state and the append-only session file immediately
       // before applying so automatic naming never overwrites a user title.
-      let latestName: string | undefined;
-      if (body.onlyIfUnnamed === true) {
-        const latestFilePath = filePath ?? await resolveSessionPath(id);
-        latestName = readLiveSessionName(session)
-          || (latestFilePath ? SessionManager.open(latestFilePath).getSessionName()?.trim() : undefined);
+      const latestFilePath = await resolveSessionPath(id);
+      const current = getRpcSession(id);
+      const writer = current?.isAlive() ? current : undefined;
+      const latestManager = latestFilePath ? SessionManager.open(latestFilePath) : undefined;
+      if (!writer && !latestManager) {
+        return NextResponse.json(
+          { error: "The session was closed while its title was being generated. Please try again." },
+          { status: 409 },
+        );
       }
-      if (latestName) {
+      const latestName = (writer ? readLiveSessionName(writer) : undefined)
+        || latestManager?.getSessionName()?.trim();
+      if (body.onlyIfUnnamed === true && latestName) {
         return NextResponse.json({ title: latestName, applied: false, skipped: true, usage: result.usage ?? null });
       }
-      session.setSessionName(result.title);
+      if (writer) writer.setSessionName(result.title);
+      else latestManager!.appendSessionInfo(result.title);
       invalidateSessionListCache();
     }
     return NextResponse.json({ title: result.title, applied: apply, skipped: false, usage: result.usage ?? null });

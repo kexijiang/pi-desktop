@@ -26,7 +26,11 @@ test("system prompt settings manage a reusable template library", () => {
   assert.match(editor, /system\.piDefaultPromptPreview/);
   assert.match(editor, /\/api\/prompts\/optimize/);
   assert.match(editor, /readPromptOptimizerModel/);
+  assert.match(editor, /applyMode/);
+  assert.match(editor, /system\.applyMode\.replaceWarning/);
+  assert.match(selector, /system\.applyMode\.badgeAppend/);
   assert.match(route, /createSystemPromptTemplate/);
+  assert.match(route, /applyMode: body\.applyMode/);
   assert.match(route, /setDefaultSystemPromptTemplate/);
   assert.match(route, /setSystemPromptSelectorVisible/);
 });
@@ -43,6 +47,9 @@ test("new and existing conversations can select an isolated prompt snapshot", ()
   assert.match(selector, /system\.previewTemplate/);
   assert.match(sessionRoute, /createSessionSystemPromptBinding/);
   assert.match(manager, /resolveSessionSystemPrompt/);
+  assert.match(manager, /resolveSessionAppendTemplatePrompt/);
+  assert.match(manager, /agentsFilesOverride/);
+  assert.match(manager, /skillsOverride/);
   assert.match(manager, /appendSessionSystemPromptBinding/);
   assert.doesNotMatch(manager, /readSystemPromptConfig\(\)\.prompt \?\? base/);
 });

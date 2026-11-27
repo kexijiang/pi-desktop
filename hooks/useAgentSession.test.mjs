@@ -15,6 +15,8 @@ const { chatHistoryUrl } = await createJiti(import.meta.url).import("../lib/chat
 const { persistentChatInputOptions } = await createJiti(import.meta.url).import("../lib/chat-command-input.ts");
 const { PromptErrorNotices } = await createJiti(import.meta.url).import("../lib/prompt-error-notices.ts");
 const { getAssistantErrorMessage } = await createJiti(import.meta.url).import("../lib/message-display.ts");
+const { interruptionFromCommandState } = await createJiti(import.meta.url).import("../lib/prompt-interruption.ts");
+const { classifyWorkflowLoadException, parseWorkflowLoadResponseError } = await createJiti(import.meta.url).import("../lib/workflow-client-error.ts");
 
 const source = (await readFile(new URL("./useAgentSession.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const commandSource = (await readFile(new URL("./useChatCommandOperations.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
@@ -99,11 +101,13 @@ function sendHarness(overrides = {}) {
     savePendingPrompt: async (record) => { env.saved = structuredClone(record); }, sendAgentCommand: async () => {},
     submitChatCommand: async () => { throw new Error("Unexpected command submission in ordinary prompt test"); },
     persistentChatInputOptions, replaceFailedPromptMessage, workflowEnabled: true, workflowReady: true,
+    classifyWorkflowLoadException, parseWorkflowLoadResponseError,
   };
   for (const name of new Set(send.match(/\b\w+Ref\b/g))) env[name] = { current: null };
   for (const name of new Set(send.match(/\bset[A-Z]\w+(?=\()/g))) env[name] = () => {};
   env.promptRunIdRef.current = 0;
   env.viewMountedRef.current = true;
+  env.failedPromptErrorsRef.current = new Map();
   env.sessionIdRef.current = "session";
   env.promptSettlementByRunRef.current = new Map(); env.promptSettlementPollByRunRef.current = new Map();
   env.entryIds = [];
@@ -410,6 +414,7 @@ function promptSettlementHarness() {
     delay: ms => new Promise(resolve => delays.push({ ms, resolve })),
     closeEvents: () => calls.push(["close"]), loadSession: async sid => calls.push(["load", sid]),
     dispatch() {}, restoreStatusClock() {}, selectionFromSystemPromptBinding: () => null,
+    interruptionFromCommandState,
     acceptToolPermission: permission => calls.push(["permission", permission]),
     normalizeQueuedMessages: queue => ({ steering: queue?.steering ?? [], followUp: queue?.followUp ?? [] }),
     onAgentEnd() {}, response: { running: true, state: { runtime: "running", isStreaming: false, isPromptRunning: false, isCompacting: false } },
@@ -1149,6 +1154,7 @@ function sessionLoadHarness(overrides = {}) {
     useCallback: callback => callback, AbortController, AbortSignal, URLSearchParams,
     acceptToolPermission: value => { env.permission = value; },
     sessionLoadAbortRef: { current: null }, sessionIdRef: { current: "session" }, promptRunIdRef: { current: 0 },
+    failedPromptErrorsRef: { current: new Map() },
     translateRef: { current: key => key }, invalidatePrefetchedSession() {},
     peekPrefetchedSession: () => null, takePrefetchedSession: () => env.history,
     setTimeout: callback => { env.expire = callback; return 1; }, clearTimeout() {},

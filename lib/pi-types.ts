@@ -25,11 +25,14 @@ export interface ContextUsageBreakdown {
   projectInstructions: number;
   systemPrompt: number;
   toolDefinitions: number;
+  skills?: number;
+  addendum?: number;
 }
 
 export interface ModelLike {
   id: string;
   provider: string;
+  name?: string;
   contextWindow?: number;
   input?: readonly ("text" | "image")[];
 }
@@ -157,6 +160,7 @@ export interface ExtensionUiContextLike {
 
 export interface AgentSessionLike {
   readonly sessionId: string;
+  readonly systemPrompt?: string;
   readonly sessionFile: string | undefined;
   readonly isStreaming: boolean;
   readonly isCompacting: boolean;

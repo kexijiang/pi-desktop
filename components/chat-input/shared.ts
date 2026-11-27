@@ -24,6 +24,7 @@ export interface ModelOption {
   modelId: string;
   name: string;
   isDefault?: boolean;
+  supportsImages?: boolean;
 }
 
 export interface PromptOptimizationState {

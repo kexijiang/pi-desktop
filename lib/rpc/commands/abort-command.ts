@@ -1,10 +1,37 @@
 import { randomUUID } from "node:crypto";
 import { finishPromptRun } from "../../prompt-run-registry";
 import { notifyRunningChange } from "../../rpc-running-status";
+import type { SessionRpcCommand } from "../../session-command-policy";
 import { findWorkflowRuntime } from "../../workflow-runtime";
+import { formatTelemetryModel, logRunEvent, type RunTerminationReason } from "../run-telemetry";
 import type { RpcCommandHost } from "./host";
 
-export async function handleAbortCommand(host: RpcCommandHost) {
+function toTelemetryAbortReason(raw: string): RunTerminationReason {
+  switch (raw) {
+    case "user_abort":
+    case "tool_review_denied":
+    case "workflow_abort":
+    case "wrapper_destroyed":
+    case "idle_timeout":
+    case "restart_extensions":
+    case "fork":
+    case "file_mutation":
+    case "process_shutdown":
+    case "lru_eviction":
+    case "process_interrupted":
+      return raw;
+    default:
+      return "user_abort";
+  }
+}
+
+export async function handleAbortCommand(host: RpcCommandHost, command?: SessionRpcCommand) {
+  const abortReason = typeof command?.abortReason === "string" && command.abortReason.trim()
+    ? command.abortReason.trim()
+    : "user_abort";
+  const abortDetail = typeof command?.abortDetail === "string" && command.abortDetail.trim()
+    ? command.abortDetail.trim()
+    : undefined;
   const subagentCleanup = host.subagents?.stopAll();
   if (host.hasPermissionParent) host.abortSubagentUi();
   host.permissions.invalidateParent();
@@ -21,6 +48,18 @@ export async function handleAbortCommand(host: RpcCommandHost) {
     return receipt();
   }
   const promptRun = host.activePromptRun;
+  host.lastAbortReason = abortReason;
+  host.lastAbortDetail = abortDetail;
+  if (host.isRunning() || promptRun) {
+    logRunEvent(abortReason === "user_abort" ? "info" : "warn", {
+      sessionId: host.sessionId,
+      runId: promptRun?.runId,
+      commandId: host.activeCommandId,
+      reason: toTelemetryAbortReason(abortReason),
+      model: formatTelemetryModel(host.inner.model),
+      errorMessage: abortDetail,
+    });
+  }
   host.abortGeneration += 1;
   // Claim all unconsumed admissions synchronously, including input hooks
   // which have not reached the SDK queue yet. Persist before acknowledging.

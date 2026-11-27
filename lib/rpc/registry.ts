@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { invalidateExtensionLoadPlanCache } from "../extension-config";
 import type { NativeMcpController } from "../native-mcp";
+import { registerIdleMcpSessionEvictor } from "../native-mcp/stdio-lifecycle";
 import type { ToolInfo } from "../pi-types";
 import type { ProjectToolSettingsRecord } from "../project-tool-settings";
 import { restorePromptMaterialDisplayPreview } from "../prompt-materials";
@@ -108,14 +109,62 @@ export async function reloadAllNormalSessionSystemPrompts(): Promise<{
   };
 }
 
+const DEFAULT_MAX_IDLE_RPC_SESSIONS = 4;
+const destroyAllSessionsKey = Symbol.for("piora.rpc.destroyAllSessions");
+
+function maxIdleRpcSessions(): number {
+  const configured = Number(process.env.PIORA_MAX_IDLE_RPC_SESSIONS);
+  if (Number.isSafeInteger(configured) && configured >= 1 && configured <= 100) return configured;
+  return DEFAULT_MAX_IDLE_RPC_SESSIONS;
+}
+
+export async function destroyAllRpcSessions(timeoutMs = 2_500): Promise<void> {
+  const sessions = Array.from(globalThis.__piSessions?.values() ?? []);
+  if (!sessions.length) return;
+  for (const session of sessions) session.destroy("process_shutdown");
+  const drain = Promise.allSettled(sessions.map((session) => session.shutdownForFileMutation()));
+  await Promise.race([
+    drain,
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref();
+    }),
+  ]);
+}
+
+export function evictIdleRpcSessions(excludeSessionId?: string, maxIdle = maxIdleRpcSessions()): Promise<void> {
+  const idle = Array.from(getRegistry().values())
+    .filter((session) => session.isAlive() && !session.isRunning() && session.sessionId !== excludeSessionId)
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt);
+  const overflow = idle.length - maxIdle;
+  if (overflow <= 0) return Promise.resolve();
+  const victims = idle.slice(0, overflow);
+  for (const session of victims) session.destroy("lru_eviction");
+  return Promise.allSettled(victims.map((session) => session.shutdownForFileMutation())).then(() => undefined);
+}
+
+export async function evictOldestIdleMcpSession(): Promise<boolean> {
+  const candidates = Array.from(getRegistry().values())
+    .filter((session) => session.isAlive() && !session.isRunning() && (session.nativeMcp?.activeTransportCount ?? 0) > 0)
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt);
+  const victim = candidates[0];
+  if (!victim) return false;
+  victim.destroy("lru_eviction");
+  await victim.shutdownForFileMutation().catch(() => undefined);
+  return true;
+}
+
 export function getRegistry(): Map<string, AgentSessionWrapper> {
   if (!globalThis.__piSessions) {
     globalThis.__piSessions = new Map();
-    const cleanup = () => globalThis.__piSessions?.forEach((s) => s.destroy());
+    const cleanup = () => globalThis.__piSessions?.forEach((s) => s.destroy("process_shutdown"));
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
   }
+  const host = globalThis as typeof globalThis & { [destroyAllSessionsKey]?: (timeoutMs?: number) => Promise<void> };
+  host[destroyAllSessionsKey] = destroyAllRpcSessions;
+  registerIdleMcpSessionEvictor(evictOldestIdleMcpSession);
   return globalThis.__piSessions;
 }
 

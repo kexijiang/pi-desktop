@@ -91,20 +91,27 @@ function WorkflowRunCard({ run, busy, running, onAction, historical = false, cwd
 }
 
 type WorkflowPanelProps = {
-  snapshot: WorkflowSnapshot | null; busy: boolean; running: boolean; error: string | null; cwd?: string;
+  snapshot: WorkflowSnapshot | null; busy: boolean; running: boolean; error: string | null; errorCode?: string | null; cwd?: string;
   enabled?: boolean;
   settingsReady?: boolean;
   onAction: (action: WorkflowActionName, turnBudget?: number) => Promise<boolean>;
   onRefresh: () => Promise<void>;
+  onResetCorrupt?: () => Promise<boolean>;
   onRequestRevision?: () => void;
 };
 
-function WorkflowError({ error, onRefresh }: Pick<WorkflowPanelProps, "error" | "onRefresh">) {
+function WorkflowError({ error, errorCode, busy, running, onRefresh, onResetCorrupt }: Pick<WorkflowPanelProps, "error" | "errorCode" | "busy" | "running" | "onRefresh" | "onResetCorrupt">) {
   const { t } = useI18n();
-  return error && <div className={styles.error} role="alert"><span>{error}</span><button type="button" className={styles.retry} onClick={() => { void onRefresh(); }}>{t("workflow.refresh")}</button></div>;
+  return error && <div className={styles.error} role="alert">
+    <span>{error}</span>
+    {errorCode === "WORKFLOW_STATE_CORRUPT" && onResetCorrupt && (
+      <button type="button" className={styles.retry} data-testid="workflow-reset-corrupt" disabled={busy || running} onClick={() => { void onResetCorrupt(); }}>{t("workflow.resetCorrupt")}</button>
+    )}
+    <button type="button" className={styles.retry} onClick={() => { void onRefresh(); }}>{t("workflow.refresh")}</button>
+  </div>;
 }
 
-function WorkflowPeek({ snapshot, busy, running, error, onRefresh, onAction, onRequestRevision, cwd, enabled = true, settingsReady = true }: WorkflowPanelProps) {
+function WorkflowPeek({ snapshot, busy, running, error, errorCode, onRefresh, onResetCorrupt, onAction, onRequestRevision, cwd, enabled = true, settingsReady = true }: WorkflowPanelProps) {
   const { t } = useI18n();
   const contentId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -190,7 +197,7 @@ function WorkflowPeek({ snapshot, busy, running, error, onRefresh, onAction, onR
       </button>
       {run && <WorkflowActions run={run} busy={busy} running={running} enabled={enabled} onAction={act} />}
       </div>
-      <WorkflowError error={error} onRefresh={onRefresh} />
+      <WorkflowError error={error} errorCode={errorCode} busy={busy} running={running} onRefresh={onRefresh} onResetCorrupt={onResetCorrupt} />
       <div id={contentId} className={styles.peekContent} data-testid="workflow-peek-content" hidden={!expanded}>
         {settingsReady && !enabled && run && <p className={styles.help} role="status" data-testid="workflow-laboratory-disabled">{t("workflow.laboratoryDisabled")}</p>}
         {run && <WorkflowRunCard key={run.kind === "plan" ? `${run.id}:${run.version}` : run.id} run={run} busy={busy} running={running} enabled={enabled} onAction={act} cwd={cwd} />}
@@ -204,12 +211,12 @@ function WorkflowPeek({ snapshot, busy, running, error, onRefresh, onAction, onR
 }
 
 export function WorkflowPanel(props: WorkflowPanelProps) {
-  const { snapshot, error, onRefresh } = props;
+  const { snapshot, error, errorCode, busy, running, onRefresh, onResetCorrupt } = props;
   const current = snapshot?.current;
   // The composer dock describes work that still needs progress or an action.
   // A retained result/history is not the workflow of the next draft.
   const active = current && current.status !== "completed" && current.status !== "cancelled";
   return active
     ? <WorkflowPeek key={snapshot?.sessionId} {...props} />
-    : <WorkflowError error={error} onRefresh={onRefresh} />;
+    : <WorkflowError error={error} errorCode={errorCode} busy={busy} running={running} onRefresh={onRefresh} onResetCorrupt={onResetCorrupt} />;
 }

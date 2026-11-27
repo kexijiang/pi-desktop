@@ -4,6 +4,7 @@ export interface ModelCatalogEntry {
   provider: string;
   contextWindow?: number;
   isDefault?: boolean;
+  supportsImages?: boolean;
 }
 
 export interface ModelCatalogResponse {

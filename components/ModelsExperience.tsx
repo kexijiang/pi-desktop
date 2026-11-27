@@ -14,6 +14,7 @@ import { ModelFallbackSetting } from "./ModelFallbackSetting";
 import { ApiKeyDetail, OAuthDetail, VisionAgentDetail, API_OPTIONS, type ApiKeyProvider, type OAuthProvider, type ModelEntry, type ModelsJson, type ProviderEntry, type ModelScopeResponse } from "./ModelsConfig";
 import styles from "./ModelsExperience.module.css";
 import { orderByProvider } from "@/lib/provider-order";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { ProviderOrderList } from "./ProviderOrderList";
 
 const copy = {
@@ -35,7 +36,21 @@ async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
   return body;
 }
 
-export function ModelsExperience({ cwd, onClose, onModelsChanged, embedded = false }: { cwd?: string; onClose: () => void; onModelsChanged?: () => void; embedded?: boolean }) {
+export function ModelsExperience({
+  cwd,
+  onClose,
+  onModelsChanged,
+  embedded = false,
+  focusTarget,
+  onClearFocusTarget,
+}: {
+  cwd?: string;
+  onClose: () => void;
+  onModelsChanged?: () => void;
+  embedded?: boolean;
+  focusTarget?: ModelSettingsFocusTarget | null;
+  onClearFocusTarget?: () => void;
+}) {
   const { locale, t } = useI18n();
   const c = { ...(locale === "zh-CN" ? copy.zh : copy.en), ...(locale === "zh-CN" ? {
     importHint: "选择要添加的模型。接口缺失的参数已默认填入上下文 512K、最大输出不超过 65536 且不超过上下文的一半，可直接修改。", selectShown: "全选当前结果", pendingLimits: "待补全", importCount: "个模型",
@@ -53,6 +68,7 @@ export function ModelsExperience({ cwd, onClose, onModelsChanged, embedded = fal
   const [providerOrder, setProviderOrder] = useState<string[]>([]);
   const [oauth, setOauth] = useState<OAuthProvider[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeyProvider[]>([]);
+  const [imageCapabilities, setImageCapabilities] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -67,20 +83,47 @@ export function ModelsExperience({ cwd, onClose, onModelsChanged, embedded = fal
     const request = ++requestRef.current;
     setLoading(true); setError(null);
     try {
-      const [nextConfig, nextScope, nextOAuth, nextApi, nextOrder] = await Promise.all([
+      const capUrl = cwd ? `/api/model-capabilities?cwd=${encodeURIComponent(cwd)}` : "/api/model-capabilities";
+      const [nextConfig, nextScope, nextOAuth, nextApi, nextOrder, nextCapabilities] = await Promise.all([
         jsonRequest<ModelsJson>("/api/models-config", { cache: "no-store" }),
         jsonRequest<ModelScopeResponse>(`/api/models/scope${query}`, { cache: "no-store" }),
         jsonRequest<{ providers: OAuthProvider[] }>("/api/auth/providers", { cache: "no-store" }),
         jsonRequest<{ providers: ApiKeyProvider[] }>("/api/auth/all-providers", { cache: "no-store" }),
         jsonRequest<{ providers: string[] }>("/api/models/provider-order", { cache: "no-store" }),
+        jsonRequest<{ imageInput?: Record<string, boolean> }>(capUrl, { cache: "no-store" }).catch(() => ({ imageInput: {} as Record<string, boolean> })),
       ]);
       if (request !== requestRef.current) return;
       setConfig(nextConfig); setScope(nextScope); setOauth(nextOAuth.providers ?? []); setApiKeys(nextApi.providers ?? []);
       setProviderOrder(nextOrder.providers ?? []);
+      setImageCapabilities(nextCapabilities.imageInput ?? {});
     } catch (cause) { if (request === requestRef.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (request === requestRef.current) setLoading(false); }
-  }, [query]);
+  }, [cwd, query]);
   useEffect(() => { const requests = requestRef; void reload(); return () => { ++requests.current; }; }, [reload]);
+
+  useEffect(() => {
+    if (!focusTarget || loading) return;
+    if (focusTarget.provider) {
+      setView({ kind: "manage", id: focusTarget.provider });
+    }
+  }, [focusTarget, loading]);
+
+  const toggleImageCapability = async (provider: string, id: string, enabled: boolean) => {
+    setBusy(true); setError(null);
+    try {
+      await jsonRequest<{ imageInput: boolean }>("/api/model-capabilities", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, id, imageInput: enabled, ...(cwd ? { cwd } : {}) }),
+      });
+      setImageCapabilities((current) => ({ ...current, [`${provider}/${id}`]: enabled }));
+      onModelsChanged?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const scopeAction = async (action: string, provider: string, id?: string) => {
     const result = await jsonRequest<ModelScopeResponse>("/api/models/scope", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, provider, ...(id ? { id } : {}), scope: "global" }) });
@@ -223,10 +266,17 @@ export function ModelsExperience({ cwd, onClose, onModelsChanged, embedded = fal
           )}
           {view.kind === "vision" && <div className={styles.extras}><h3>{c.vision}</h3><ModelFallbackSetting /><VisionAgentDetail cwd={cwd} /></div>}
           {((["home", "manage"].includes(view.kind) && custom) || view.kind === "wizard") && <ProviderPanel key={custom ? `${selectedProvider}:${JSON.stringify(custom)}` : "new"} c={c}
-            existingNames={Object.keys(config.providers ?? {})} initialName={custom ? selectedProvider : undefined} initial={custom} scope={scope} busy={busy} onDirty={setDirty} onModal={setModalOpen} saveError={error}
+            existingNames={Object.keys(config.providers ?? {})} initialName={custom ? selectedProvider : undefined} initial={custom} scope={scope} imageCapabilities={imageCapabilities} busy={busy} onDirty={setDirty} onModal={setModalOpen} saveError={error}
+            focusModelId={focusTarget?.provider === selectedProvider ? focusTarget.modelId : undefined}
+            focusField={focusTarget?.provider === selectedProvider ? focusTarget.focus : undefined}
+            onFocusHandled={onClearFocusTarget}
             onScope={switchScope} onRemove={id => void remove(selectedProvider, id)}
             saveProvider={async (name, provider, additions, original) => { const saved = await saveProvider(name, provider, additions, original); if (saved) setView({ kind: "manage", id: name }); return saved; }} />}
-          {["home", "manage"].includes(view.kind) && selectedProvider && !custom && <BuiltinPanel key={selectedProvider} c={c} id={selectedProvider} name={displayName(selectedProvider)} api={apiKeys.find(p => p.id === selectedProvider)} oauth={oauth.find(p => p.id === selectedProvider)} scope={scope} busy={busy} onRefresh={authRefresh} onScope={switchScope} onRemove={async () => {
+          {["home", "manage"].includes(view.kind) && selectedProvider && !custom && <BuiltinPanel key={selectedProvider} c={c} id={selectedProvider} name={displayName(selectedProvider)} api={apiKeys.find(p => p.id === selectedProvider)} oauth={oauth.find(p => p.id === selectedProvider)} scope={scope} imageCapabilities={imageCapabilities} busy={busy} onRefresh={authRefresh} onScope={switchScope}
+            focusModelId={focusTarget?.provider === selectedProvider ? focusTarget.modelId : undefined}
+            onFocusHandled={onClearFocusTarget}
+            onToggleImageInput={(modelId, next) => toggleImageCapability(selectedProvider, modelId, next)}
+            onRemove={async () => {
             if (!await requestConfirmation({ title: t("models.removeProvider"), message: t("models.removeProviderConfirm", { name: displayName(selectedProvider) }), confirmLabel: t("models.removeProvider"), tone: "danger" })) return;
             await mutate(async () => { await scopeAction("remove-provider", selectedProvider); setView({ kind: "home" }); });
           }} />}
@@ -249,10 +299,11 @@ function IconButton({ label, tooltip = label, icon, onClick, disabled }: { label
 function Toggle({ checked, label, disabled, onChange }: { checked: boolean; label: string; disabled?: boolean; onChange: () => void }) {
   return <button type="button" role="switch" aria-checked={checked} aria-label={label} title={label} className={styles.toggle} disabled={disabled} onClick={onChange}><span /></button>;
 }
-function ProviderPanel({ c, existingNames, initialName, initial, scope, busy, saveProvider, onDirty, onScope, onRemove, onModal, saveError }: {
-  c: Text; existingNames: string[]; initialName?: string; initial?: ProviderEntry; scope: ModelScopeResponse | null; busy: boolean; saveProvider: SaveProvider;
+function ProviderPanel({ c, existingNames, initialName, initial, scope, imageCapabilities, busy, saveProvider, onDirty, onScope, onRemove, onModal, saveError, focusModelId, focusField, onFocusHandled }: {
+  c: Text; existingNames: string[]; initialName?: string; initial?: ProviderEntry; scope: ModelScopeResponse | null; imageCapabilities: Record<string, boolean>; busy: boolean; saveProvider: SaveProvider;
   onDirty: (dirty: boolean) => void; onScope: (action: string, id?: string) => void; onRemove: (id?: string) => void;
   onModal: (open: boolean) => void; saveError: string | null;
+  focusModelId?: string; focusField?: "imageInput"; onFocusHandled?: () => void;
 }) {
   const [name, setName] = useState(() => {
     if (initialName !== undefined) return initialName;
@@ -266,6 +317,7 @@ function ProviderPanel({ c, existingNames, initialName, initial, scope, busy, sa
   const [changed, setChanged] = useState(!initialName);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<ModelEntry | null>(null);
+  const [editingFocusImage, setEditingFocusImage] = useState(false);
   const [importing, setImporting] = useState<DiscoveredModel[] | null>(null);
   const [discovering, setDiscovering] = useState(false);
   useEffect(() => { onModal(!!editing || !!importing); return () => onModal(false); }, [editing, importing, onModal]);
@@ -282,6 +334,15 @@ function ProviderPanel({ c, existingNames, initialName, initial, scope, busy, sa
   useEffect(() => () => { if (drag.current) clearTimeout(drag.current.timer); }, []);
   const models = provider.models ?? [];
   const managed = (scope?.models ?? []).filter(m => m.provider === initialName);
+  useEffect(() => {
+    if (!focusModelId || !initialName) return;
+    const target = provider.models?.find((m) => m.id === focusModelId);
+    if (target) {
+      setEditing(target);
+      setEditingFocusImage(focusField === "imageInput");
+    }
+    onFocusHandled?.();
+  }, [focusField, focusModelId, initialName, provider.models, onFocusHandled]);
   const ids = [...new Set([...models.map(m => m.id), ...managed.map(m => m.id)])];
   const enabled = managed.some(m => m.enabled);
   useEffect(() => () => { discoveryRef.current?.cancel(); discoveryRef.current?.dispose(); }, []);
@@ -347,13 +408,16 @@ function ProviderPanel({ c, existingNames, initialName, initial, scope, busy, sa
       {ids.map(id => {
         const model = models.find(m => m.id === id), row = managed.find(m => m.id === id);
         const isDefault = scope?.effectiveDefault?.provider === initialName && scope?.effectiveDefault?.modelId === id;
+        const effectiveImage = initialName && Object.hasOwn(imageCapabilities, `${initialName}/${id}`)
+          ? imageCapabilities[`${initialName}/${id}`]
+          : Boolean(model?.input?.includes("image"));
         return <div className={styles.modelRow} key={id} data-model-id={id} data-dragging={dragging === id} data-drop-target={dropTarget === id && dragging !== id}><div className={styles.modelLine}>
           <div className={styles.modelIdentity} role={model ? "button" : undefined} tabIndex={model ? 0 : undefined} aria-label={model ? `${dragLabel}: ${id}` : undefined} title={model ? dragLabel : undefined}
             onPointerDown={e => { if (!model || locked || changed || e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); const current = { id, target: id, active: false, timer: setTimeout(() => { current.active = true; setDragging(id); }, 250) }; drag.current = current; }}
             onPointerMove={e => { const current = drag.current; if (!current?.active) return; const target = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-model-id]")?.dataset.modelId; if (target && models.some(m => m.id === target)) { current.target = target; setDropTarget(target); } }}
             onPointerUp={() => finishDrag()} onPointerCancel={() => finishDrag(true)} onLostPointerCapture={() => finishDrag(true)}
             onKeyDown={e => { if (e.key === "Escape") finishDrag(true); if (!e.altKey || !["ArrowUp", "ArrowDown"].includes(e.key)) return; e.preventDefault(); const index = models.findIndex(m => m.id === id), target = models[index + (e.key === "ArrowUp" ? -1 : 1)]; if (target) void reorder(id, target.id); }}>
-            <span>{model?.name || row?.name || id}</span>{model?.contextWindow && <small className={styles.contextBadge} title={`${c.context}: ${Intl.NumberFormat().format(model.contextWindow)}`}>{model.contextWindow >= 1000000 ? `${Number((model.contextWindow / 1000000).toFixed(1))}M` : model.contextWindow >= 1000 ? `${Number((model.contextWindow / 1000).toFixed(1))}K` : model.contextWindow}</small>}{model?.input?.includes("image") && <small className={styles.contextBadge}>{locale === "zh-CN" ? "视觉" : "Vision"}</small>}{isDefault && <small className="model-default-badge">{c.defaultBadge}</small>}</div>
+            <span>{model?.name || row?.name || id}</span>{model?.contextWindow && <small className={styles.contextBadge} title={`${c.context}: ${Intl.NumberFormat().format(model.contextWindow)}`}>{model.contextWindow >= 1000000 ? `${Number((model.contextWindow / 1000000).toFixed(1))}M` : model.contextWindow >= 1000 ? `${Number((model.contextWindow / 1000).toFixed(1))}K` : model.contextWindow}</small>}{effectiveImage && <small className={styles.contextBadge}>{locale === "zh-CN" ? "视觉" : "Vision"}</small>}{isDefault && <small className="model-default-badge">{c.defaultBadge}</small>}</div>
           {initialName && <button type="button" className={styles.button} aria-label={`${isDefault ? c.currentDefault : c.setDefault} ${id}`} aria-pressed={isDefault} title={!row?.enabled ? (locale === "zh-CN" ? "请先启用模型并确认连接和模型配置可用" : "Enable the model and check its connection and configuration first") : undefined} disabled={locked || changed || !row?.enabled || isDefault} onClick={() => onScope("set-default", id)}>{isDefault ? c.currentDefault : c.setDefault}</button>}
           {model && <IconButton label={`${c.test} ${id}`} tooltip={locale === "zh-CN" ? "测试连接" : "Test connection"} icon="test" disabled={locked || testing !== null} onClick={() => void testModel(model)} />}
           {model && <><IconButton label={`${c.edit} ${id}`} icon="edit" disabled={locked} onClick={() => setEditing(model)} /><IconButton label={`${c.remove} ${id}`} icon="trash" disabled={locked || changed} onClick={() => onRemove(id)} /></>}
@@ -364,27 +428,53 @@ function ProviderPanel({ c, existingNames, initialName, initial, scope, busy, sa
     {!!ids.length && <p className={styles.footnote}>{c.testHint}</p>}
     {toast && <div className={styles.testToast} role="status">✓ {toast}</div>}
     {scope?.projectOverride && <p className={styles.hint}>{c.syncedWarning}</p>}
-    {editing && <ModelDialog c={c} model={editing} provider={provider} providerName={name.trim()} existingIds={models.map(m => m.id)} busy={busy} saveError={saveError} onClose={() => setEditing(null)} onSave={async model => {
+    {editing && <ModelDialog c={c} model={editing} provider={provider} providerName={name.trim()} existingIds={models.map(m => m.id)} busy={busy} saveError={saveError} autoFocusImage={editingFocusImage} onClose={() => { setEditing(null); setEditingFocusImage(false); }} onSave={async model => {
       const exists = !!editing.id;
-      if (await save({ ...provider, models: exists ? models.map(m => m.id === editing.id ? model : m) : [...models, model] }, exists ? [] : [model])) setEditing(null);
+      if (await save({ ...provider, models: exists ? models.map(m => m.id === editing.id ? model : m) : [...models, model] }, exists ? [] : [model])) { setEditing(null); setEditingFocusImage(false); }
     }} />}
     {importing && <ImportDialog c={c} providerName={name} onProviderNameChange={value => { setName(value); setChanged(true); onDirty(true); }} incoming={importing} existingIds={models.map(m => m.id)} busy={busy} saveError={saveError} onClose={() => setImporting(null)} onSave={async additions => { if (await save({ ...provider, models: [...models, ...additions] }, additions)) setImporting(null); }} />}
   </>;
 }
 
-function BuiltinPanel({ c, id, name, api, oauth, scope, busy, onRefresh, onScope, onRemove }: {
-  c: Text; id: string; name: string; api?: ApiKeyProvider; oauth?: OAuthProvider; scope: ModelScopeResponse | null; busy: boolean;
-  onRefresh: () => void; onScope: (action: string, id?: string) => void; onRemove: () => Promise<void>;
+function BuiltinPanel({ c, id, name, api, oauth, scope, imageCapabilities, busy, onRefresh, onScope, onToggleImageInput, onRemove, focusModelId, onFocusHandled }: {
+  c: Text; id: string; name: string; api?: ApiKeyProvider; oauth?: OAuthProvider; scope: ModelScopeResponse | null; imageCapabilities: Record<string, boolean>; busy: boolean;
+  onRefresh: () => void; onScope: (action: string, id?: string) => void; onToggleImageInput: (modelId: string, enabled: boolean) => Promise<void>; onRemove: () => Promise<void>;
+  focusModelId?: string; onFocusHandled?: () => void;
 }) {
   const [mode, setMode] = useState(oauth?.loggedIn || !api ? "oauth" : "api");
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const listRef = useRef<HTMLDivElement>(null);
   const models = (scope?.models ?? []).filter(m => m.provider === id), enabled = models.some(m => m.enabled);
+  useEffect(() => {
+    if (!focusModelId) return;
+    const container = listRef.current;
+    if (!container) return;
+    const candidates = Array.from(container.querySelectorAll<HTMLInputElement>("[data-model-image-toggle]"));
+    const target = candidates.find((el) => el.dataset.modelImageToggle === focusModelId);
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      target.focus();
+    }
+    onFocusHandled?.();
+  }, [focusModelId, models.length, onFocusHandled]);
   return <><div className={styles.providerHeader}><ModelProviderIcon provider={id} size={20} /><h3>{name}</h3>{api && oauth && <select aria-label={c.settings} value={mode} onChange={e => setMode(e.target.value)}><option value="api">API Key</option><option value="oauth">OAuth</option></select>}<Toggle checked={enabled} label={enabled ? c.disableProvider : c.enableProvider} disabled={busy || !models.length || scope?.projectOverride} onChange={() => onScope(enabled ? "hide-provider" : "restore-provider")} /><IconButton label={t("models.removeProvider")} icon="trash" disabled={busy} onClick={() => void onRemove()} /></div>
     <div className={styles.auth}>{mode === "api" && api ? <ApiKeyDetail provider={api} onRefresh={onRefresh} /> : oauth ? <OAuthDetail provider={oauth} onRefresh={onRefresh} /> : null}</div>
-    <div className={styles.listHeading}>{c.models}</div><div className={styles.modelList}>{models.length ? models.map(model => {
+    <div className={styles.listHeading}>{c.models}</div><div className={styles.modelList} ref={listRef}>{models.length ? models.map(model => {
       const isDefault = scope?.effectiveDefault?.provider === id && scope.effectiveDefault.modelId === model.id;
+      const supportsImages = imageCapabilities[`${id}/${model.id}`] ?? false;
       return <div className={styles.modelRow} key={model.id} data-model-id={model.id}><div className={styles.modelLine}>
-        <div className={styles.modelIdentity}><span>{model.name || model.id}</span>{isDefault && <small className="model-default-badge">{c.defaultBadge}</small>}</div>
+        <div className={styles.modelIdentity}><span>{model.name || model.id}</span>{supportsImages && <small className={styles.contextBadge}>{locale === "zh-CN" ? "视觉" : "Vision"}</small>}{isDefault && <small className="model-default-badge">{c.defaultBadge}</small>}</div>
+        <label className={styles.check} style={{ margin: 0, fontSize: "var(--text-xs)" }}>
+          <input
+            type="checkbox"
+            data-model-image-toggle={model.id}
+            aria-label={`${c.image} ${model.id}`}
+            checked={supportsImages}
+            disabled={busy}
+            onChange={(event) => void onToggleImageInput(model.id, event.target.checked)}
+          />
+          {c.image}
+        </label>
         <button type="button" className={styles.button} aria-label={`${isDefault ? c.currentDefault : c.setDefault} ${model.id}`} aria-pressed={isDefault} disabled={busy || !model.enabled || isDefault} onClick={() => onScope("set-default", model.id)}>{isDefault ? c.currentDefault : c.setDefault}</button>
         <Toggle checked={model.enabled} label={`${model.enabled ? c.hideModel : c.enable} ${model.id}`} disabled={busy || scope?.projectOverride} onChange={() => onScope(model.enabled ? "hide" : "restore", model.id)} />
       </div></div>;
@@ -399,11 +489,20 @@ function Modal({ title, children, onClose, busy, c, className = "" }: { title: s
 function LimitInputs({ model, c, onChange }: { model: ModelEntry; c: Text; onChange: (patch: Partial<ModelEntry>) => void }) {
   return <><label className={styles.field}><span>{c.context}</span><input type="number" min="1" value={model.contextWindow ?? ""} onChange={e => onChange({ contextWindow: parseModelLimitDraft(e.target.value) })} /></label><label className={styles.field}><span>{c.output}</span><input type="number" min="1" value={model.maxTokens ?? ""} onChange={e => onChange({ maxTokens: parseModelLimitDraft(e.target.value) })} /></label></>;
 }
-function ModelDialog({ c, model, provider, providerName, existingIds, busy, onClose, onSave, saveError }: {
+function ModelDialog({ c, model, provider, providerName, existingIds, busy, onClose, onSave, saveError, autoFocusImage }: {
   c: Text; model: ModelEntry; provider: ProviderEntry; providerName: string; existingIds: string[]; busy: boolean; onClose: () => void; onSave: (next: ModelEntry) => Promise<void>;
   saveError: string | null;
+  autoFocusImage?: boolean;
 }) {
   const [draft, setDraft] = useState<ModelEntry>({ ...model });
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!autoFocusImage) return;
+    const el = imageInputRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.focus();
+  }, [autoFocusImage]);
   const [smart, setSmart] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -462,7 +561,7 @@ function ModelDialog({ c, model, provider, providerName, existingIds, busy, onCl
       <LimitInputs model={draft} c={c} onChange={change} />
       {fetching && <p className={styles.hint} role="status">{c.fetching}</p>}
       {discovered && !fetching && modelLimitProblem(draft) && <p className={styles.hint}>{c.limitsHint}</p>}
-      <label className={styles.check}><input type="checkbox" checked={draft.input?.includes("image") ?? false} onChange={e => change({ input: e.target.checked ? ["text", "image"] : ["text"] })} />{c.image}</label>
+      <label className={styles.check}><input ref={imageInputRef} data-focus-target="imageInput" type="checkbox" checked={draft.input?.includes("image") ?? false} onChange={e => change({ input: e.target.checked ? ["text", "image"] : ["text"] })} />{c.image}</label>
       <label className={styles.check}><input type="checkbox" checked={draft.reasoning ?? false} onChange={e => change({ reasoning: e.target.checked })} />{c.reasoning}</label>
       <details className={styles.advanced}><summary>{c.advanced}</summary><label className={styles.field}><span>{c.nameLabel}</span><input value={draft.name ?? ""} onChange={e => change({ name: e.target.value || undefined })} /></label><ModelSamplingEditor providerName={providerName} provider={provider} model={draft} onChange={change} /></details>
       {(error || saveError) && <div className={styles.error} role="alert"><ModelErrorText value={error || saveError || ""} /></div>}
