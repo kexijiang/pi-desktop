@@ -951,7 +951,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
         </div>
       )}
 
-      <BrowserHandoffNotice sessionId={session?.id} busy={sessionBusy} deferInitialFetch={sessionHydrating} onWaitingChange={setBrowserWaiting} />
+      <BrowserHandoffNotice sessionId={session?.id} busy={sessionBusy} visible={visible} deferInitialFetch={sessionHydrating} onWaitingChange={setBrowserWaiting} />
       {extensionDialog && extensionDialog.method !== "request_user_input" ? (
         <ExtensionDialog request={extensionDialog} onRespond={respondToExtensionUi} />
       ) : null}

@@ -1,4 +1,4 @@
-import { readBrowserUserWait, readBrowserUserWaitOutcome, resolveBrowserUserWait } from "@/lib/browser-user-wait";
+import { cancelBrowserUserWait, readBrowserUserWait, readBrowserUserWaitOutcome } from "@/lib/browser-user-wait";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { isValidSessionId } from "@/lib/session-file-references-core";
 import { resolveSessionPath } from "@/lib/session-reader";
@@ -30,10 +30,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const record = body && typeof body === "object" ? body as { decision?: unknown; toolCallId?: unknown } : {};
-  const decision = record.decision;
   const toolCallId = record.toolCallId;
-  if (decision !== "continue" && decision !== "cancel") {
-    return Response.json({ error: "decision must be continue or cancel" }, { status: 400 });
+  if (record.decision !== "cancel") {
+    return Response.json({ error: "decision must be cancel" }, { status: 400 });
   }
   if (typeof toolCallId !== "string" || toolCallId.length === 0) {
     return Response.json({ error: "toolCallId is required" }, { status: 400 });
@@ -45,12 +44,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (active.toolCallId !== toolCallId) {
     return Response.json({ error: "This browser wait is no longer active" }, { status: 409 });
   }
-  if (!resolveBrowserUserWait(id, decision, toolCallId)) {
+  if (!cancelBrowserUserWait(id, toolCallId)) {
     const latest = readBrowserUserWait(id);
     if (latest && latest.toolCallId !== toolCallId) {
       return Response.json({ error: "This browser wait is no longer active" }, { status: 409 });
     }
     return Response.json({ error: "No browser wait is active" }, { status: 404 });
   }
-  return Response.json({ ok: true, status: decision === "continue" ? "continued" : "cancelled" });
+  return Response.json({ ok: true, status: "cancelled" });
 }

@@ -126,6 +126,7 @@ interface BrowserAgentBinding {
   agentTabId(sessionId: string): string | null;
   status(sessionId: string): { tabId: string | null; operating: boolean; waiting: boolean; reason?: string; purpose?: "login" | "confirmation" };
   noteUsed(tabId: string): void;
+  noteUserInteraction(sessionId: string, tabId: string): void;
   idleTabIds(): string[];
   closeIdleTabs(): void;
   reclaimIdleTab(): void;
@@ -670,7 +671,14 @@ export class DesktopBrowserManager {
         if (new URL(url).origin === new URL(event.senderFrame.url).origin) event.returnValue = { allowed: this.credentialVault().allowedUrl(url) };
       } catch { /* Invalid renderer input stays denied. */ }
     });
+    const noteWaitInput = () => {
+      if (tab.view.webContents === contents) this.agentControl?.noteUserInteraction(tab.sessionId, tab.id);
+    };
+    contents.on("before-mouse-event", (_event, input) => {
+      if (input.type === "mouseDown" && input.button === "left") noteWaitInput();
+    });
     contents.on("before-input-event", (event, input) => {
+      if (input.type === "keyDown" && !input.isAutoRepeat && !input.control && !input.meta && !input.alt) noteWaitInput();
       if (input.type !== "keyDown" || !(input.control || input.meta) || input.alt) return;
       const key = input.key.toLowerCase();
       if (!["+", "=", "-", "0"].includes(key)) return;

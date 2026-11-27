@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const { webpack } = require('next/dist/compiled/webpack/webpack.js');
 const repo = path.resolve(import.meta.dirname, '../..');
 
-test('workspace menus and renderer dialogs suspend the native browser and restore the same page', { timeout: 120000 }, async () => {
+test('workspace overlays preserve the native page and workflow details use temporary tabs', { timeout: 120000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'piora-tool-menu-'));
   let browser;
   try {
@@ -24,6 +24,7 @@ import {useState} from 'react';import {createRoot} from 'react-dom/client';
 import {I18nProvider} from '@/hooks/useI18n';import {RightPanel} from '@/components/workspace/RightPanel';
 const noop=()=>{};function App(){const[tab,setTab]=useState('browser');const[active,setActive]=useState(true);
 return <I18nProvider><button id='outside'>Outside</button><button onClick={()=>setActive(v=>!v)}>Toggle panel</button>
+<button onClick={()=>setTab('plan')}>Open plan details</button><button onClick={()=>setTab('goal')}>Open goal details</button>
 <div id='file-panel' style={{height:'calc(100vh - 40px)',display:active?'flex':'none',flexDirection:'column'}}><RightPanel activeTab={tab} onActiveTabChange={setTab} active={active} maximized={false} onMaximizedChange={noop} onClosePanel={()=>setActive(false)} cwd={null} refreshKey={0} fileNavMode='tree' onFileNavModeChange={noop} runFileChanges={null} fileTabs={[]} activeFileTabId={null} canReopenClosedFileTab={false} onSelectFileTab={noop} onCloseFileTab={noop} onCloseOtherFileTabs={noop} onCloseFileTabsToRight={noop} onMoveFileTab={noop} onReopenClosedFileTab={noop} onOpenFile={noop} onDirtyChange={noop} onRefresh={noop} onMention={noop} onMentions={noop} onMentionLines={noop} selectedAutomationId={null} sessionId='fixture' capabilities={null}/></div></I18nProvider>}
 createRoot(document.getElementById('root')).render(<App/>);`);
     const alias = Object.fromEntries(['../FileExplorer', '../FileViewer', '../TabBar', './ReviewPanel', './CommandPanel', './HarmonyPanel', '../AutomationPanel', './SSHPanel', './design-to-harmony/DesignToHarmonyPanel', 'next/dynamic'].map(name => [name + '$', stubs]));
@@ -57,6 +58,10 @@ createRoot(document.getElementById('root')).render(<App/>);`);
         const pathname = new URL(route.request().url()).pathname;
         if (pathname.endsWith('.js')) return route.fulfill({ contentType: 'text/javascript', body: await readFile(path.join(directory, path.basename(pathname))) });
         if (pathname.startsWith('/fonts/')) return route.fulfill({ status: 404, body: '' });
+        const snapshot = { sessionId: 'fixture', revision: 1, mode: 'default', turnBudget: 12, current: null, history: [] };
+        if (pathname === '/api/agent/fixture/workflow/plan') return route.fulfill({ json: { plan: null, snapshot } });
+        if (pathname === '/api/agent/fixture/workflow') return route.fulfill({ json: snapshot });
+        if (pathname === '/api/settings/laboratory') return route.fulfill({ json: { planGoalEnabled: true } });
         return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset='utf-8'><style>${css}</style><div id='root'></div><script src='/bundle.js'></script>` });
       });
       await page.goto('https://tool-menu.test/');
@@ -155,6 +160,24 @@ createRoot(document.getElementById('root')).render(<App/>);`);
       await page.evaluate(() => document.getElementById('anchored-popup').remove());
       await nativeVisible(true);
       assert.deepEqual(await page.evaluate(() => window.nativeActions), actionsBeforeDialogs, 'portals hide the existing view without starting browser navigation');
+
+      const planTab = page.locator('#workspace-plan-tab');
+      const goalTab = page.locator('#workspace-goal-tab');
+      assert.equal(await planTab.count(), 0);
+      assert.equal(await goalTab.count(), 0);
+      await page.getByRole('button', { name: 'Open plan details', exact: true }).click();
+      await page.getByTestId('plan-side-panel-empty').waitFor();
+      assert.equal(await planTab.getAttribute('aria-selected'), 'true');
+      await page.locator('#workspace-browser-tab').click();
+      await nativeVisible(true);
+      await planTab.waitFor({ state: 'detached' });
+      await page.getByRole('button', { name: 'Open goal details', exact: true }).click();
+      await goalTab.waitFor();
+      assert.equal(await goalTab.getAttribute('aria-selected'), 'true');
+      assert.equal(await planTab.count(), 0);
+      await page.locator('#workspace-goal-tab + button').click();
+      await goalTab.waitFor({ state: 'detached' });
+      assert.equal(await page.locator('#workspace-commands-tab').getAttribute('aria-selected'), 'true');
       assert.deepEqual(errors, []);
       await page.close();
     }

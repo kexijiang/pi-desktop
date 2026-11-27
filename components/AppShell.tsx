@@ -22,6 +22,7 @@ import { useRunFileChanges } from "./workspace/useRunFileChanges";
 import { AnswerLinkProvider } from "./AnswerLinkProvider";
 import { useAnswerLinkNavigation } from "@/hooks/useAnswerLinkNavigation";
 import { useBrowserPanelNavigation } from "@/hooks/useBrowserPanelNavigation";
+import { isWorkflowSidePanelTab, OPEN_WORKFLOW_PANEL_EVENT, type OpenWorkflowPanelDetail } from "./workflow/workflow-events";
 import type { RoomWorkspaceHandle } from "./RoomWorkspace";
 import type { SettingsKey } from "@/lib/settings-search";
 import { useTheme } from "@/hooks/useTheme";
@@ -306,10 +307,17 @@ export function AppShell() {
   // Keep the server and first client render identical. The persisted tab is
   // restored after hydration so React never has to replace this subtree.
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("home");
-  useBrowserPanelNavigation(
-    selectedRoom ? `room:${selectedRoom.id}:${roomPanelMember?.binding.sessionId ?? ""}` : `chat:${selectedSession?.id ?? `new:${sessionKey}`}`,
-    rightPanelTab, setRightPanelOpen,
-  );
+  const rightPanelSessionId = selectedRoom ? roomPanelMember?.binding.sessionId : selectedSession?.id;
+  const rightPanelScope = selectedRoom ? `room:${selectedRoom.id}:${rightPanelSessionId ?? ""}` : `chat:${rightPanelSessionId ?? `new:${sessionKey}`}`;
+  useBrowserPanelNavigation(rightPanelScope, rightPanelTab, setRightPanelOpen);
+  const previousRightPanelScope = useRef(rightPanelScope);
+  useEffect(() => {
+    const scopeChanged = previousRightPanelScope.current !== rightPanelScope;
+    previousRightPanelScope.current = rightPanelScope;
+    if (scopeChanged || !rightPanelOpen) {
+      setRightPanelTab(tab => isWorkflowSidePanelTab(tab) ? "home" : tab);
+    }
+  }, [rightPanelOpen, rightPanelScope]);
   const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
   const [restoredSideChatTab, setRestoredSideChatTab] = useState<SideChatTabId | null>(null);
   const showAnswerBrowser = useCallback(() => { setRightPanelTab("browser"); setRightPanelOpen(true); }, []);
@@ -451,6 +459,7 @@ export function AppShell() {
     if (!rightPanelTabRestored) return;
     if (rightPanelTab === "home" && restoredSideChatTab !== null) return;
     if (parseSideChatTabId(rightPanelTab)?.kind === "loading") return;
+    if (isWorkflowSidePanelTab(rightPanelTab)) return;
     window.localStorage.setItem("piora-right-panel-tab", rightPanelTab);
   }, [restoredSideChatTab, rightPanelTab, rightPanelTabRestored]);
 
@@ -1975,25 +1984,25 @@ export function AppShell() {
   useEffect(() => {
     const onOpenAgentBrowser = (event: Event) => {
       const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
-      if (!sessionId) return;
+      if (!sessionId || sessionId !== rightPanelSessionId) return;
       setRightPanelTab("browser");
       setRightPanelOpen(true);
       requestAnimationFrame(() => rightPanelRef.current?.focusActiveTab());
     };
     const onOpenWorkflowPanel = (event: Event) => {
-      const tab = (event as CustomEvent<{ tab?: "plan" | "goal" }>).detail?.tab;
-      if (tab !== "plan" && tab !== "goal") return;
-      setRightPanelTab(tab);
+      const detail = (event as CustomEvent<OpenWorkflowPanelDetail>).detail;
+      if (!isWorkflowSidePanelTab(detail?.tab) || (detail.sessionId && detail.sessionId !== rightPanelSessionId)) return;
+      setRightPanelTab(detail.tab);
       setRightPanelOpen(true);
       requestAnimationFrame(() => rightPanelRef.current?.focusActiveTab());
     };
     window.addEventListener("piora:open-agent-browser", onOpenAgentBrowser);
-    window.addEventListener("piora:open-workflow-panel", onOpenWorkflowPanel);
+    window.addEventListener(OPEN_WORKFLOW_PANEL_EVENT, onOpenWorkflowPanel);
     return () => {
       window.removeEventListener("piora:open-agent-browser", onOpenAgentBrowser);
-      window.removeEventListener("piora:open-workflow-panel", onOpenWorkflowPanel);
+      window.removeEventListener(OPEN_WORKFLOW_PANEL_EVENT, onOpenWorkflowPanel);
     };
-  }, []);
+  }, [rightPanelSessionId]);
 
   const sideChatSettings = useSideChatSettings();
   const sideChatEnabled = sideChatSettings.enabled && !selectedRoom;
@@ -3333,7 +3342,7 @@ export function AppShell() {
               {selectedRoom.members.map((member) => <option key={member.memberId} value={member.binding.sessionId}>{member.profile.name}</option>)}
             </select>
           </div> : undefined}
-          sessionId={selectedRoom ? roomPanelMember?.binding.sessionId ?? null : selectedSession?.id ?? null}
+          sessionId={rightPanelSessionId ?? null}
           sessionName={selectedRoom ? roomPanelMember?.profile.name : selectedSession?.name}
           sessionRunning={Boolean(taskControls?.disabled)}
           onOpenShellSettings={handleOpenShellSettings}

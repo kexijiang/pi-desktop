@@ -79,20 +79,20 @@ test("command cards expose exit-code conflicts, warnings and unknown receipts wi
   assert.doesNotMatch(success, /is-failed|is-warning/);
 });
 
-test("a non-login handoff preserves its reason and explicit confirmation buttons", () => {
+test("a non-login handoff preserves its reason and only offers cancellation", () => {
   const message = { role: "assistant", content: [{ type: "toolCall", toolCallId: "wait-1", toolName: "browser", input: { action: "wait_for_user", reason: "请完成登录", purpose: "confirmation" } }] };
   const running = renderMessage(message, { sessionId: "550e8400-e29b-41d4-a716-446655440000" });
   assert.match(running, /请完成登录/);
-  assert.match(running, /我已完成，继续/);
+  assert.doesNotMatch(running, /我已完成，继续/);
   assert.match(running, /取消/);
   assert.doesNotMatch(running, /打开浏览器/);
   const finished = renderMessage(message, { toolResults: new Map([["wait-1", {
     role: "toolResult",
     toolCallId: "wait-1",
-    content: [{ type: "text", text: "User reported done. Take a new snapshot before continuing." }],
+    content: [{ type: "text", text: "The browser is ready to check again." }],
     details: { status: "continued", backend: "desktop" },
   }]]) });
-  assert.match(finished, /你已完成/);
+  assert.match(finished, /页面已更新，Agent 将继续检查/);
   assert.doesNotMatch(finished, /我已完成，继续/);
   const unsupported = renderMessage(message, { toolResults: new Map([["wait-1", {
     role: "toolResult",
@@ -100,15 +100,10 @@ test("a non-login handoff preserves its reason and explicit confirmation buttons
     content: [{ type: "text", text: "The user cannot take over the browser in this mode." }],
     details: { status: "unsupported", backend: "playwright" },
   }]]) });
-  assert.match(unsupported, /当前模式下无法在浏览器里登录/);
+  assert.match(unsupported, /当前浏览器模式无法手动操作页面/);
   assert.doesNotMatch(unsupported, /我已完成，继续/);
   assert.doesNotMatch(unsupported, /取消/);
   assert.doesNotMatch(unsupported, /打开浏览器/);
-  const card = readFileSync(new URL("./BrowserUserWaitCard.tsx", import.meta.url), "utf8");
-  assert.match(card, /backend === "desktop"/);
-  assert.match(card, /piora:open-agent-browser/);
-  assert.match(card, /JSON\.stringify\(\{ decision, toolCallId \}\)/);
-  assert.match(card, /status === "unsupported"/);
 });
 
 test("nested tool history restores bounded summaries without inventing child output or success", () => {

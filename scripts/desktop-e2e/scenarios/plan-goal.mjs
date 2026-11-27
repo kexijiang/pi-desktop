@@ -15,6 +15,7 @@ export const planGoal = {
     'zero persistent footer mode picker; Plan and Goal entry via + menu, /plan, /goal and removable mode pills',
     'runtime denial of an attempted Plan write',
     'ProposedPlanCard in transcript, editable PLAN.md side panel, and inline ImplementPlanCard confirmation',
+    'Plan and Goal details are opened from chat and disappear from the tab strip when dismissed',
     'immutable plan revision and one-shot real SDK write after UI approval',
     'Goal drafting mode, single-line GoalComposerRail, GoalSidePanelTab budget guardrails, and GoalAchievedBadge',
     'pause, refresh, resume and cancel',
@@ -186,10 +187,15 @@ export const planGoal = {
         await page.getByTestId('proposed-plan-card').waitFor({ state: 'visible' });
         await page.getByTestId('implement-plan-card').waitFor({ state: 'visible' });
         await waitUntil(() => page.getByTestId('workflow-plan-approve').isEnabled(), 'plan confirmation control to become ready');
+        assert.equal(await page.locator('#workspace-plan-tab, #workspace-goal-tab').count(), 0);
         await screenshot('plan-awaiting-approval.png');
         await page.getByTestId('workflow-plan-open-editor').click();
         await page.getByTestId('plan-side-panel').waitFor({ state: 'visible' });
         await screenshot('plan-side-panel-editor.png');
+        await page.locator('#workspace-plan-tab + button').click();
+        await page.locator('#workspace-plan-tab').waitFor({ state: 'detached' });
+        await page.getByTestId('proposed-plan-open-editor').click();
+        await page.getByTestId('plan-side-panel').waitFor({ state: 'visible' });
       });
 
       let firstPlan;
@@ -232,6 +238,7 @@ export const planGoal = {
       await step('plan-refresh-and-revise', async () => {
         firstPlan = (await snapshot()).current;
         await reload();
+        assert.equal(await page.locator('#workspace-plan-tab, #workspace-goal-tab').count(), 0, 'Refreshing does not restore a workflow tab');
         const restored = await stateIs('awaiting_approval');
         assert.equal(restored.current.id, firstPlan.id);
         assert.equal(restored.current.markdown, firstPlan.markdown);
@@ -282,6 +289,11 @@ export const planGoal = {
 
       await step('goal-budget-edit-does-not-resume', async () => {
         const before = fixture.requests.filter(request => request.workflow).length;
+        await openGoalSidePanel();
+        await page.locator('.right-panel-chrome').getByRole('button', { name: /^(隐藏文件面板|Hide file panel)$/ }).click();
+        await page.locator('#workspace-goal-tab').waitFor({ state: 'detached' });
+        await page.getByRole('button', { name: /^(显示文件面板|Show file panel)$/ }).click();
+        assert.equal(await page.locator('#workspace-goal-tab').count(), 0, 'Reopening the sidebar does not restore Goal details');
         await openGoalSidePanel();
         const currentBudget = (await snapshot()).current.turnBudget;
         await page.getByTestId('workflow-run-budget-input').fill(String(currentBudget + 2));
