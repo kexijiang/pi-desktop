@@ -12,6 +12,7 @@ export class AgentCommandError extends Error {
     message: string,
     public readonly status: number,
     public readonly code?: string,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "AgentCommandError";
@@ -99,10 +100,11 @@ export async function sendAgentCommand<T = unknown>(
       data?: T;
       error?: string;
       code?: string;
+      errorDetails?: Record<string, unknown>;
     };
     controller.signal.throwIfAborted();
     if (!res.ok || body.error) {
-      throw new AgentCommandError(body.error ?? `HTTP ${res.status}`, res.status, body.code);
+      throw new AgentCommandError(body.error ?? `HTTP ${res.status}`, res.status, body.code, body.errorDetails);
     }
     return body.data as T;
   } finally {

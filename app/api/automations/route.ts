@@ -30,16 +30,42 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { resolveOrStartRpcSession } = await import("@/lib/session-runtime-resolver");
+    const { getRpcSession } = await import("@/lib/rpc-manager");
+    const { resolveSessionPath, invalidateSessionListCache } = await import("@/lib/session-reader");
+    const { resolveSessionAgentRuntimeProfile } = await import("@/lib/agent-profile-store");
+    const { getAgentRuntimeProfile } = await import("@/lib/agent-runtime-profile");
+    const { SessionManager } = await import("@earendil-works/pi-coding-agent");
     const body = await parseJsonWithinLimit(request, MAX_BODY_BYTES) as CreateAutomationInput;
     if (!body || typeof body !== "object") throw new Error("Automation input is required.");
-    if (body.kind === "heartbeat" && body.target?.type === "session") await resolveOrStartRpcSession(body.target.sessionId);
+    const validateTargetSession = async (sessionId: string) => {
+      const live = getRpcSession(sessionId);
+      if (live?.isAlive()) {
+        await resolveSessionAgentRuntimeProfile(sessionId, getAgentRuntimeProfile());
+        return { live, filePath: live.sessionFile };
+      }
+      const filePath = await resolveSessionPath(sessionId);
+      if (!filePath) throw new Error("Session not found.");
+      await resolveSessionAgentRuntimeProfile(sessionId, getAgentRuntimeProfile());
+      return { live: undefined, filePath };
+    };
+    let targetHandle: { live: ReturnType<typeof getRpcSession> | undefined; filePath: string | null } | undefined;
+    if (body.target?.type === "session") {
+      targetHandle = await validateTargetSession(body.target.sessionId);
+    }
     const store = getAutomationStore();
     const automation = await store.create(body);
     if (automation.target.type === "session") {
       try {
-        const { session } = await resolveOrStartRpcSession(automation.target.sessionId);
-        session.appendAutomationCard({ automationId: automation.id, name: automation.name, rrule: automation.rrule });
+        const handle = targetHandle ?? await validateTargetSession(automation.target.sessionId);
+        const card = { automationId: automation.id, name: automation.name, rrule: automation.rrule };
+        if (handle.live?.isAlive()) {
+          handle.live.appendAutomationCard(card);
+        } else if (handle.filePath) {
+          SessionManager.open(handle.filePath).appendCustomMessageEntry("piora-automation", "", true, card);
+          invalidateSessionListCache();
+        } else {
+          throw new Error("Session not found.");
+        }
       } catch (error) {
         // Do not return an error while silently leaving a task behind. A retry
         // must be able to create exactly one task and one visible chat card.

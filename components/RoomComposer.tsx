@@ -2,7 +2,7 @@
 
 import { useEffect, useImperativeHandle, useRef, useState, type Ref, type KeyboardEvent } from "react";
 import { clearDraft, deferDraftPersistence, getDraft, hydrateDraft, setDraft, type ChatDraft } from "@/lib/draft-store";
-import { confirmPendingPrompts, readPendingPrompts, savePendingPrompt, type PendingPrompt } from "@/lib/prompt-recovery";
+import { confirmPendingPrompts, dismissPendingPrompt, dismissPendingPrompts, PROMPT_RECOVERY_CONFIRMED_EVENT, readPendingPrompts, savePendingPrompt, type PendingPrompt } from "@/lib/prompt-recovery";
 import { storeBrowserFiles } from "@/lib/file-attachments";
 import { adjustRoomMentions } from "@/lib/room-composer";
 import { matchesSendShortcut, isPlainEnter } from "@/lib/send-shortcut";
@@ -26,11 +26,39 @@ function recoveryRecord(scope: string, draft: ChatDraft, actorSessionId: string)
     draft: { ...draft, roomInput: { intent: "auto", mentions: [], ...draft.roomInput, sessionId: draft.roomInput?.sessionId ?? actorSessionId } } };
 }
 
-function submissionInput(record: PendingPrompt, actorSessionId: string): RoomSubmissionInput {
+function resolveRecoverySessionId(
+  record: PendingPrompt,
+  actorSessionId: string,
+  memberSessionIds: ReadonlySet<string>,
+  submissions: readonly RoomSubmission[],
+): { sessionId: string; bindingInvalid: boolean } {
+  const savedSessionId = record.draft.roomInput?.sessionId;
+  if (savedSessionId && memberSessionIds.has(savedSessionId)) {
+    return { sessionId: savedSessionId, bindingInvalid: false };
+  }
+  const hasReceipt = submissions.some((item) => item.clientPromptId === record.id);
+  if (!hasReceipt && memberSessionIds.has(actorSessionId)) {
+    return { sessionId: actorSessionId, bindingInvalid: false };
+  }
+  return { sessionId: savedSessionId ?? actorSessionId, bindingInvalid: true };
+}
+
+function submissionInput(record: PendingPrompt, actorSessionId: string, memberSessionIds?: ReadonlySet<string>, submissions: readonly RoomSubmission[] = []): RoomSubmissionInput {
   const input = record.draft.roomInput;
-  return { sessionId: input?.sessionId ?? actorSessionId, clientPromptId: record.id, content: record.draft.value,
+  const sessionId = memberSessionIds
+    ? resolveRecoverySessionId(record, actorSessionId, memberSessionIds, submissions).sessionId
+    : (input?.sessionId ?? actorSessionId);
+  return { sessionId, clientPromptId: record.id, content: record.draft.value,
     intent: input?.intent ?? "auto", mentions: input?.mentions ?? [], replyTo: input?.reply?.id,
     attachments: record.draft.files.filter((file) => file.path).map((file) => ({ name: file.name, path: file.path! })) };
+}
+
+function formatRoomError(reason: unknown, t: (key: string) => string): string {
+  const raw = reason instanceof Error ? reason.message : String(reason);
+  if (/Session is not authorized for this Room\.|TEAM_INVALID_CONTEXT|你不在这个群聊中。/.test(raw)) {
+    return t("roomUx.sessionNotAuthorized");
+  }
+  return raw;
 }
 
 function receiptLabel(response: RoomSubmission, intent: RoomSubmissionInput["intent"]) {
@@ -55,6 +83,7 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
   const scope = `room:${room.id}`;
   const [draft, updateDraft] = useState<ChatDraft>(() => getDraft(scope) ?? { value: "", images: [], files: [] });
   const [busy, setBusy] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<string | null>(null);
@@ -79,19 +108,26 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
     const version = revision.current;
     void hydrateDraft(scope).then((saved) => {
       if (!disposed && revision.current === version && saved) { current.current = saved; updateDraft(saved); }
-    }).catch((reason) => { if (!disposed) setError(String(reason)); });
-    void readPendingPrompts(scope).then((records) => { if (!disposed) setPending(records); }).catch((reason) => { if (!disposed) setError(String(reason)); });
-    return () => { disposed = true; };
-  }, [scope]);
+    }).catch((reason) => { if (!disposed) setError(formatRoomError(reason, t)); });
+    void readPendingPrompts(scope).then((records) => { if (!disposed) setPending(records); }).catch((reason) => { if (!disposed) setError(formatRoomError(reason, t)); });
+    const onConfirmed = (event: Event) => {
+      const ids = (event as CustomEvent<unknown>).detail;
+      if (!Array.isArray(ids) || !ids.length) return;
+      const settled = new Set(ids.filter((item): item is string => typeof item === "string"));
+      if (settled.size) setPending((previous) => previous.filter((item) => !settled.has(item.id)));
+    };
+    window.addEventListener(PROMPT_RECOVERY_CONFIRMED_EVENT, onConfirmed);
+    return () => { disposed = true; window.removeEventListener(PROMPT_RECOVERY_CONFIRMED_EVENT, onConfirmed); };
+  }, [scope, t]);
 
   useEffect(() => {
     const ids = new Set(submissions.filter((item) => item.status === "delivered" || item.status === "queued").map((item) => item.clientPromptId));
     const confirmed = pending.filter((item) => ids.has(item.id)).map((item) => item.id);
     if (!confirmed.length) return;
     let disposed = false;
-    void confirmPendingPrompts(confirmed).then(() => { if (!disposed) setPending((previous) => previous.filter((item) => !ids.has(item.id))); }).catch((reason) => { if (!disposed) setError(String(reason)); });
+    void confirmPendingPrompts(confirmed).then(() => { if (!disposed) setPending((previous) => previous.filter((item) => !ids.has(item.id))); }).catch((reason) => { if (!disposed) setError(formatRoomError(reason, t)); });
     return () => { disposed = true; };
-  }, [submissions, pending]);
+  }, [submissions, pending, t]);
 
   const insertMention = (memberId: string, prompt?: string) => {
     const selected = room.members.find((member) => member.memberId === memberId);
@@ -129,8 +165,28 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
     ...room.members.map((member) => ({ id: member.memberId, name: member.profile.name, detail: t(`roomUx.${member.profile.role === "coordinator" ? "lead" : member.profile.role}`), member })),
   ].filter((candidate) => !query?.text || candidate.name.toLocaleLowerCase().includes(query.text.toLocaleLowerCase()));
 
+  const memberSessionIds = new Set(room.members.map((member) => member.binding.sessionId));
+
+  const dismissRecoveries = async (ids: readonly string[]) => {
+    if (!ids.length || sending.current || dismissing) return;
+    const key = scope;
+    setDismissing(true);
+    setError(null);
+    try {
+      if (ids.length === 1) await dismissPendingPrompt(ids[0]);
+      else await dismissPendingPrompts(ids);
+      if (currentScope.current !== key) return;
+      const removed = new Set(ids);
+      setPending((previous) => previous.filter((item) => !removed.has(item.id)));
+    } catch (reason) {
+      if (currentScope.current === key) setError(formatRoomError(reason, t));
+    } finally {
+      if (currentScope.current === key) setDismissing(false);
+    }
+  };
+
   const send = async (recovery?: PendingPrompt) => {
-    if (sending.current || uploading) return;
+    if (sending.current || uploading || dismissing) return;
     const original = recovery?.draft ?? current.current;
     if (!original.value.trim() && !original.files.length) return;
     const key = scope;
@@ -148,7 +204,7 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
         commit({ value: "", images: [], files: [] }); clearDraft(key); clearedAt = revision.current;
       }
       release(); setQuery(null);
-      const input = submissionInput(record, actorSessionId);
+      const input = submissionInput(record, actorSessionId, memberSessionIds, submissions);
       const response = await onSubmit(input);
       if (response.status === "error") throw new Error(response.error ?? t("roomUx.failed"));
       const confirmed = isConfirmed(response);
@@ -159,7 +215,7 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
     } catch (reason) {
       if (currentScope.current !== key) return;
       if (clearedAt !== undefined && revision.current === clearedAt && !current.current.value && !current.current.files.length) commit(original);
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatRoomError(reason, t));
     } finally {
       release(); sending.current = false;
       if (currentScope.current === key) { setBusy(false); focus(); }
@@ -188,10 +244,26 @@ export function RoomComposer({ room, actorSessionId, submissions, onSubmit, hand
   };
 
   const recoverable = pending.filter(record => !submissions.some(item => item.clientPromptId === record.id && item.status === "accepted"));
+  const actionDisabled = busy || dismissing;
   return <div className={`${styles.composerWrap} room-workspace-composer`}>
-    {recoverable.length ? <div className={styles.recoveryList}>{recoverable.map((record) => <div key={record.id} className={styles.recoveryRow}>
-      <span><strong>{t("roomUx.recover")}</strong><small>{record.draft.value.slice(0, 140)}</small></span><button type="button" disabled={busy} onClick={() => void send(record)}>{t("roomUx.retry")}</button>
-    </div>)}</div> : null}
+    {recoverable.length ? <div className={styles.recoveryList}>
+      {recoverable.length > 1 ? <div className={styles.recoveryHeader}>
+        <button type="button" disabled={actionDisabled} onClick={() => void dismissRecoveries(recoverable.map((item) => item.id))}>{t("roomUx.dismissAllRecovery")}</button>
+      </div> : null}
+      {recoverable.map((record) => {
+        const { bindingInvalid } = resolveRecoverySessionId(record, actorSessionId, memberSessionIds, submissions);
+        return <div key={record.id} className={styles.recoveryRow}>
+          <span>
+            <strong>{t(bindingInvalid ? "roomUx.recoveryBindingInvalid" : "roomUx.recover")}</strong>
+            <small>{record.draft.value.slice(0, 140)}</small>
+          </span>
+          <div className={styles.recoveryActions}>
+            {!bindingInvalid ? <button type="button" disabled={actionDisabled} onClick={() => void send(record)}>{t("roomUx.retry")}</button> : null}
+            <button type="button" className={styles.iconButton} disabled={actionDisabled} aria-label={t("roomUx.dismissRecovery")} title={t("roomUx.dismissRecovery")} onClick={() => void dismissRecoveries([record.id])}><AliIcon name="close" size={12} /></button>
+          </div>
+        </div>;
+      })}
+    </div> : null}
     {error ? <div className={styles.error} role="alert">{error}</div> : null}
     <div className={styles.composer}>
       {roomInput.reply ? <div className={styles.replyStrip}><AliIcon name="messages" size={15} /><span><strong>{t("roomUx.replying", { name: roomInput.reply.author.name ?? t("roomUx.participant") })}</strong><small>{roomInput.reply.content.slice(0, 130)}</small></span><button type="button" className={styles.iconButton} aria-label={t("roomUx.close")} onClick={() => commit({ ...draft, roomInput: { intent: "auto", mentions: roomInput.mentions } })}><AliIcon name="close" size={14} /></button></div> : null}

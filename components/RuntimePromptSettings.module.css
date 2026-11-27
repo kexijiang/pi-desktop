@@ -76,6 +76,58 @@
   line-height: 1.4;
 }
 
+.budgetGroup {
+  display: grid;
+  gap: 8px;
+  padding: 4px 14px 14px;
+}
+
+.budgetDescription {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.budgetToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.budgetGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.budgetField {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.budgetField input {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.budgetField input[aria-invalid="true"] {
+  border-color: var(--status-failed);
+}
+
+.budgetGroup > button {
+  justify-self: start;
+}
+
 .errorText {
   margin: 0;
   padding: 8px 16px 0;

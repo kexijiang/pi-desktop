@@ -25,6 +25,7 @@ import { useBrowserPanelNavigation } from "@/hooks/useBrowserPanelNavigation";
 import { isWorkflowSidePanelTab, OPEN_WORKFLOW_PANEL_EVENT, type OpenWorkflowPanelDetail } from "./workflow/workflow-events";
 import type { RoomWorkspaceHandle } from "./RoomWorkspace";
 import type { SettingsKey } from "@/lib/settings-search";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -288,6 +289,7 @@ export function AppShell() {
   const [onboardingPromptSubmittedKey, setOnboardingPromptSubmittedKey] = useState(0);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [mcpToolsFocus, setMcpToolsFocus] = useState<{ name: string; toolNames: string[] } | null>(null);
+  const [modelsFocus, setModelsFocus] = useState<ModelSettingsFocusTarget | null>(null);
   const [settingsKey, setSettingsKey] = useState<SettingsKey>("general");
   const [settingsItemId, setSettingsItemId] = useState<string>();
   const [historyDialogOpen, setHistoryDialogOpen] = useState(() => readHistoryLocation(searchParams ?? new URLSearchParams()).open);
@@ -628,7 +630,19 @@ export function AppShell() {
     };
   }, [openHistoryLink, openSettings]);
 
-  const openModelsSettings = useCallback(() => openSettings("models"), [openSettings]);
+  const openModelsSettings = useCallback((target?: ModelSettingsFocusTarget) => {
+    setModelsFocus(target ?? null);
+    openSettings("models");
+  }, [openSettings]);
+
+  useEffect(() => {
+    const onOpenModelsEvent = (event: Event) => {
+      const detail = (event as CustomEvent<ModelSettingsFocusTarget | undefined>).detail;
+      openModelsSettings(detail);
+    };
+    window.addEventListener("piora:open-models", onOpenModelsEvent);
+    return () => window.removeEventListener("piora:open-models", onOpenModelsEvent);
+  }, [openModelsSettings]);
 
   const openSessionStatsPanel = useCallback(() => {
     if (isMobile) setSidebarOpen(false);
@@ -2283,6 +2297,8 @@ export function AppShell() {
           <ModelsConfig
             embedded
             cwd={projectCwd ?? activeCwd ?? undefined}
+            focusTarget={modelsFocus}
+            onClearFocusTarget={() => setModelsFocus(null)}
             onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
             onClose={() => setSettingsKey("models")}
           />

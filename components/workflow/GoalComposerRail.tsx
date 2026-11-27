@@ -16,9 +16,11 @@ export interface GoalComposerRailProps {
   enabled: boolean;
   settingsReady?: boolean;
   error: string | null;
+  errorCode?: string | null;
   isMobile?: boolean;
   onAction: (action: WorkflowActionName) => Promise<boolean>;
   onRefresh: () => Promise<void>;
+  onResetCorrupt?: () => Promise<boolean>;
   onOpenEditModal: () => void;
 }
 
@@ -46,9 +48,11 @@ export function GoalComposerRail({
   enabled,
   settingsReady = true,
   error,
+  errorCode,
   isMobile = false,
   onAction,
   onRefresh,
+  onResetCorrupt,
   onOpenEditModal,
 }: GoalComposerRailProps) {
   const { t } = useI18n();
@@ -95,9 +99,22 @@ export function GoalComposerRail({
       {error && (
         <div className={styles.goalRailError} role="alert" data-testid="workflow-error">
           <span>{error}</span>
-          <button type="button" className={styles.btnGhost} onClick={() => void onRefresh()}>
-            {t("workflow.refresh")}
-          </button>
+          <div className={styles.goalRailErrorActions}>
+            {errorCode === "WORKFLOW_STATE_CORRUPT" && onResetCorrupt && (
+              <button
+                type="button"
+                className={styles.btnGhost}
+                data-testid="workflow-reset-corrupt"
+                disabled={busy || running}
+                onClick={() => void onResetCorrupt()}
+              >
+                {t("workflow.resetCorrupt")}
+              </button>
+            )}
+            <button type="button" className={styles.btnGhost} onClick={() => void onRefresh()}>
+              {t("workflow.refresh")}
+            </button>
+          </div>
         </div>
       )}
 

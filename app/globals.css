@@ -6119,3 +6119,6 @@ html.dark .material-icon-dark { display: inline; }
 /* The native modal window contributes the scrim while the actual webpage stays underneath. */
 html.piora-browser-dialog, html.piora-browser-dialog body { background: transparent !important; }
 html.piora-browser-dialog body::before, html.piora-browser-dialog body::after { display: none !important; }
+
+.context-usage-budget-hint { margin-top: 8px; padding: 8px 10px; display: grid; gap: 4px; border-radius: var(--radius-control); background: color-mix(in srgb, #f59e0b 12%, var(--bg)); color: var(--text-muted); font-size: var(--text-xs); line-height: 1.45; }
+.context-usage-budget-hint button { justify-self: start; border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }

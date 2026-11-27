@@ -31,6 +31,9 @@ import { ChatScrollRail } from "./ChatScrollRail";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem, type SlashCommandInfo } from "@/hooks/useAgentSession";
 import { TaskDuration } from "./TaskDuration";
+import { InterruptionNotice } from "./message-view/InterruptionNotice";
+import { hasTurnToolProgress, shouldShowTailInterruptionBanner } from "@/lib/prompt-interruption";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { responseTaskTimings } from "@/lib/response-task-timing";
 import { ToolReviewStatus } from "./ToolReviewStatus";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -88,7 +91,7 @@ interface Props {
   onSlashCommandsChange?: (commands: SlashCommandInfo[]) => void;
   onOpenAutomation?: (automationId: string) => void;
   onCapabilitiesChange?: (capabilities: SessionCapabilitiesState | null) => void;
-  onOpenModels?: () => void;
+  onOpenModels?: (target?: ModelSettingsFocusTarget) => void;
   onPromptSubmitted?: () => void;
   sideChatEnabled?: boolean;
   onOpenSideChat?: (request?: OpenSideChatRequest) => Promise<OpenSideChatResult> | OpenSideChatResult | void;
@@ -227,18 +230,18 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
     nestedCallsStore, loading, sessionHydrating, error, retrySessionLoad, messages, entryIds, modelChanges, streamState, replyHistorySettling, activeLeafId, switchHistoryBranch, forkHistoryQuestion,
     toolPermission, permissionSaving, handleToolPermission, toolReviews,
     agentRunning, backgroundSubagents, bashRunning, pendingBash, modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, thinkingLevel,
-    retryInfo, contextUsage, systemPromptBinding, systemPromptSelection, systemPromptSaving, forkingEntryId,
+    retryInfo, contextUsage, promptBudget, systemPromptBinding, systemPromptSelection, systemPromptSaving, forkingEntryId,
     isCompacting, compactionStartedAt, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading, slashCommandsError, commandCatalog, chatCommands, queuedMessages, capabilities,
     liveOutputFollowPaused,
     notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, liveWorkflowSnapshot,
     isAutoModelSelection,
-    agentPhase, interruptedRunId,
+    agentPhase, interruptedRunId, runInterruption,
     isNew,
     sessionIdRef, messagesEndRef, scrollContainerRef, activityClockRef, statusClock,
     lastUserMsgRef,
     pendingScrollToUserRef,
-    handleSend, handleAbort, handleWorkflowAction, handleFork, handleBranch, handleNavigate, handleRewindRecovery, handleModelChange, handleScrollToBottom, pauseHistoryFollow, handleDeleteMessage, deletingMessage,
+    handleSend, handleResumeInterrupted, handleDismissInterruption, handleAbort, handleWorkflowAction, handleFork, handleBranch, handleNavigate, handleRewindRecovery, handleModelChange, handleScrollToBottom, pauseHistoryFollow, handleDeleteMessage, deletingMessage,
     handleCompact, handleDismissCompactError, handleDismissCompactResult, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handlePendingInputAction,
     handleThinkingLevelChange, handleSystemPromptSelection, loadSlashCommands,
@@ -343,6 +346,23 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
     } finally { retryInFlight.current = false; setPreparingRetry(false); }
   }, [sessionBusy, session?.id, handleComposerSend, t]);
 
+  const handleRetryWithoutImages = useCallback(async (message: UserMessage, entryId?: string) => {
+    if (sessionBusy || retryInFlight.current) return;
+    const id = session?.id;
+    retryInFlight.current = true; setPreparingRetry(true);
+    try {
+      const payload = await prepareMessageRetry(message, async () => {
+        if (!id || !entryId) throw new Error(t("chat.longMessageUnavailable"));
+        const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/entries/${encodeURIComponent(entryId)}/prompt-material`);
+        const data = await response.json();
+        if (!response.ok || typeof data.content !== "string") throw new Error(data.error ?? `HTTP ${response.status}`);
+        return data.content;
+      });
+      if (retrySession.current !== id) return;
+      await handleComposerSend(payload.message, undefined, payload.files, undefined, payload.retryOfPromptIds, payload.commandInput);
+    } finally { retryInFlight.current = false; setPreparingRetry(false); }
+  }, [sessionBusy, session?.id, handleComposerSend, t]);
+
   useEffect(() => {
     if (!laboratory.ready || !isNew || !initialPrompt || sessionBusy || isAutoModelSelection && !(initialPrompt.commandInput?.inputMode !== "text" && initialPrompt.message.trimStart().startsWith("/"))) return;
     if (locallyClaimedInitialPromptRef.current === initialPrompt.id) return;
@@ -388,9 +408,6 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
   const latestBash = streamState.streamingMessage?.role === "bashExecution"
     ? streamState.streamingMessage as BashExecutionMessage : latestHistoricalBash;
   useEffect(() => { onSlashCommandsChange?.(slashCommands); }, [onSlashCommandsChange, slashCommands]);
-  useEffect(() => {
-    if (session?.id) void loadSlashCommands();
-  }, [loadSlashCommands, session?.id]);
 
   useEffect(() => {
     onTaskControlsChange?.({
@@ -800,6 +817,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
           enabled={laboratory.planGoalEnabled}
           settingsReady={laboratory.ready}
           error={!laboratory.ready && laboratory.error ? t("laboratory.error") : workflow.error}
+          errorCode={!laboratory.ready && laboratory.error ? null : workflow.loadErrorCode}
           isMobile={isMobile}
           userInputRequest={extensionDialog?.method === "request_user_input" ? extensionDialog : null}
           onRespondUserInput={respondToExtensionUi}
@@ -809,6 +827,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
           onAction={workflow.act}
           onAcceptSnapshot={workflow.accept}
           onRefresh={laboratory.ready ? workflow.refresh : laboratory.refresh}
+          onResetCorrupt={laboratory.ready ? workflow.resetCorrupt : undefined}
           onOpenTaskChanges={onOpenTaskChanges}
           onFocusComposer={() => chatInputRef?.current?.focus()}
           onEnterGoalDraft={(inlineObjective) => chatInputRef?.current?.enterGoalDraftMode(inlineObjective)}
@@ -865,6 +884,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
       modelList={modelList}
       modelError={modelError}
       onModelChange={sessionReadOnly ? undefined : handleModelChange}
+      onOpenModels={onOpenModels}
       onCompact={session && !sessionReadOnly ? handleCompact : undefined}
       onAbortCompaction={handleAbortCompaction}
       isCompacting={isCompacting}
@@ -888,6 +908,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
       draftKey={session?.id ?? newChatDraftKey}
       cwd={session?.cwd ?? newSessionCwd}
       contextUsage={contextUsage}
+      promptBudget={promptBudget}
       sessionStats={sessionStats}
       extensionStatuses={visibleExtensionStatuses}
     />
@@ -1028,13 +1049,25 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
               messages={messages} compactProcess={compactProcess} interruptionId={interruptedRunId} streamingMessage={streamState.isStreaming ? streamState.streamingMessage as AgentMessage : null} entryIds={entryIds} busy={sessionBusy} streaming={streamState.isStreaming}
               isNew={isNew} forkingEntryId={forkingEntryId} highlightedEntryId={highlightedEntryId}
               lastUserMsgRef={lastUserMsgRef} pendingScrollToUserRef={pendingScrollToUserRef} scrollContainer={scrollContainerRef} handleRef={historyRef}
-              modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile}
+              modelNames={modelNames} modelList={modelList} onSelectModel={sessionReadOnly ? undefined : handleModelChange} onOpenModels={onOpenModels} cwd={messageCwd} onOpenFile={onOpenFile}
               onBranch={deletingMessage || sessionReadOnly ? undefined : handleBranch} onFork={deletingMessage || sessionReadOnly ? undefined : handleFork} onNavigate={deletingMessage || sessionReadOnly ? undefined : handleNavigate} onEditContent={handleEditContent}
-              onEditFailed={handleEditFailedMessage} onRetry={handleRetryMessage} retryDisabled={sessionBusy || sessionReadOnly || deletingMessage || preparingRetry}
+              onEditFailed={handleEditFailedMessage} onRetry={handleRetryMessage} onRetryWithoutImages={handleRetryWithoutImages} retryDisabled={sessionBusy || sessionReadOnly || deletingMessage || preparingRetry}
               onDeleteMessage={handleDeleteMessage} deleteDisabled={sessionBusy || sessionReadOnly || deletingMessage || isCompacting || preparingRetry}
               sessionId={session?.id ?? sessionIdRef.current ?? undefined} onOpenAutomation={onOpenAutomation} onOpenCommandExecution={setCommandExecutionDialog}
               completedGoal={workflow.snapshot?.completedGoal ?? null}
+              runInterruption={runInterruption}
+              onContinueInterrupted={sessionBusy || sessionReadOnly ? undefined : handleResumeInterrupted}
             /> : null}
+
+            {!sessionBusy && !streamState.isStreaming && runInterruption && shouldShowTailInterruptionBanner(messages, runInterruption) && (
+              <InterruptionNotice
+                interruption={runInterruption}
+                hasToolProgress={messages.length > 0 ? hasTurnToolProgress(messages, messages.length - 1) : false}
+                disabled={sessionBusy || sessionReadOnly || deletingMessage || preparingRetry}
+                onContinue={sessionReadOnly ? undefined : handleResumeInterrupted}
+                onDismiss={handleDismissInterruption}
+              />
+            )}
 
             {agentRunning && (agentPhase?.kind === "stopping" || ((!streamState.streamingMessage || statusIdleMs >= STATUS_STALL_AFTER_MS) && visionStatus?.phase !== "failed")) && (
               visionStatus && agentPhase?.kind !== "stopping" ? (
@@ -1049,7 +1082,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
                 status={visionStatus}
                 t={t}
                 onRetry={visionRetryPayload ? retryVisionAnalysis : undefined}
-                onConfigure={onOpenModels}
+                onConfigure={onOpenModels ? () => onOpenModels() : undefined}
                 retryDisabled={sessionBusy}
               />
             )}

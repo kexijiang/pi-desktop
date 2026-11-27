@@ -5,7 +5,12 @@ import {
   type AgentTool,
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createTrustedModelServices } from "./model-runtime-context";
+import { resolveDefaultModelPreference } from "./model-policy";
+import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
+import { readDefaultModel } from "./default-model-store";
+import { readPendingSessionModel } from "./session-model-selection";
 import {
   SESSION_TITLE_PROMPT,
   buildQuerySessionTitlePrompt,
@@ -25,6 +30,37 @@ export interface GeneratedSessionTitle {
     cacheWrite: number;
     total: number;
   };
+}
+
+/** Read a saved transcript and provider context without starting a session's extensions or tools. */
+export async function createSavedSessionTitleAgent(
+  manager: SessionManager,
+  requested?: { provider: string; modelId: string },
+): Promise<Agent | null> {
+  const { modelRuntime, settingsManager } = await createTrustedModelServices(manager.getCwd(), "system");
+  const context = manager.buildSessionContext();
+  let model: Model<Api> | undefined;
+  if (requested) {
+    model = modelRuntime.getModel(requested.provider, requested.modelId);
+  } else {
+    const scope = await resolveVisibleModels(modelRuntime, settingsManager.getEnabledModels());
+    const defaultModel = resolveDefaultModelPreference({
+      models: scope.visible,
+      explicitDefault: readDefaultModel(),
+      settingsProvider: settingsManager.getDefaultProvider(),
+      settingsModel: settingsManager.getDefaultModel(),
+      environment: process.env,
+    });
+    model = selectInitialModelScope(scope, {
+      requestedModel: readPendingSessionModel(manager.getSessionId()) ?? context.model ?? undefined,
+      defaultModel: defaultModel ?? undefined,
+    }).model ?? undefined;
+  }
+  if (!model) return null;
+  return new Agent({
+    initialState: { model, messages: context.messages },
+    streamFn: modelRuntime.streamSimple.bind(modelRuntime),
+  });
 }
 
 function createShadowTools(tools: AgentTool[]): AgentTool[] {
@@ -258,7 +294,7 @@ export function sanitizeTitleMessages(messages: AgentMessage[]): AgentMessage[] 
 }
 
 export async function generateSessionTitle(
-  source: AgentSession,
+  source: Pick<AgentSession, "agent">,
   request: {
     instructions?: string;
     currentTitle?: string;

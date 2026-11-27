@@ -52,3 +52,26 @@ export function writeConfiguredImageInput(provider: string, id: string, enabled:
   mkdirSync(join(path, ".."), { recursive: true });
   writePrivateFileAtomicSync(path, `${JSON.stringify({ imageInput }, null, 2)}\n`);
 }
+
+/**
+ * Remove stale override entries when custom `models.json` explicitly saves a
+ * model's `input` array, preventing `model-capabilities.json` from silently
+ * contradicting what the user just saved in Model Settings.
+ */
+export function clearConfiguredImageInputOverrides(keys: Iterable<string>, baseDir?: string): boolean {
+  const config = readConfig(baseDir);
+  if (!config.imageInput) return false;
+  const imageInput = { ...config.imageInput };
+  let changed = false;
+  for (const key of keys) {
+    if (Object.hasOwn(imageInput, key)) {
+      delete imageInput[key];
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+  const path = configPath(baseDir);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writePrivateFileAtomicSync(path, `${JSON.stringify({ imageInput }, null, 2)}\n`);
+  return true;
+}

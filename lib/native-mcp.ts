@@ -5,7 +5,8 @@ import {
   createCodemodeExtension, createMcpExtension, createToolSearchExtension,
   type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type InlineExtension, type ToolExposure,
 } from "@earendil-works/pi-coding-agent";
-import { StdioTransport, StreamableHttpTransport, type McpTransport } from "@earendil-works/pi-mcp";
+import { StreamableHttpTransport, type McpTransport } from "@earendil-works/pi-mcp";
+import { ManagedMcpStdioTransport } from "./native-mcp/stdio-lifecycle";
 import {
   loadNativeMcpConfig, nativeMcpApprovalIdentity, readNativeMcpPreferences,
   writeNativeMcpPreferences, updateNativeMcpServer, validateNativeMcpConfig, type NativeMcpEntry, type NativeMcpOptions,
@@ -53,6 +54,8 @@ export class NativeMcpController {
   private loadedEnabled = false;
   private loadedRegisteredApprovals = new Map<string, boolean>();
   private shuttingDown = false;
+  private retirement?: Promise<void>;
+  private transports = new Set<McpTransport>();
   private states = new Map<string, NativeMcpServerState>();
   private entries = new Map<string, NativeMcpEntry>();
   private registeredApprovals = new Map<string, string>();
@@ -166,7 +169,20 @@ export class NativeMcpController {
     } catch { return false; }
   }
   private assertServerAuthorized(server: string): void {
+    if (this.retirement) throw new Error("Native MCP session has closed");
     if (!this.isServerAuthorized(server)) throw new Error("Native MCP connection authorization was revoked or its configuration changed. Reload after approving the current configuration.");
+  }
+
+  get activeTransportCount(): number {
+    return this.transports.size;
+  }
+
+  shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.nativeStarted = false;
+    return this.retirement ??= Promise.resolve().then(async () => {
+      await Promise.allSettled([...this.transports].map(async (transport) => transport.close()));
+    });
   }
   declarationNames(names: readonly string[], explicitlySelected = false): string[] {
     return names.filter(name => {
@@ -337,7 +353,10 @@ export class NativeMcpController {
     // owning /mcp replaces the native factory before any server connects.
     api.on = ((event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
       return Reflect.apply(pi.on, pi, [event, async (payload: unknown, ctx: ExtensionContext) => {
-        if (kind === "mcp" && event === "session_start") { this.nativeStarted = true; this.shuttingDown = false; }
+        if (kind === "mcp" && event === "session_start") {
+          if (this.retirement) return;
+          this.nativeStarted = true; this.shuttingDown = false;
+        }
         if (kind === "mcp" && event === "session_shutdown") { this.shuttingDown = true; this.nativeStarted = false; }
         try { return await handler(payload, this.context(ctx)); } catch { throw new Error("Native MCP extension operation failed"); }
       }]);
@@ -366,10 +385,11 @@ export class NativeMcpController {
         if (init?.method !== "DELETE" && !cancellation) this.assertServerAuthorized(entry.name);
         return globalThis.fetch(input, init);
       } });
-    return new StdioTransport({ command: expandHome(config.command), args: config.args?.map(expandHome),
+    return new ManagedMcpStdioTransport({ command: expandHome(config.command), args: config.args?.map(expandHome),
       cwd: resolve(cwd, expandHome(config.cwd ?? ".")), env: Object.fromEntries(Object.entries(config.env ?? {}).map(([key, value]) => [key, environmentValue(value)])), stderr: "pipe" });
   }
   private observeTransport(entry: NativeMcpEntry, transport: McpTransport): McpTransport {
+    this.transports.add(transport);
     if (!this.states.has(entry.name)) this.observeEntry(entry, true);
     const state = this.states.get(entry.name)!;
     const methods = new Map<string | number, string>();
@@ -393,7 +413,11 @@ export class NativeMcpController {
       }
       if ("id" in message && ("result" in message || "error" in message)) methods.delete(message.id!);
     });
-    transport.onClose(() => { if (!["needs-auth", "failed"].includes(state.state)) state.state = this.shuttingDown ? "closed" : "disconnected"; this.announce(); });
+    transport.onClose(() => {
+      this.transports.delete(transport);
+      if (!["needs-auth", "failed"].includes(state.state)) state.state = this.shuttingDown ? "closed" : "disconnected";
+      this.announce();
+    });
     transport.onError(() => { state.state = "failed"; this.announce(); });
     const start = transport.start.bind(transport), send = transport.send.bind(transport), close = transport.close.bind(transport);
     transport.start = async () => { this.assertServerAuthorized(entry.name); state.state = "connecting"; this.announce(); try { await start(); } catch (error) { state.state = "failed"; this.announce(); throw this.safeError(error); } };
@@ -401,7 +425,13 @@ export class NativeMcpController {
       state.state = /Auth|Unauthorized|AuthorizationRequired/.test(error instanceof Error ? error.name : "") ? "needs-auth" : "failed";
       this.announce(); throw this.safeError(error);
     } };
-    transport.close = async () => { try { await close(); } catch (error) { throw this.safeError(error); } if (!["needs-auth", "failed"].includes(state.state)) state.state = this.shuttingDown ? "closed" : "disconnected"; this.announce(); };
+    let closing: Promise<void> | undefined;
+    transport.close = () => closing ??= (async () => {
+      try { await close(); } catch (error) { throw this.safeError(error); }
+      finally { this.transports.delete(transport); }
+      if (!["needs-auth", "failed"].includes(state.state)) state.state = this.shuttingDown ? "closed" : "disconnected";
+      this.announce();
+    })();
     return transport;
   }
 }

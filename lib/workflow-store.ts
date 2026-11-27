@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file.ts";
 import { DEFAULT_WORKFLOW_TURN_BUDGET, type WorkflowRun, type WorkflowSnapshot } from "./workflow-types.ts";
 
 export interface WorkflowRecord { schemaVersion: 1; epoch: string; snapshot: WorkflowSnapshot; actions: string[] }
+export class WorkflowStateCorruptError extends Error {
+  readonly code = "WORKFLOW_STATE_CORRUPT";
+  readonly status = 500;
+  constructor(message = "Invalid workflow state; refusing to reset it") {
+    super(message);
+    this.name = "WorkflowStateCorruptError";
+  }
+}
 const host = globalThis as typeof globalThis & { __pioraWorkflowEpoch?: string };
 export const workflowEpoch = host.__pioraWorkflowEpoch ??= randomUUID();
 
@@ -40,11 +48,16 @@ export class WorkflowStore {
     let record: WorkflowRecord;
     try { record = JSON.parse(readFileSync(this.path(sessionId), "utf8")) as WorkflowRecord; }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return { schemaVersion: 1, epoch: workflowEpoch, actions: [], snapshot: { sessionId, revision: 0, mode: "agent", turnBudget: DEFAULT_WORKFLOW_TURN_BUDGET, current: null, history: [] } };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { schemaVersion: 1, epoch: workflowEpoch, actions: [], snapshot: { sessionId, revision: 0, mode: "agent", turnBudget: DEFAULT_WORKFLOW_TURN_BUDGET, current: null, history: [] } };
+      }
+      if (error instanceof SyntaxError) throw new WorkflowStateCorruptError("Invalid workflow state; refusing to reset it");
+      throw error;
     }
-    if (record.schemaVersion !== 1 || record.snapshot?.sessionId !== sessionId || !Number.isSafeInteger(record.snapshot.revision)
-      || !["agent", "plan", "goal"].includes(record.snapshot.mode) || !Array.isArray(record.snapshot.history) || !Array.isArray(record.actions)) throw new Error("Invalid workflow state; refusing to reset it");
+    if (!record || typeof record !== "object" || record.schemaVersion !== 1 || record.snapshot?.sessionId !== sessionId || !Number.isSafeInteger(record.snapshot.revision)
+      || !["agent", "plan", "goal"].includes(record.snapshot.mode) || !Array.isArray(record.snapshot.history) || !Array.isArray(record.actions)) {
+      throw new WorkflowStateCorruptError("Invalid workflow state; refusing to reset it");
+    }
     // Reading history never starts a model or replays an execution from a dead host.
     if (record.epoch !== workflowEpoch) {
       const now = Date.now();
@@ -70,6 +83,24 @@ export class WorkflowStore {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     writePrivateFileAtomicSync(path, JSON.stringify(record));
   }
+
+  resetCorruptState(sessionId: string): WorkflowRecord {
+    const target = this.path(sessionId);
+    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    if (existsSync(target)) {
+      const backup = join(this.directory, `${sessionId}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.bak`);
+      renameSync(target, backup);
+    }
+    const fresh: WorkflowRecord = {
+      schemaVersion: 1,
+      epoch: workflowEpoch,
+      actions: [],
+      snapshot: { sessionId, revision: 0, mode: "agent", turnBudget: DEFAULT_WORKFLOW_TURN_BUDGET, current: null, history: [] },
+    };
+    this.write(fresh);
+    return fresh;
+  }
 }
 
 export function readWorkflowSnapshot(sessionId: string): WorkflowSnapshot { return new WorkflowStore().read(sessionId).snapshot; }
+export function resetCorruptWorkflowState(sessionId: string): WorkflowSnapshot { return new WorkflowStore().resetCorruptState(sessionId).snapshot; }

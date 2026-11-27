@@ -3,7 +3,87 @@ import type { ContextUsage, ContextUsageBreakdown } from "./pi-types";
 import { estimateToolDefinitionPromptTokens } from "./tool-definition-budget.ts";
 
 const ESTIMATED_IMAGE_CHARS = 4_800;
-const PROJECT_CONTEXT_PATTERN = /(?:\r?\n)*<project_context>[\s\S]*?<\/project_context>(?:\r?\n)*/gi;
+const PROJECT_CONTEXT_PATTERN = /(?:^|\r?\n)<project_context>[\s\S]*?<\/project_context>(?=\r?\n|$)/gi;
+const SKILLS_SECTION_PATTERN = /(?:^|\r?\n)<skills>[\s\S]*?<\/skills>(?=\r?\n|$)/gi;
+const ADDENDUM_SECTION_PATTERN = /(?:^|\r?\n)<addendum>[\s\S]*?<\/addendum>(?=\r?\n|$)/gi;
+
+function replayStructuredSystemSections(messages: readonly unknown[]): Record<string, string> | null {
+  let sections: Record<string, string> | null = null;
+  for (const candidate of messages) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const message = candidate as Record<string, unknown>;
+    if (message.role !== "system") continue;
+    const content = typeof message.content === "string" ? message.content : "";
+    const patch = message.sections;
+    if (content.length > 0 && (!patch || typeof patch !== "object")) {
+      // Opaque / forced system prompt replaces structured sections.
+      sections = null;
+      continue;
+    }
+    if (patch && typeof patch === "object" && !Array.isArray(patch)) {
+      const record = patch as Record<string, unknown>;
+      if (!sections) {
+        if (typeof record.preamble !== "string") continue;
+        sections = {};
+      }
+      for (const [key, value] of Object.entries(record)) {
+        if (value === null) delete sections[key];
+        else if (typeof value === "string") sections[key] = value;
+      }
+    }
+  }
+  return sections && typeof sections.preamble === "string" ? sections : null;
+}
+
+function splitSystemPromptSections(
+  systemPrompt: string,
+  messages: readonly unknown[],
+): { baseSystemPrompt: string; projectContext: string; skills: string; addendum: string } {
+  const structured = replayStructuredSystemSections(messages);
+  if (structured) {
+    const projectContext = structured.project_context ?? "";
+    const skills = structured.skills ?? "";
+    const addendum = structured.addendum ?? "";
+    const baseParts: string[] = [];
+    for (const [key, value] of Object.entries(structured)) {
+      if (key === "project_context" || key === "skills" || key === "addendum") continue;
+      if (value) baseParts.push(value);
+    }
+    return {
+      baseSystemPrompt: baseParts.join("\n\n"),
+      projectContext,
+      skills,
+      addendum,
+    };
+  }
+
+  // Strip <project_context> first so literal <skills> or <addendum> tags inside
+  // AGENTS.md cannot be misclassified as top-level system prompt sections.
+  let projectContext = "";
+  let remaining = systemPrompt.replace(PROJECT_CONTEXT_PATTERN, (match) => {
+    projectContext += match;
+    return "";
+  });
+
+  let skills = "";
+  remaining = remaining.replace(SKILLS_SECTION_PATTERN, (match) => {
+    skills += match;
+    return "";
+  });
+
+  let addendum = "";
+  remaining = remaining.replace(ADDENDUM_SECTION_PATTERN, (match) => {
+    addendum += match;
+    return "";
+  });
+
+  return {
+    baseSystemPrompt: remaining,
+    projectContext,
+    skills,
+    addendum,
+  };
+}
 
 function safeStringify(value: unknown): string {
   try {
@@ -95,25 +175,28 @@ function estimateUnknownMessageTokens(value: unknown): number {
 }
 
 function reconcileBreakdown(raw: Omit<ContextUsageBreakdown, "otherRuntime">, totalTokens: number | null): ContextUsageBreakdown {
-  const rawTotal = Object.values(raw).reduce((sum, value) => sum + value, 0);
+  const rawTotal = Object.values(raw).reduce((sum, value) => sum + (value ?? 0), 0);
   if (totalTokens === null || totalTokens <= 0) return { ...raw, otherRuntime: 0 };
   if (rawTotal <= totalTokens) return { ...raw, otherRuntime: totalTokens - rawTotal };
   if (rawTotal === 0) return { ...raw, otherRuntime: totalTokens };
 
   const entries = Object.entries(raw) as Array<[keyof typeof raw, number]>;
   const scaled = entries.map(([key, value]) => {
-    const exact = value * totalTokens / rawTotal;
+    const exact = (value ?? 0) * totalTokens / rawTotal;
     return { exact, key, tokens: Math.floor(exact) };
   });
   let remaining = totalTokens - scaled.reduce((sum, entry) => sum + entry.tokens, 0);
   scaled.sort((a, b) => (b.exact - b.tokens) - (a.exact - a.tokens));
   for (let index = 0; index < scaled.length && remaining > 0; index += 1, remaining -= 1) scaled[index].tokens += 1;
+  const pick = (key: keyof typeof raw) => scaled.find((entry) => entry.key === key)?.tokens ?? 0;
   return {
-    conversationMessages: scaled.find((entry) => entry.key === "conversationMessages")?.tokens ?? 0,
+    conversationMessages: pick("conversationMessages"),
     otherRuntime: 0,
-    projectInstructions: scaled.find((entry) => entry.key === "projectInstructions")?.tokens ?? 0,
-    systemPrompt: scaled.find((entry) => entry.key === "systemPrompt")?.tokens ?? 0,
-    toolDefinitions: scaled.find((entry) => entry.key === "toolDefinitions")?.tokens ?? 0,
+    projectInstructions: pick("projectInstructions"),
+    systemPrompt: pick("systemPrompt"),
+    toolDefinitions: pick("toolDefinitions"),
+    skills: pick("skills"),
+    addendum: pick("addendum"),
   };
 }
 
@@ -123,11 +206,7 @@ export function estimateContextUsageBreakdown(input: {
   tools: readonly unknown[];
   totalTokens: number | null;
 }): ContextUsageBreakdown {
-  let projectContext = "";
-  const baseSystemPrompt = input.systemPrompt.replace(PROJECT_CONTEXT_PATTERN, (match) => {
-    projectContext += match;
-    return "";
-  });
+  const sections = splitSystemPromptSections(input.systemPrompt, input.messages);
   return reconcileBreakdown({
     // Structured Pi system entries are already counted through the effective
     // systemPrompt/tools above, including section and loadout updates.
@@ -135,12 +214,13 @@ export function estimateContextUsageBreakdown(input: {
       message && typeof message === "object" && "role" in message && message.role === "system"
         ? 0 : estimateUnknownMessageTokens(message)
     ), 0),
-    projectInstructions: estimateTextTokens(projectContext),
-    systemPrompt: estimateTextTokens(baseSystemPrompt),
+    projectInstructions: estimateTextTokens(sections.projectContext),
+    systemPrompt: estimateTextTokens(sections.baseSystemPrompt),
+    skills: estimateTextTokens(sections.skills),
+    addendum: estimateTextTokens(sections.addendum),
     toolDefinitions: estimateToolDefinitionPromptTokens(input.tools as Array<Record<string, unknown>>),
   }, input.totalTokens);
 }
-
 export function mergeContextUsageWithEstimate(
   usage: ContextUsage | null,
   estimate: ContextUsage | null,

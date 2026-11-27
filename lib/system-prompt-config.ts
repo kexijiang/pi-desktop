@@ -4,7 +4,11 @@ import { dirname, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { writePrivateFileAtomicSync } from "./atomic-file";
-import type { SystemPromptSelection, SystemPromptTemplate } from "./system-prompt-types";
+import type {
+  SystemPromptApplyMode,
+  SystemPromptSelection,
+  SystemPromptTemplate,
+} from "./system-prompt-types";
 
 const SYSTEM_PROMPT_CONFIG_VERSION = 2;
 const LEGACY_DEFAULT_TEMPLATE_ID = "legacy-global-default";
@@ -25,6 +29,7 @@ export interface ResolvedSystemPromptSelection {
   templateId: string | null;
   templateName: string | null;
   prompt: string | null;
+  applyMode: SystemPromptApplyMode;
 }
 
 interface LegacySystemPromptConfig {
@@ -66,6 +71,16 @@ function isTemplateId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value);
 }
 
+function validateApplyMode(mode: unknown): SystemPromptApplyMode {
+  if (mode === "append" || mode === "replace") return mode;
+  throw new Error('System prompt apply mode must be "append" or "replace".');
+}
+
+/** Stored templates created before applyMode existed keep their original replace semantics. */
+export function effectiveTemplateApplyMode(template: { applyMode?: unknown } | null | undefined): SystemPromptApplyMode {
+  return template?.applyMode === "append" ? "append" : "replace";
+}
+
 function normalizeStoredTemplate(value: unknown): SystemPromptTemplate | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Partial<SystemPromptTemplate>;
@@ -75,6 +90,7 @@ function normalizeStoredTemplate(value: unknown): SystemPromptTemplate | null {
       id: source.id,
       name: validateTemplateName(source.name),
       prompt: validatePrompt(source.prompt),
+      ...(source.applyMode === "append" || source.applyMode === "replace" ? { applyMode: source.applyMode } : {}),
       createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date(0).toISOString(),
       updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date(0).toISOString(),
     };
@@ -165,6 +181,7 @@ export function createSystemPromptTemplate(
   name: unknown,
   prompt: unknown,
   path = systemPromptConfigPath(),
+  options: { applyMode?: unknown } = {},
 ): SystemPromptConfig {
   const config = readSystemPromptConfig(path);
   if (config.templates.length >= SYSTEM_PROMPT_TEMPLATE_MAX_COUNT) {
@@ -177,6 +194,8 @@ export function createSystemPromptTemplate(
     id: randomUUID(),
     name: normalizedName,
     prompt: validatePrompt(prompt),
+    // New templates keep Pi's tools/rules/docs by default.
+    applyMode: options.applyMode === undefined ? "append" : validateApplyMode(options.applyMode),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -188,7 +207,7 @@ export function createSystemPromptTemplate(
 
 export function updateSystemPromptTemplate(
   id: unknown,
-  input: { name?: unknown; prompt?: unknown },
+  input: { name?: unknown; prompt?: unknown; applyMode?: unknown },
   path = systemPromptConfigPath(),
 ): SystemPromptConfig {
   if (!isTemplateId(id)) throw new Error("Invalid system prompt template id.");
@@ -198,8 +217,11 @@ export function updateSystemPromptTemplate(
   const name = input.name === undefined ? current.name : validateTemplateName(input.name);
   assertUniqueName(config, name, id);
   const prompt = input.prompt === undefined ? current.prompt : validatePrompt(input.prompt);
+  const applyMode = input.applyMode === undefined
+    ? effectiveTemplateApplyMode(current)
+    : validateApplyMode(input.applyMode);
   const templates = config.templates.map((template) => template.id === id
-    ? { ...template, name, prompt, updatedAt: new Date().toISOString() }
+    ? { ...template, name, prompt, applyMode, updatedAt: new Date().toISOString() }
     : template);
   return persistSystemPromptConfig(withTimestamp(config, { templates }), path);
 }
@@ -274,5 +296,6 @@ export function resolveSystemPromptSelection(
     templateId: template?.id ?? null,
     templateName: template?.name ?? null,
     prompt: template?.prompt ?? null,
+    applyMode: effectiveTemplateApplyMode(template),
   };
 }

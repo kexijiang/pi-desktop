@@ -61,16 +61,24 @@ export async function readPendingPrompts(scope: string): Promise<PendingPrompt[]
 
 /** Keep the original bytes archived, but do not restore an explicitly deleted queue item. */
 export async function dismissPendingPrompt(id: string): Promise<void> {
+  await dismissPendingPrompts([id]);
+}
+
+export async function dismissPendingPrompts(ids: readonly string[]): Promise<void> {
+  if (!ids.length) return;
   const db = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = db.transaction("prompts", "readwrite");
     const store = transaction.objectStore("prompts");
-    const request = store.get(id);
-    request.onsuccess = () => { if (request.result) store.put({ ...request.result, dismissed: true }); };
+    for (const id of ids) {
+      const request = store.get(id);
+      request.onsuccess = () => { if (request.result) store.put({ ...request.result, dismissed: true }); };
+    }
     transaction.oncomplete = () => resolve();
     transaction.onabort = () => reject(transaction.error);
+    transaction.onerror = () => reject(transaction.error);
   });
-  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PROMPT_RECOVERY_CONFIRMED_EVENT, { detail: [id] }));
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PROMPT_RECOVERY_CONFIRMED_EVENT, { detail: [...ids] }));
 }
 
 export async function confirmPendingPrompts(ids: string[]): Promise<void> {
@@ -81,6 +89,7 @@ export async function confirmPendingPrompts(ids: string[]): Promise<void> {
     for (const id of ids) transaction.objectStore("prompts").delete(id);
     transaction.oncomplete = () => resolve();
     transaction.onabort = () => reject(transaction.error);
+    transaction.onerror = () => reject(transaction.error);
   });
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PROMPT_RECOVERY_CONFIRMED_EVENT, { detail: ids }));
 }

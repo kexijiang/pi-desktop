@@ -6,8 +6,10 @@ import { copyText } from "@/lib/clipboard";
 import { messageImageUrl } from "@/lib/message-images";
 import type { ImageContent, TextContent, UserMessage } from "@/lib/types";
 import { isEditedPlanImplementationMessage, isPlanImplementationMessage } from "@/lib/workflow/plan-prompt";
+import { MODEL_IMAGE_UNSUPPORTED, type ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { AliIcon } from "../AliIcon";
 import { DisclosureChevron } from "../ChatDisclosure";
+import { ImageUnsupportedFailureCard } from "../chat-input/ImageUnsupportedNotice";
 import { MessageImage, MessageImageViewer } from "../MessageImage";
 import { UserMessageText } from "../UserMessageText";
 import { useVirtualRowToggle } from "../VirtualRowState";
@@ -32,8 +34,12 @@ export function UserMessageView({
   onEditContent,
   onEditFailed,
   onRetry,
+  onRetryWithoutImages,
   retryDisabled,
   sessionId,
+  modelList,
+  onSelectModel,
+  onOpenModels,
 }: {
   messageActions?: ReactNode;
   message: UserMessage;
@@ -47,8 +53,12 @@ export function UserMessageView({
   onEditContent?: (content: string) => void;
   onEditFailed?: (message: UserMessage) => Promise<void>;
   onRetry?: (message: UserMessage, entryId?: string) => Promise<void>;
+  onRetryWithoutImages?: (message: UserMessage, entryId?: string) => Promise<void>;
   retryDisabled?: boolean;
   sessionId?: string;
+  modelList?: { id: string; name: string; provider: string; supportsImages?: boolean }[];
+  onSelectModel?: (provider: string, modelId: string) => Promise<boolean>;
+  onOpenModels?: (target?: ModelSettingsFocusTarget) => void;
 }) {
   const { t, locale } = useI18n();
   const [hovered, setHovered] = useState(false);
@@ -213,7 +223,17 @@ export function UserMessageView({
         </div>
       </div>
 
-      {sendError && (
+      {sendError && message.sendErrorCode === MODEL_IMAGE_UNSUPPORTED ? (
+        <ImageUnsupportedFailureCard
+          message={message}
+          modelList={modelList}
+          disabled={retryDisabled || retrying}
+          onOpenModels={onOpenModels}
+          onSelectModel={onSelectModel}
+          onRetry={onRetry ? () => onRetry(message, entryId) : undefined}
+          onRetryWithoutImages={onRetryWithoutImages ? () => onRetryWithoutImages(message, entryId) : undefined}
+        />
+      ) : sendError && (
         <div role="alert" style={{ marginTop: -10, marginBottom: 10, color: "var(--status-failed, #dc2626)", fontSize: "var(--text-xs)", maxWidth: "85%" }}>
           {t(message.sendUnconfirmed ? "chat.sendUnconfirmed" : "chat.sendFailed")}：{sendError}
         </div>

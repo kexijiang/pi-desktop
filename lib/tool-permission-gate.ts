@@ -4,6 +4,7 @@ import { TOOL_REVIEW_LIMITS, TOOL_REVIEW_POLICY_VERSION, type ToolReviewAuthoriz
 import { type ReviewEvidence, reviewHash } from "./tool-review-evidence";
 import { redactReviewText } from "./tool-review-redaction";
 import { inactiveToolReviews, saveToolReview } from "./tool-review-store";
+import { logRunEvent } from "./rpc/run-telemetry";
 
 interface ApprovalInput {
   name: string; args: unknown; toolCallId: string; runId: string;
@@ -26,7 +27,7 @@ export class ToolReviewController {
   constructor(private options: {
     root: string; sessionId: string; reviewer: ToolReviewModel;
     emit(record: ToolReviewRecord): void;
-    stop(): void;
+    stop(detail?: string): void;
     timeoutMs?: number;
   }) {
     for (const record of inactiveToolReviews(options.root, options.sessionId)) this.records.set(record.id, record);
@@ -131,8 +132,15 @@ export class ToolReviewController {
               record.durationMs = Date.now() - started;
               if (result.decision.decision === "deny") {
                 this.paused = true;
+                logRunEvent("warn", {
+                  sessionId: this.options.sessionId,
+                  runId: input.runId,
+                  reason: "tool_review_denied",
+                  lastTool: input.name,
+                  errorMessage: result.decision.reason,
+                });
                 try { this.update(record, "denied", result.decision.reason); }
-                finally { this.cancel(); this.options.stop(); }
+                finally { this.cancel(); this.options.stop(result.decision.reason); }
                 return false;
               }
               allowed = result.decision.decision === "allow";

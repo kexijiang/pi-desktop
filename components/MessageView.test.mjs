@@ -525,3 +525,75 @@ test("write cards distinguish streamed parameters, execution, interruption and a
   const completed = renderMessage({ ...message, content: [{ ...message.content[0], input: { path: "empty.txt", content: "" } }] }, { toolResults: new Map([["write-state", result]]) });
   assert.match(completed, /empty\.txt/); assert.doesNotMatch(completed, /未完成|准备参数/);
 });
+
+test("interrupted assistant messages render durable interruption notices and continue action when tool progress exists", () => {
+  const truncated = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "length", content: [{ type: "text", text: "partial output" }] },
+    { isLastMessage: true, onContinueInterrupted: async () => {}, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(truncated, /data-interruption-kind="output_truncated"/);
+  assert.match(truncated, /继续执行（保留已完成步骤）/);
+  assert.match(truncated, /从头重试/);
+
+  const emptyFinal = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "stop", content: [] },
+    { isLastMessage: true, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(emptyFinal, /data-interruption-kind="empty_response"/);
+  assert.match(emptyFinal, /模型返回了空回复/);
+
+  const providerErrWithTools = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "error", errorMessage: "503 upstream failed", content: [] },
+    { isLastMessage: true, hasToolProgress: true, onContinueInterrupted: async () => {}, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(providerErrWithTools, /继续执行（保留已完成步骤）/);
+  assert.match(providerErrWithTools, /从头重试/);
+});
+
+test("MODEL_IMAGE_UNSUPPORTED failure renders actionable guidance and hides remove-images action for image-only messages", () => {
+  const withText = renderMessage(
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "请看这张截图" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "YWJj" } },
+      ],
+      sendError: "The selected model (custom/deepseek-r1) does not support image input.",
+      sendErrorCode: "MODEL_IMAGE_UNSUPPORTED",
+      sendErrorDetails: { provider: "custom", modelId: "deepseek-r1", modelName: "DeepSeek R1", imageCount: 1 },
+      recoveryDraft: { value: "请看这张截图", files: [], images: [{ data: "YWJj", mimeType: "image/png" }] },
+    },
+    {
+      modelList: [{ id: "gpt-4o", name: "GPT-4o", provider: "openai", supportsImages: true }],
+      onOpenModels: () => {},
+      onSelectModel: async () => true,
+      onRetry: async () => {},
+      onRetryWithoutImages: async () => {},
+    },
+  );
+  assert.match(withText, /data-image-unsupported-card="true"/);
+  assert.match(withText, /去模型配置/);
+  assert.match(withText, /切换支持图片的模型/);
+  assert.match(withText, /GPT-4o/);
+  assert.match(withText, /移除图片继续发送/);
+
+  const imageOnly = renderMessage(
+    {
+      role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "YWJj" } }],
+      sendError: "The selected model (custom/deepseek-r1) does not support image input.",
+      sendErrorCode: "MODEL_IMAGE_UNSUPPORTED",
+      sendErrorDetails: { provider: "custom", modelId: "deepseek-r1", modelName: "DeepSeek R1", imageCount: 1 },
+      recoveryDraft: { value: "", files: [], images: [{ data: "YWJj", mimeType: "image/png" }] },
+    },
+    {
+      modelList: [],
+      onOpenModels: () => {},
+      onSelectModel: async () => true,
+      onRetryWithoutImages: async () => {},
+    },
+  );
+  assert.match(imageOnly, /去模型配置/);
+  assert.match(imageOnly, /暂无已启用的视觉模型/);
+  assert.doesNotMatch(imageOnly, /移除图片继续发送/);
+});

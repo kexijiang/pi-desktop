@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLaboratorySettings } from "@/hooks/useLaboratorySettings";
 import { formatStatusDuration } from "@/lib/status-duration";
+import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
 import {
   MAX_WORKFLOW_TURN_BUDGET,
   type WorkflowActionName,
@@ -67,14 +68,18 @@ export function GoalSidePanelTab({
         cache: "no-store",
         signal,
       });
-      if (!response.ok) throw new Error(t("workflow.loadError"));
+      if (!response.ok) throw await parseWorkflowLoadResponseError(response, t);
       const next = await response.json() as WorkflowSnapshot;
       if (!signal?.aborted) {
         setSnapshot(next);
         setError(null);
       }
     } catch (cause) {
-      if (!signal?.aborted) setError(cause instanceof Error ? cause.message : t("workflow.loadError"));
+      if (!signal?.aborted) {
+        const failure = classifyWorkflowLoadException(cause, t);
+        console.warn("[workflow:goal-panel] load failed", { sessionId, status: failure.status, code: failure.code, message: failure.rawMessage ?? failure.message });
+        setError(failure.message);
+      }
     }
   }, [sessionId, t]);
 
@@ -140,6 +145,22 @@ export function GoalSidePanelTab({
   };
 
   if (!sessionId || (!run && !snapshot?.history.length)) {
+    if (sessionId && error) {
+      return (
+        <div className={styles.sidePanel} data-testid="goal-side-panel">
+          <div className={styles.sidePanelBody}>
+            <div className={styles.goalRailError} role="alert">
+              <span>{error}</span>
+              <div className={styles.goalRailErrorActions}>
+                <button type="button" className={styles.btnGhost} onClick={() => void loadSnapshot()}>
+                  {t("workflow.refresh")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={styles.emptyState} data-testid="goal-side-panel-empty">
         <AliIcon name="target" size={22} />

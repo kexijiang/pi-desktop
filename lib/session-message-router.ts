@@ -8,6 +8,8 @@ import {
   type SessionInboxState,
 } from "./session-inbox";
 import { getRpcSession, type AgentSessionWrapper } from "./rpc-manager";
+import { logRunEvent } from "./rpc/run-telemetry";
+import { extractErrorDetails, MODEL_IMAGE_UNSUPPORTED } from "./model-image-error";
 import { resolveSessionPath } from "./session-reader";
 import { resolveOrStartRpcSession } from "./session-runtime-resolver";
 import { SessionControlStore } from "./session-control-store";
@@ -282,6 +284,7 @@ export class SessionMessageRouter {
       timestamp: Date.now(),
       ...(command.errorCode ? { errorCode: command.errorCode } : {}),
       ...(command.errorMessage ? { errorMessage: command.errorMessage } : {}),
+      ...(command.errorDetails ? { errorDetails: command.errorDetails } : {}),
       ...(command.operation ? { operation: command.operation } : {}),
       idempotencyKey: command.idempotencyKey,
       acceptedAt: command.acceptedAt,
@@ -290,6 +293,17 @@ export class SessionMessageRouter {
       preview: command.content.slice(0, 180),
       queuePaused: command.queuePaused ?? false,
     });
+    if (TERMINAL_STATUSES.has(status) && status !== "completed") {
+      logRunEvent(status === "cancelled" ? "info" : "warn", {
+        sessionId: command.targetSessionId,
+        runId: command.runId,
+        commandId: command.commandId,
+        reason: status === "interrupted" ? "process_interrupted" : status === "expired" ? "command_expired" : status === "cancelled" ? "command_cancelled" : "command_failed",
+        errorCode: command.errorCode,
+        errorMessage: command.errorMessage,
+        extra: { source: command.source, delivery: command.delivery },
+      });
+    }
     if (TERMINAL_STATUSES.has(status) && command.teamExecution) {
       try { deleteTeamExecutionSecret(command.teamExecution); }
       catch (error) { console.error("[pi-web] failed to remove Team execution secret:", safeErrorMessage(error)); }
@@ -307,6 +321,7 @@ export class SessionMessageRouter {
       ...(input.promptSuffix ? { promptSuffix: input.promptSuffix } : {}),
       ...(input.localFiles?.length ? { localFiles: structuredClone(input.localFiles) } : {}),
       ...(input.operation ? { operation: structuredClone(input.operation) } : {}),
+      ...(input.resumeInterrupted ? { resumeInterrupted: true } : {}),
       idempotencyKey: input.idempotencyKey,
       targetSessionId: input.targetSessionId,
       content: input.content,
@@ -531,8 +546,16 @@ export class SessionMessageRouter {
     } catch (error) {
       command.errorCode = resolveRouterErrorCode(error);
       command.errorMessage = safeErrorMessage(error);
+      const details = extractErrorDetails(error);
+      if (details) command.errorDetails = details;
       await this.transition(command, "failed", {}, "command_failed");
-      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, "Steer could not be delivered.", { cause: error });
+      const publicMessage = command.errorCode === MODEL_IMAGE_UNSUPPORTED
+        ? command.errorMessage
+        : "Steer could not be delivered.";
+      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, publicMessage, {
+        cause: error,
+        ...(details ? { details } : {}),
+      });
     }
   }
 
@@ -620,8 +643,16 @@ export class SessionMessageRouter {
     } catch (error) {
       command.errorCode = resolveRouterErrorCode(error);
       command.errorMessage = safeErrorMessage(error);
+      const details = extractErrorDetails(error);
+      if (details) command.errorDetails = details;
       await this.transition(command, "failed", {}, "command_failed");
-      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, "Follow-up could not be delivered.", { cause: error });
+      const publicMessage = command.errorCode === MODEL_IMAGE_UNSUPPORTED
+        ? command.errorMessage
+        : "Follow-up could not be delivered.";
+      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, publicMessage, {
+        cause: error,
+        ...(details ? { details } : {}),
+      });
     }
   }
 
@@ -671,9 +702,32 @@ export class SessionMessageRouter {
           if (admission?.session === session) admission.runId = event.runId;
         }
         const cancelled = this.isCancelled(command);
-        if (event.type === "prompt_done") finish(cancelled ? "cancelled" : "completed");
-        else if (event.type === "prompt_error") {
+        if (event.type === "prompt_done") {
+          if (cancelled) {
+            finish("cancelled");
+            return;
+          }
+          if (event.aborted === true) {
+            const abortReason = typeof event.abortReason === "string" ? event.abortReason : undefined;
+            if (abortReason === "user_abort") {
+              finish("cancelled");
+              return;
+            }
+            const interruption = event.interruption as { reason?: string; detail?: string } | undefined;
+            command.errorCode = abortReason === "tool_review_denied" ? "TOOL_REVIEW_DENIED" : "RUN_INTERRUPTED";
+            command.errorMessage = safeErrorMessage(
+              interruption?.detail
+                ?? (abortReason ? `Run interrupted (${abortReason}).` : "The target runtime stopped before completion."),
+            );
+            finish("interrupted");
+            return;
+          }
+          finish("completed");
+        } else if (event.type === "prompt_error") {
+          if (typeof event.errorCode === "string" && event.errorCode) command.errorCode = event.errorCode;
           if (typeof event.errorMessage === "string") command.errorMessage = safeErrorMessage(event.errorMessage);
+          const details = extractErrorDetails(event);
+          if (details) command.errorDetails = details;
           finish(cancelled ? "cancelled" : "failed");
         }
       });
@@ -716,6 +770,8 @@ export class SessionMessageRouter {
           getSessionInboxRegistry().shift(inbox);
           command.errorCode = code;
           command.errorMessage = safeErrorMessage(error);
+          const details = extractErrorDetails(error);
+          if (details) command.errorDetails = details;
           await this.transition(command, "failed", {}, "command_failed");
           continue;
         }
@@ -760,6 +816,7 @@ export class SessionMessageRouter {
             images: command.images,
             materials: command.materials,
             teamExecution,
+            ...(command.resumeInterrupted ? { resumeInterrupted: true } : {}),
           });
           command.runId = started.runId;
           admission.runId = started.runId;
@@ -784,6 +841,8 @@ export class SessionMessageRouter {
           }
           command.errorCode = code;
           command.errorMessage = safeErrorMessage(error);
+          const details = extractErrorDetails(error);
+          if (details) command.errorDetails = details;
           await this.transition(command, "failed", {}, "command_failed");
           continue;
         }
@@ -798,12 +857,12 @@ export class SessionMessageRouter {
           await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: "COMMAND_CANCELLED" });
           await this.transition(command, "cancelled", {}, "command_cancelled");
         } else if (status === "interrupted") {
-          command.errorCode = "RUN_INTERRUPTED";
-          command.errorMessage = "The target runtime stopped before completion.";
-          await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: "RUN_INTERRUPTED" });
+          command.errorCode ??= "RUN_INTERRUPTED";
+          command.errorMessage ??= "The target runtime stopped before completion.";
+          await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: command.errorCode, errorMessage: command.errorMessage });
           await this.transition(command, "interrupted", {}, "command_interrupted");
         } else {
-          command.errorCode = "PROMPT_ERROR";
+          command.errorCode ??= "PROMPT_ERROR";
           await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: command.errorCode, errorMessage: command.errorMessage });
           await this.transition(command, "failed", {}, "command_failed");
         }

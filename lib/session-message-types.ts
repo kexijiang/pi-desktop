@@ -45,6 +45,7 @@ export interface SessionMessageInput {
   materials?: PromptMaterialReference[];
   expiresAt?: number;
   teamExecution?: TeamExecutionContext;
+  resumeInterrupted?: boolean;
 }
 
 export interface SessionCommandRecord {
@@ -72,9 +73,11 @@ export interface SessionCommandRecord {
   attachedRunId?: string;
   errorCode?: string;
   errorMessage?: string;
+  errorDetails?: Record<string, unknown>;
   images?: SessionMessageImage[];
   materials?: PromptMaterialReference[];
   teamExecution?: PersistedTeamExecutionRef;
+  resumeInterrupted?: boolean;
 }
 
 export interface DispatchReceipt {
@@ -147,6 +150,7 @@ export interface SessionCommandEvent {
   timestamp: number;
   errorCode?: string;
   errorMessage?: string;
+  errorDetails?: Record<string, unknown>;
   state?: SessionControlState;
   operation?: ChatCommandOperation;
   idempotencyKey?: string;

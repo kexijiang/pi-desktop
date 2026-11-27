@@ -56,6 +56,9 @@ import {
 } from "./message-view/shared";
 import { ToolCallBlock } from "./message-view/ToolCallBlock";
 import { UserMessageView } from "./message-view/UserMessageView";
+import { InterruptionNotice } from "./message-view/InterruptionNotice";
+import { deriveAssistantInterruption, type RunInterruptionInfo } from "@/lib/prompt-interruption";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 
 export { getAutomationToolCardDetails, getUserMessagePreview } from "./message-view/shared";
 
@@ -84,8 +87,12 @@ interface Props {
   onEditContent?: (content: string) => void;
   onEditFailed?: (message: UserMessage) => Promise<void>;
   onRetry?: (message: UserMessage, entryId?: string) => Promise<void>;
+  onRetryWithoutImages?: (message: UserMessage, entryId?: string) => Promise<void>;
   retryPrompt?: { message: UserMessage; entryId?: string };
   retryDisabled?: boolean;
+  modelList?: { id: string; name: string; provider: string; supportsImages?: boolean }[];
+  onSelectModel?: (provider: string, modelId: string) => Promise<boolean>;
+  onOpenModels?: (target?: ModelSettingsFocusTarget) => void;
   showTimestamp?: boolean;
   prevTimestamp?: number;
   taskTiming?: TaskTiming;
@@ -93,6 +100,10 @@ interface Props {
   onOpenAutomation?: (automationId: string) => void;
   onOpenCommandExecution?: (data: CommandExecutionData) => void;
   completedGoal?: CompletedGoalBadge | null;
+  isLastMessage?: boolean;
+  hasToolProgress?: boolean;
+  runInterruption?: RunInterruptionInfo | null;
+  onContinueInterrupted?: (interruption: RunInterruptionInfo) => Promise<void>;
 }
 
 export const MessageView = memo(function MessageView(props: Props) {
@@ -108,6 +119,7 @@ export const MessageView = memo(function MessageView(props: Props) {
               onNavigate={history ? undefined : props.onNavigate}
               onEditFailed={history ? undefined : props.onEditFailed}
               onRetry={history ? undefined : props.onRetry}
+              onRetryWithoutImages={history ? undefined : props.onRetryWithoutImages}
               onEditContent={history ? undefined : props.onEditContent}
               onOpenAutomation={history ? undefined : props.onOpenAutomation}
             />
@@ -136,8 +148,12 @@ const MessageContent = memo(function MessageContent({
   onEditContent,
   onEditFailed,
   onRetry,
+  onRetryWithoutImages,
   retryPrompt,
   retryDisabled,
+  modelList,
+  onSelectModel,
+  onOpenModels,
   showTimestamp,
   prevTimestamp,
   taskTiming,
@@ -145,6 +161,10 @@ const MessageContent = memo(function MessageContent({
   onOpenAutomation,
   onOpenCommandExecution,
   completedGoal,
+  isLastMessage,
+  hasToolProgress,
+  runInterruption,
+  onContinueInterrupted,
 }: Props) {
   if (message.role === "user") {
     return (
@@ -161,8 +181,12 @@ const MessageContent = memo(function MessageContent({
         onEditContent={onEditContent}
         onEditFailed={onEditFailed}
         onRetry={onRetry}
+        onRetryWithoutImages={onRetryWithoutImages}
         retryDisabled={retryDisabled}
         sessionId={sessionId}
+        modelList={modelList}
+        onSelectModel={onSelectModel}
+        onOpenModels={onOpenModels}
       />
     );
   }
@@ -188,6 +212,10 @@ const MessageContent = memo(function MessageContent({
         retryPrompt={retryPrompt}
         retryDisabled={retryDisabled}
         completedGoal={completedGoal}
+        isLastMessage={isLastMessage}
+        hasToolProgress={hasToolProgress}
+        runInterruption={runInterruption}
+        onContinueInterrupted={onContinueInterrupted}
       />
     );
   }
@@ -255,14 +283,22 @@ const MessageContent = memo(function MessageContent({
     && prev.onEditContent === next.onEditContent
     && prev.onEditFailed === next.onEditFailed
     && prev.onRetry === next.onRetry
+    && prev.onRetryWithoutImages === next.onRetryWithoutImages
     && prev.retryPrompt === next.retryPrompt
     && prev.retryDisabled === next.retryDisabled
+    && prev.modelList === next.modelList
+    && prev.onSelectModel === next.onSelectModel
+    && prev.onOpenModels === next.onOpenModels
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
     && prev.sessionId === next.sessionId
     && prev.onOpenAutomation === next.onOpenAutomation
     && prev.onOpenCommandExecution === next.onOpenCommandExecution
-    && prev.completedGoal === next.completedGoal;
+    && prev.completedGoal === next.completedGoal
+    && prev.isLastMessage === next.isLastMessage
+    && prev.hasToolProgress === next.hasToolProgress
+    && prev.runInterruption === next.runInterruption
+    && prev.onContinueInterrupted === next.onContinueInterrupted;
 });
 
 function AssistantMessageView({
@@ -284,6 +320,10 @@ function AssistantMessageView({
   onOpenAutomation,
   onOpenCommandExecution,
   completedGoal,
+  isLastMessage,
+  hasToolProgress,
+  runInterruption,
+  onContinueInterrupted,
 }: {
   onRetry?: Props["onRetry"];
   retryPrompt?: Props["retryPrompt"];
@@ -304,6 +344,10 @@ function AssistantMessageView({
   onOpenAutomation?: (automationId: string) => void;
   onOpenCommandExecution?: (data: CommandExecutionData) => void;
   completedGoal?: CompletedGoalBadge | null;
+  isLastMessage?: boolean;
+  hasToolProgress?: boolean;
+  runInterruption?: RunInterruptionInfo | null;
+  onContinueInterrupted?: (interruption: RunInterruptionInfo) => Promise<void>;
 }) {
   const { t } = useI18n();
   const time = showTimestamp ? formatTime(message.timestamp) : null;
@@ -335,7 +379,13 @@ function AssistantMessageView({
     : providerErrorDetail?.code === "model_output_budget"
       ? t("chat.modelOutputBudgetError")
       : providerErrorDetail?.summary ?? "";
-  const stopped = isAssistantAborted(message, { isStreaming });
+  const assistantInterruption = deriveAssistantInterruption(message, {
+    isStreaming,
+    isLastMessage,
+    hasToolProgress,
+    serverInterruption: runInterruption,
+  });
+  const stopped = isAssistantAborted(message, { isStreaming }) && !assistantInterruption?.overridesAbortedNotice;
   const retryInFlight = useRef(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -421,7 +471,7 @@ function AssistantMessageView({
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  if (blocks.length === 0 && !isStreaming && !providerError && !stopped) return null;
+  if (blocks.length === 0 && !isStreaming && !providerError && !stopped && !assistantInterruption) return null;
 
   return (
     <div
@@ -491,29 +541,69 @@ function AssistantMessageView({
               <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "8px 0 0" }}>{providerError}</pre>
             </details>
           )}
-          {!stopped && onRetry && retryPrompt && (
-            <div style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                className="message-delete-button"
-                disabled={retryDisabled || retrying}
-                title={t("chat.retryMessageTitle")}
-                onClick={() => {
-                  if (retryDisabled || retryInFlight.current) return;
-                  retryInFlight.current = true;
-                  setRetrying(true);
-                  setRetryError(null);
-                  void onRetry(retryPrompt.message, retryPrompt.entryId)
-                    .catch(reason => setRetryError(reason instanceof Error ? reason.message : String(reason)))
-                    .finally(() => { retryInFlight.current = false; setRetrying(false); });
-                }}
-              >
-                <AliIcon name="reload" size={12} />{t("chat.retryMessage")}
-              </button>
+          {!stopped && (onRetry && retryPrompt || (hasToolProgress && onContinueInterrupted)) && (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 8 }}>
+              {hasToolProgress && onContinueInterrupted && (
+                <button
+                  type="button"
+                  className="message-delete-button"
+                  data-interruption-action="continue"
+                  disabled={retryDisabled || retrying}
+                  onClick={() => {
+                    if (retryDisabled || retryInFlight.current) return;
+                    retryInFlight.current = true;
+                    setRetrying(true);
+                    setRetryError(null);
+                    const info: RunInterruptionInfo = runInterruption ?? {
+                      kind: timeout ? "timeout" : "provider_error",
+                      reason: "model_error",
+                      detail: providerErrorSummary || providerError || undefined,
+                      timestamp: message.timestamp ?? Date.now(),
+                      hasToolProgress: true,
+                      resumable: true,
+                    };
+                    void onContinueInterrupted(info)
+                      .catch(reason => setRetryError(reason instanceof Error ? reason.message : String(reason)))
+                      .finally(() => { retryInFlight.current = false; setRetrying(false); });
+                  }}
+                >
+                  <AliIcon name="play" size={12} />{t("chat.interrupted.continue")}
+                </button>
+              )}
+              {onRetry && retryPrompt && (
+                <button
+                  type="button"
+                  className="message-delete-button"
+                  disabled={retryDisabled || retrying}
+                  title={t("chat.retryMessageTitle")}
+                  onClick={() => {
+                    if (retryDisabled || retryInFlight.current) return;
+                    retryInFlight.current = true;
+                    setRetrying(true);
+                    setRetryError(null);
+                    void onRetry(retryPrompt.message, retryPrompt.entryId)
+                      .catch(reason => setRetryError(reason instanceof Error ? reason.message : String(reason)))
+                      .finally(() => { retryInFlight.current = false; setRetrying(false); });
+                  }}
+                >
+                  <AliIcon name="reload" size={12} />{hasToolProgress && onContinueInterrupted ? t("chat.interrupted.retryFromScratch") : t("chat.retryMessage")}
+                </button>
+              )}
               {retryError && <span role="alert">{retryError}</span>}
             </div>
           )}
         </div>
+      )}
+
+      {assistantInterruption && (
+        <InterruptionNotice
+          interruption={assistantInterruption.interruption}
+          hasToolProgress={hasToolProgress}
+          disabled={retryDisabled}
+          marginTop={blocks.length > 0 ? 8 : 0}
+          onContinue={onContinueInterrupted}
+          onRetry={onRetry && retryPrompt ? () => onRetry(retryPrompt.message, retryPrompt.entryId) : undefined}
+        />
       )}
 
       {!hideFooter && (

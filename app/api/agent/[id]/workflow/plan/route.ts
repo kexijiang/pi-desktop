@@ -11,7 +11,7 @@ import { getWorkflowRuntime, isWorkflowError, readWorkflowSnapshot, WorkflowErro
 type Context = { params: Promise<{ id: string }> };
 const noStore = { "Cache-Control": "no-store" };
 
-function failure(error: unknown) {
+function failure(error: unknown, sessionId?: string) {
   const status = error instanceof WorkflowInputError || error instanceof SyntaxError
     ? 400
     : isWorkflowError(error)
@@ -19,8 +19,13 @@ function failure(error: unknown) {
       : error instanceof SessionRuntimeResolverError && error.code === "SESSION_NOT_FOUND"
         ? 404
         : 500;
+  const code = (error as { code?: string })?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  if (status >= 500) {
+    console.warn("[workflow:plan] request failed", { sessionId, status, code, error: message });
+  }
   return NextResponse.json(
-    { error: error instanceof Error ? error.message : String(error), code: (error as { code?: string })?.code },
+    { error: message, code },
     { status, headers: noStore },
   );
 }

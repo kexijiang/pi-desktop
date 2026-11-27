@@ -128,8 +128,10 @@ export async function resolveSessionPath(sessionId: string): Promise<string | nu
   const cached = getPathCache().get(sessionId);
   if (cached) return cached;
 
-  // Cache miss: scan all sessions to populate cache, then retry
-  await listAllSessions();
+  // Fast cache-miss lookup: read session index metadata without spawning git rev-parse per cwd.
+  const index = globalThis.__pioraSessionCatalogIndex ??= new SessionCatalogIndex();
+  const piSessions = await index.list(join(getAgentDir(), "sessions"));
+  for (const session of piSessions) cacheSessionPath(session.id, session.path);
   const resolved = getPathCache().get(sessionId);
   if (resolved) return resolved;
 
