@@ -765,30 +765,11 @@ async function installDownloadedDesktopUpdate(confirmInstallation = true, silent
   }
 }
 
-async function performDownloadedDesktopUpdate(confirmInstallation: boolean, silent: boolean): Promise<boolean> {
-  if (!desktopUpdateController || desktopUpdateState.status !== "downloaded" || quitRequested || shutdownComplete) return false;
-  if (silent && (quitRequested || updateBlockers.size > 0 || powerMonitor.getSystemIdleTime() < 60)) return false;
-  // Scheduled installs prepare before acquiring the server's update lease.
-  // Manual installs refresh here, while the app and its running tasks stay alive.
-  if (!silent && !await desktopUpdateController.prepareForInstall()) return false;
-  const chinese = app.getLocale().toLowerCase().startsWith("zh");
-  if (runningTaskCount > 0) {
-    if (silent) return false;
-    await showDesktopMessage({
-      type: "warning",
-      title: chinese ? "暂时不能安装更新" : "Update cannot be installed yet",
-      message: chinese ? "仍有任务正在运行" : "A task is still running",
-      detail: chinese
-        ? "请等待当前任务完成，再选择“安装并重启”。"
-        : "Wait for the current task to finish, then choose Install and restart.",
-      buttons: [chinese ? "知道了" : "OK"],
-      defaultId: 0,
-    });
-    return false;
-  }
-
-  if (updateBlockers.size > 0) {
-    if (silent) return false;
+async function canCloseForDesktopUpdate(chinese: boolean, silent: boolean): Promise<boolean> {
+  if (quitRequested || shutdownPromise || shutdownComplete || desktopUpdateState.status !== "downloaded") return false;
+  if (silent && (runningTaskCount > 0 || powerMonitor.getSystemIdleTime() < 60)) return false;
+  if (updateBlockers.size === 0) return true;
+  if (!silent) {
     await showDesktopMessage({
       type: "warning",
       title: chinese ? "暂时不能安装更新" : "Update cannot be installed yet",
@@ -797,10 +778,39 @@ async function performDownloadedDesktopUpdate(confirmInstallation: boolean, sile
       buttons: [chinese ? "知道了" : "OK"],
       defaultId: 0,
     });
-    return false;
   }
+  return false;
+}
 
-  if (confirmInstallation) {
+async function confirmForceDesktopUpdate(chinese: boolean): Promise<boolean> {
+  const result = await showDesktopMessage({
+    type: "warning",
+    title: chinese ? brandText("安装 Piora 更新") : brandText("Install Piora update"),
+    message: chinese ? "仍有会话正在执行" : "Sessions are still running",
+    detail: chinese
+      ? "继续更新会中断正在执行的会话。已保存的聊天记录会保留。"
+      : "Installing the update will interrupt running sessions. Saved chat history will be kept.",
+    buttons: chinese ? ["取消", "强制关闭并更新"] : ["Cancel", "Force close and update"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  return result.response === 1;
+}
+
+async function performDownloadedDesktopUpdate(confirmInstallation: boolean, silent: boolean): Promise<boolean> {
+  if (!desktopUpdateController || desktopUpdateState.status !== "downloaded" || quitRequested || shutdownComplete) return false;
+  if (silent && (quitRequested || updateBlockers.size > 0 || powerMonitor.getSystemIdleTime() < 60)) return false;
+  // Scheduled installs prepare before acquiring the server's update lease.
+  // Manual installs refresh here, while the app and its running tasks stay alive.
+  if (!silent && !await desktopUpdateController.prepareForInstall()) return false;
+  const chinese = applicationMenuLocale ? applicationMenuLocale === "zh-CN" : app.getLocale().toLowerCase().startsWith("zh");
+  if (!await canCloseForDesktopUpdate(chinese, silent)) return false;
+  const taskCount = silent ? runningTaskCount : (await refreshTrayTaskCount()) ?? runningTaskCount;
+  const hasRunningTasks = taskCount > 0;
+  if (hasRunningTasks) {
+    if (silent || !await confirmForceDesktopUpdate(chinese)) return false;
+  } else if (confirmInstallation && !silent) {
     const result = await showDesktopMessage({
       type: "question",
       title: chinese ? brandText("安装 Piora 更新") : brandText("Install Piora update"),
@@ -821,6 +831,13 @@ async function performDownloadedDesktopUpdate(confirmInstallation: boolean, sile
   // Prepare and destroy mirrors here too, so their close guards cannot keep
   // the old application alive after its local service has stopped.
   if (harmonyWindows && !await harmonyWindows.prepareQuit(silent)) return false;
+  // A session can start while a confirmation is open. Ask before closing
+  // unless the user already approved interrupting running sessions.
+  if (!silent && !hasRunningTasks) {
+    const currentTaskCount = (await refreshTrayTaskCount()) ?? runningTaskCount;
+    if (currentTaskCount > 0 && !await confirmForceDesktopUpdate(chinese)) return false;
+  }
+  if (!await canCloseForDesktopUpdate(chinese, silent)) return false;
   quitRequested = true;
   try {
     harmonyWindows?.destroy();
@@ -2440,7 +2457,7 @@ function updateTrayMenu(): void {
   ]));
 }
 
-async function refreshTrayTaskCount(): Promise<void> {
+async function refreshTrayTaskCount(): Promise<number | undefined> {
   const url = serverUrl;
   if (!url || !applicationToken) return;
   try {
@@ -2449,9 +2466,10 @@ async function refreshTrayTaskCount(): Promise<void> {
     });
     if (!response.ok) return;
     const payload = await response.json() as { runningSessionIds?: unknown[] };
-    if (url !== serverUrl) return;
-    const next = Array.isArray(payload.runningSessionIds) ? payload.runningSessionIds.length : 0;
+    if (url !== serverUrl || !Array.isArray(payload.runningSessionIds)) return;
+    const next = payload.runningSessionIds.length;
     if (next !== runningTaskCount) { runningTaskCount = next; updateTrayMenu(); }
+    return next;
   } catch { /* The next poll retries after transient server errors. */ }
 }
 
