@@ -4,8 +4,11 @@ import { useEffect, useId, useState } from "react";
 import { useFontPreferences } from "@/hooks/useFontPreferences";
 import { useI18n } from "@/hooks/useI18n";
 import {
+  CODE_FONT_SIZE_MAX,
+  CODE_FONT_SIZE_MIN,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
+  isCodeFontSize,
   isUiFontSize,
 } from "@/lib/font-preferences";
 import { AliIcon } from "./AliIcon";
@@ -14,15 +17,21 @@ import { LazyMarkdownBody } from "./LazyMarkdownBody";
 export function FontSettings() {
   const titleId = useId();
   const sizeId = useId();
+  const codeSizeId = useId();
   const weightId = useId();
   const { t } = useI18n();
-  const { preference, presets, sizes, weights, setFamily, setSize, setWeight, reset } = useFontPreferences();
+  const { preference, presets, sizes, codeSizes, weights, setFamily, setSize, setCodeSize, setWeight, reset } = useFontPreferences();
   const [fontAvailability, setFontAvailability] = useState<Record<string, boolean>>({ system: true });
   const [sizeDraft, setSizeDraft] = useState(String(preference.size));
+  const [codeSizeDraft, setCodeSizeDraft] = useState(String(preference.codeSize));
 
   useEffect(() => {
     setSizeDraft(String(preference.size));
   }, [preference.size]);
+
+  useEffect(() => {
+    setCodeSizeDraft(String(preference.codeSize));
+  }, [preference.codeSize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,6 +61,16 @@ export function FontSettings() {
     }
     setSize(nextSize);
     setSizeDraft(String(nextSize));
+  };
+
+  const commitCodeSizeDraft = () => {
+    const nextSize = Number(codeSizeDraft.trim());
+    if (!isCodeFontSize(nextSize)) {
+      setCodeSizeDraft(String(preference.codeSize));
+      return;
+    }
+    setCodeSize(nextSize);
+    setCodeSizeDraft(String(nextSize));
   };
 
   return (
@@ -216,6 +235,74 @@ export function FontSettings() {
         </label>
         <span style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>
           {t("appearance.font.sizeRange", { min: UI_FONT_SIZE_MIN, max: UI_FONT_SIZE_MAX })}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 10 }} data-settings-id="appearance.font.codeSize">
+        <span id={codeSizeId} style={{ minWidth: 64, color: "var(--text-muted)", fontSize: "var(--text-xs)" }}>
+          {t("appearance.font.codeSize")}
+        </span>
+        <div
+          role="radiogroup"
+          aria-labelledby={codeSizeId}
+          style={{ display: "inline-flex", flexWrap: "wrap", padding: 2, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)" }}
+        >
+          {codeSizes.map((size) => {
+            const selected = preference.codeSize === size;
+            return (
+              <button
+                key={size}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                data-code-font-size-choice={size}
+                onClick={() => setCodeSize(size)}
+                style={{
+                  width: 38,
+                  height: 28,
+                  padding: 0,
+                  border: "none",
+                  borderRadius: "var(--radius-control)",
+                  background: selected ? "var(--bg-selected)" : "transparent",
+                  color: selected ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  fontSize: "var(--text-xs)",
+                  fontWeight: selected ? 650 : 500,
+                }}
+              >
+                {size}
+              </button>
+            );
+          })}
+        </div>
+        <label className="font-size-custom-field">
+          <span>{t("appearance.font.customSize")}</span>
+          <input
+            type="number"
+            min={CODE_FONT_SIZE_MIN}
+            max={CODE_FONT_SIZE_MAX}
+            step={1}
+            inputMode="numeric"
+            value={codeSizeDraft}
+            aria-label={t("appearance.font.customCodeSize")}
+            aria-describedby={codeSizeId}
+            onChange={(event) => setCodeSizeDraft(event.target.value)}
+            onBlur={commitCodeSizeDraft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setCodeSizeDraft(String(preference.codeSize));
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          <span aria-hidden="true">px</span>
+        </label>
+        <span style={{ color: "var(--text-dim)", fontSize: "var(--text-xs)" }}>
+          {t("appearance.font.codeSizeHint", { min: CODE_FONT_SIZE_MIN, max: CODE_FONT_SIZE_MAX })}
         </span>
       </div>
       <div className="font-weight-setting">

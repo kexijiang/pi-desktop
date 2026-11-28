@@ -5,7 +5,7 @@ import { resolveOrStartRpcSession, SessionRuntimeResolverError } from "@/lib/ses
 import { resolveSessionAgentRuntimeProfile } from "@/lib/agent-profile-store";
 import { getAgentRuntimeProfile } from "@/lib/agent-runtime-profile";
 import { getSessionMessageRouter } from "@/lib/session-message-router";
-import { readWorkflowSnapshot, resetCorruptWorkflowState, WorkflowError, isWorkflowError } from "@/lib/workflow-runtime";
+import { readLiveWorkflowSnapshot, resetCorruptWorkflowState, WorkflowError, isWorkflowError } from "@/lib/workflow-runtime";
 import { readLaboratorySettings } from "@/lib/laboratory-settings";
 import { parseWorkflowAction, parseWorkflowPromptOptions, parseWorkflowRevision, WorkflowInputError } from "@/lib/workflow-input";
 
@@ -36,7 +36,7 @@ export async function GET(_request: Request, context: Context) {
   try {
     ({ id } = await context.params);
     await assertSession(id);
-    return NextResponse.json(readWorkflowSnapshot(id), { headers: noStore });
+    return NextResponse.json(readLiveWorkflowSnapshot(id), { headers: noStore });
   } catch (error) { return failure(error, id); }
 }
 
@@ -79,11 +79,11 @@ export async function POST(request: Request, context: Context) {
       }
       if (["cancelled", "failed", "expired", "interrupted"].includes(receipt.status)) {
         const command = await router.getCommand(receipt.commandId);
-        return NextResponse.json({ snapshot: readWorkflowSnapshot(id), promptStarted: false, commandId: receipt.commandId, idempotencyKey,
+        return NextResponse.json({ snapshot: readLiveWorkflowSnapshot(id), promptStarted: false, commandId: receipt.commandId, idempotencyKey,
           error: command.errorMessage || `Workflow execution was ${receipt.status}. Review the current state before trying again.`,
         }, { status: 409, headers: noStore });
       }
-      return NextResponse.json({ snapshot: readWorkflowSnapshot(id), promptStarted: ["accepted", "queued", "dispatching", "delivered", "running"].includes(receipt.status), commandId: receipt.commandId, idempotencyKey }, { headers: noStore });
+      return NextResponse.json({ snapshot: readLiveWorkflowSnapshot(id), promptStarted: ["accepted", "queued", "dispatching", "delivered", "running"].includes(receipt.status), commandId: receipt.commandId, idempotencyKey }, { headers: noStore });
     }
     const { session } = await resolveOrStartRpcSession(id);
     const result = await session.send({ type: "workflow_action", workflowAction: action });

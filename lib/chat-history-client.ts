@@ -2,6 +2,7 @@ import { mergePendingPrompts, readPendingPrompts } from "./prompt-recovery";
 import type { SessionStatsInfo } from "./pi-types";
 import type { SessionSystemPromptBinding } from "./system-prompt-types";
 import type { SessionContext, SessionInfo, SessionTreeNode } from "./types";
+import type { WorkflowSnapshot, WorkflowStateStatus } from "./workflow-types";
 
 export interface ChatHistoryResource {
   context: SessionContext;
@@ -16,6 +17,8 @@ export interface SessionData extends ChatHistoryResource {
   info?: SessionInfo | null;
   tree: SessionTreeNode[];
   systemPromptBinding?: SessionSystemPromptBinding | null;
+  workflowSnapshot?: WorkflowSnapshot | null;
+  workflowStateStatus?: WorkflowStateStatus;
 }
 
 export interface ChatHistorySnapshot {

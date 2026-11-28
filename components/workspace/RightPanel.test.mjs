@@ -51,6 +51,9 @@ test("moves files and review into a Codex-style launcher and tool-tab workspace"
   assert.match(panelLayout, /open: false, maximized: false, activeTab: "home", openTools: \[\]/);
   assert.match(panelLayout, /window\.localStorage\.getItem\("piora-right-panel-tab"\)/);
   assert.match(panelLayout, /layouts\?\.\[scope\] \?\? emptyLayout/);
+  assert.match(panelLayout, /function withoutDraft/);
+  assert.match(panelLayout, /conversationScope\?: string/);
+  assert.match(shell, /rightPanelScope,/);
   assert.doesNotMatch(sidebar, /<FileExplorer|<SidebarFileArea/);
 });
 

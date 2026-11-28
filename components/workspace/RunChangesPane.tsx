@@ -60,6 +60,7 @@ export const RunChangesPane = memo(function RunChangesPane({
       {runChanges?.partial ? <div className={styles.runNotice}>{t("files.runPartial")}</div> : null}
       {runChanges?.files.length ? runChanges.files.map((file) => {
         const { name, directory } = formatRunFileDisplay(file.path, runChanges.cwd);
+        const hasLineStats = (file.additions ?? 0) > 0 || (file.deletions ?? 0) > 0;
         return (
           <button key={file.path} className={styles.runFile} type="button" title={file.path}
             aria-current={selectedRunFilePath === file.path || undefined} onClick={() => onSelectRunFile(file.path)}>
@@ -68,6 +69,12 @@ export const RunChangesPane = memo(function RunChangesPane({
               <span className={styles.runFileName}>{name}</span>
               {directory ? <span className={styles.runFileDir}>{directory}</span> : null}
             </span>
+            {hasLineStats ? (
+              <span className={styles.runFileStats}>
+                {(file.additions ?? 0) > 0 ? <span className={styles.additions}>+{file.additions}</span> : null}
+                {(file.deletions ?? 0) > 0 ? <span className={styles.deletions}>−{file.deletions}</span> : null}
+              </span>
+            ) : null}
             <small>{t(`files.run.${file.kind}`)}</small>
           </button>
         );

@@ -234,7 +234,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
     isCompacting, compactionStartedAt, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading, slashCommandsError, commandCatalog, chatCommands, queuedMessages, capabilities,
     liveOutputFollowPaused,
-    notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, liveWorkflowSnapshot,
+    notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, liveWorkflowSnapshot, liveWorkflowCorrupt,
     isAutoModelSelection,
     agentPhase, interruptedRunId, runInterruption,
     isNew,
@@ -257,7 +257,7 @@ export function ChatWindow({ visible = true, historyVisible = false, onHistoryCo
   });
   const sessionBusy = agentRunning || bashRunning;
   const sessionReadOnly = loading || sessionHydrating || Boolean(error);
-  const workflow = useWorkflow(session?.id ?? sessionIdRef.current, visible, sessionBusy, handleWorkflowAction, liveWorkflowSnapshot, sessionHydrating);
+  const workflow = useWorkflow(session?.id ?? sessionIdRef.current, visible, sessionBusy, handleWorkflowAction, liveWorkflowSnapshot, sessionHydrating, liveWorkflowCorrupt);
   const [replaceGoalRequest, setReplaceGoalRequest] = useState<{ inlineObjective?: string } | null>(null);
   const [pausedGoalSubmission, setPausedGoalSubmission] = useState<PausedGoalPendingSubmission | null>(null);
   const currentWorkflowRun = workflow.snapshot?.current ?? null;

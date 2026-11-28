@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file.ts";
+import { fileRevision } from "./jsonl-file-index.ts";
 import { DEFAULT_WORKFLOW_TURN_BUDGET, type WorkflowRun, type WorkflowSnapshot } from "./workflow-types.ts";
 
 export interface WorkflowRecord { schemaVersion: 1; epoch: string; snapshot: WorkflowSnapshot; actions: string[] }
@@ -14,8 +15,17 @@ export class WorkflowStateCorruptError extends Error {
     this.name = "WorkflowStateCorruptError";
   }
 }
-const host = globalThis as typeof globalThis & { __pioraWorkflowEpoch?: string };
+const host = globalThis as typeof globalThis & {
+  __pioraWorkflowEpoch?: string;
+  __pioraWorkflowLastResetAt?: number;
+};
 export const workflowEpoch = host.__pioraWorkflowEpoch ??= randomUUID();
+
+function nextWorkflowResetGeneration(): number {
+  const next = Math.max(Date.now(), (host.__pioraWorkflowLastResetAt ?? 0) + 1);
+  host.__pioraWorkflowLastResetAt = next;
+  return next;
+}
 
 export function settleActiveDuration(run: WorkflowRun, now = Date.now()): void {
   if (typeof run.activeSince === "number" && Number.isFinite(run.activeSince)) {
@@ -95,12 +105,29 @@ export class WorkflowStore {
       schemaVersion: 1,
       epoch: workflowEpoch,
       actions: [],
-      snapshot: { sessionId, revision: 0, mode: "agent", turnBudget: DEFAULT_WORKFLOW_TURN_BUDGET, current: null, history: [] },
+      snapshot: {
+        sessionId,
+        revision: 0,
+        resetAt: nextWorkflowResetGeneration(),
+        mode: "agent",
+        turnBudget: DEFAULT_WORKFLOW_TURN_BUDGET,
+        current: null,
+        history: [],
+      },
     };
     this.write(fresh);
     return fresh;
   }
+  fileRevision(sessionId: string): string {
+    try {
+      const stat = statSync(this.path(sessionId), { throwIfNoEntry: false });
+      return stat ? `${workflowEpoch}:${fileRevision(stat)}` : `${workflowEpoch}:missing`;
+    } catch {
+      return `${workflowEpoch}:invalid`;
+    }
+  }
 }
 
 export function readWorkflowSnapshot(sessionId: string): WorkflowSnapshot { return new WorkflowStore().read(sessionId).snapshot; }
+export function readWorkflowFileRevision(sessionId: string): string { return new WorkflowStore().fileRevision(sessionId); }
 export function resetCorruptWorkflowState(sessionId: string): WorkflowSnapshot { return new WorkflowStore().resetCorruptState(sessionId).snapshot; }

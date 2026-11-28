@@ -13,9 +13,14 @@ export function useBrowserPanelNavigation(
   useLayoutEffect(() => {
     const before = previous.current;
     previous.current = { scope, layoutScope };
-    // Different saved layouts already restore their own visibility. Within one
-    // layout, hide the browser when changing the room member or starting a draft.
-    if (before.scope !== scope && before.layoutScope === layoutScope && activeTab === "browser") {
+    // Different saved session/room layouts restore their own visibility.
+    // Within one layout — or whenever entering a fresh draft session — never
+    // carry an open browser panel forward.
+    if (
+      before.scope !== scope
+      && activeTab === "browser"
+      && (before.layoutScope === layoutScope || layoutScope === "draft")
+    ) {
       setOpen(false);
     }
   }, [scope, layoutScope, activeTab, setOpen]);

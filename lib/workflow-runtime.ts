@@ -8,7 +8,13 @@ import {
   serializeWorkflowContextSnapshot,
 } from "./workflow/goal-continuation.ts";
 import { readPlanDocument, writePlanDocument } from "./workflow/plan-store.ts";
-import { settleActiveDuration, WorkflowStore, type WorkflowRecord } from "./workflow-store.ts";
+import {
+  resetCorruptWorkflowState as resetCorruptWorkflowStoreState,
+  settleActiveDuration,
+  WorkflowStateCorruptError,
+  WorkflowStore,
+  type WorkflowRecord,
+} from "./workflow-store.ts";
 import {
   MAX_WORKFLOW_TURN_BUDGET,
   type WorkflowAction,
@@ -19,7 +25,7 @@ import {
   type WorkflowTodoStep,
 } from "./workflow-types.ts";
 
-export { readWorkflowSnapshot, resetCorruptWorkflowState, WorkflowStateCorruptError } from "./workflow-store.ts";
+export { readWorkflowFileRevision, readWorkflowSnapshot, WorkflowStateCorruptError } from "./workflow-store.ts";
 const terminal = new Set(["completed", "cancelled", "failed"]);
 export class WorkflowError extends Error {
   constructor(message: string, readonly code = "WORKFLOW_CONFLICT", readonly status = 409) { super(message); }
@@ -65,9 +71,19 @@ export class WorkflowRuntime {
   private turnProgressRevision = 0;
   private toolEvidence = new Set<string>();
   private autoContinuing = false;
+  private transientSeq = 0;
   private listeners = new Set<(snapshot: WorkflowSnapshot) => void>();
   constructor(readonly sessionId: string, readonly store = new WorkflowStore()) {}
   get isAttached(): boolean { return this.attached > 0; }
+  getTransientTag(): string { return `${this.transientSeq}:${this.autoContinuing ? 1 : 0}`; }
+  resetTransientState(): void {
+    this.autoContinuing = false;
+    this.transientSeq = 0;
+    this.turnRunId = null;
+    this.progressRevision = 0;
+    this.turnProgressRevision = 0;
+    this.toolEvidence.clear();
+  }
   attach(activeTools?: () => string[]): () => void { this.attached++; this.activeTools = activeTools; return () => { this.attached = Math.max(0, this.attached - 1); }; }
   private requireModeTools(mode: WorkflowPromptOptions["mode"]): void {
     if (mode === "agent") return;
@@ -80,6 +96,7 @@ export class WorkflowRuntime {
   private project(snapshot: WorkflowSnapshot): WorkflowSnapshot {
     const cloned = structuredClone(snapshot);
     if (this.autoContinuing) cloned.autoContinuing = true;
+    if (this.transientSeq > 0) cloned.transientSeq = this.transientSeq;
     return cloned;
   }
   private notify(snapshot: WorkflowSnapshot): void {
@@ -89,15 +106,19 @@ export class WorkflowRuntime {
     }
   }
   getSnapshot(): WorkflowSnapshot { return this.project(this.store.read(this.sessionId).snapshot); }
-  private change<T>(operation: (record: WorkflowRecord) => T): T {
+  private change<T>(operation: (record: WorkflowRecord) => T, clearedAutoContinuing = false): T {
     const record = this.store.read(this.sessionId);
     const before = JSON.stringify(record);
     const result = operation(record);
     if (JSON.stringify(record) !== before) {
       record.snapshot.revision++;
+      this.transientSeq = 0;
       if (record.snapshot.current) record.snapshot.current.updatedAt = Date.now();
       this.store.write(record);
       // Transport observers cannot turn a committed action into an apparent failure.
+      this.notify(record.snapshot);
+    } else if (clearedAutoContinuing) {
+      this.transientSeq++;
       this.notify(record.snapshot);
     }
     return result;
@@ -106,6 +127,7 @@ export class WorkflowRuntime {
     if (!["agent", "plan", "goal"].includes(options.mode)) throw new WorkflowError("Unknown workflow mode", "INVALID_WORKFLOW", 400);
     this.requireModeTools(options.mode);
     if (options.turnBudget !== undefined) validateWorkflowBudget(options.turnBudget);
+    const wasAutoContinuing = this.autoContinuing;
     this.autoContinuing = false;
     this.change(({ snapshot }) => {
       if (options.expectedRevision !== undefined && snapshot.revision !== options.expectedRevision) throw new WorkflowError("Workflow changed; reload before selecting a mode");
@@ -127,11 +149,12 @@ export class WorkflowRuntime {
       }
       snapshot.mode = options.mode;
       if (options.turnBudget !== undefined) snapshot.turnBudget = options.turnBudget;
-    });
+    }, wasAutoContinuing);
     return this.getSnapshot();
   }
   /** Called at actual prompt admission with the original user text. Internal continuations never replace it. */
   preparePrompt(objective: string, options?: { resumePausedGoal?: boolean }): WorkflowSnapshot {
+    const wasAutoContinuing = this.autoContinuing;
     this.autoContinuing = false;
     this.change(({ snapshot }) => {
       if (snapshot.mode === "agent") return;
@@ -173,7 +196,7 @@ export class WorkflowRuntime {
         delete snapshot.completedGoal;
       }
       this.progressRevision = 0; this.toolEvidence.clear();
-    });
+    }, wasAutoContinuing);
     return this.getSnapshot();
   }
   action(input: WorkflowAction): WorkflowActionResult {
@@ -318,7 +341,10 @@ export class WorkflowRuntime {
     const wasAutoContinuing = this.autoContinuing;
     this.autoContinuing = false;
     const snapshot = this.store.read(this.sessionId).snapshot;
-    if (wasAutoContinuing) this.notify(snapshot);
+    if (wasAutoContinuing) {
+      this.transientSeq++;
+      this.notify(snapshot);
+    }
     const run = snapshot.current;
     this.turnRunId = run && ["running", "planning"].includes(run.status) ? run.id : null;
     this.turnProgressRevision = this.progressRevision;
@@ -465,14 +491,16 @@ export class WorkflowRuntime {
     return continuation;
   }
   onPromptSettled(): void {
+    const wasAutoContinuing = this.autoContinuing;
     this.autoContinuing = false;
     this.change(({ snapshot }) => {
       const run = snapshot.current;
       if (run?.kind === "plan" && run.status === "running" && snapshot.mode === "agent") { run.status = "completed"; run.reason = "execution_finished"; delete snapshot.todoSteps; }
       else if (run?.kind === "plan" && run.status === "planning") { run.status = "waiting"; run.reason = "planning_needs_input"; }
-    });
+    }, wasAutoContinuing);
   }
   onPromptError(reason: string): void {
+    const wasAutoContinuing = this.autoContinuing;
     this.turnRunId = null;
     this.autoContinuing = false;
     this.change(({ snapshot }) => {
@@ -482,9 +510,10 @@ export class WorkflowRuntime {
         run.status = "failed";
         run.reason = reason.slice(0, 5000);
       }
-    });
+    }, wasAutoContinuing);
   }
   onAbort(): void {
+    const wasAutoContinuing = this.autoContinuing;
     this.turnRunId = null;
     this.autoContinuing = false;
     this.change(({ snapshot }) => {
@@ -494,7 +523,7 @@ export class WorkflowRuntime {
         run.status = "paused";
         run.reason = "user_stopped";
       }
-    });
+    }, wasAutoContinuing);
   }
   dispose(): void { this.onAbort(); }
 }
@@ -509,6 +538,82 @@ export function getWorkflowRuntime(sessionId: string, store = new WorkflowStore(
 }
 export function findWorkflowRuntime(sessionId: string, store = new WorkflowStore()): WorkflowRuntime | undefined {
   return host.__pioraWorkflows?.get(`${store.directory}:${sessionId}`);
+}
+
+export function resetCorruptWorkflowState(sessionId: string): WorkflowSnapshot {
+  const snapshot = resetCorruptWorkflowStoreState(sessionId);
+  findWorkflowRuntime(sessionId)?.resetTransientState();
+  return snapshot;
+}
+
+export function readLiveWorkflowSnapshot(sessionId: string): WorkflowSnapshot {
+  const store = new WorkflowStore();
+  const live = findWorkflowRuntime(sessionId, store);
+  return live ? live.getSnapshot() : store.read(sessionId).snapshot;
+}
+
+export type InlineWorkflowState =
+  | { status: "ok"; snapshot: WorkflowSnapshot; signature: string }
+  | { status: "corrupt"; signature: string }
+  | { status: "invalid"; signature: string };
+
+function buildWorkflowSignature(
+  sessionId: string,
+  store: WorkflowStore,
+  live: WorkflowRuntime | undefined,
+  suffix = "",
+): string {
+  const fileRev = store.fileRevision(sessionId);
+  const livePart = live ? `:live:${live.getTransientTag()}` : "";
+  return `${fileRev}${livePart}${suffix}`;
+}
+
+/**
+ * Single-sample inline workflow reader for session hydration/state responses.
+ * Returns a discriminated state alongside a signature computed from that exact
+ * read so response body and ETag always match, and corrupt files are signaled.
+ */
+export function readInlineWorkflowState(sessionId: string): InlineWorkflowState {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) return { status: "invalid", signature: "invalid" };
+  const store = new WorkflowStore();
+  const live = findWorkflowRuntime(sessionId, store);
+  try {
+    const snapshot = live ? live.getSnapshot() : store.read(sessionId).snapshot;
+    return {
+      status: "ok",
+      snapshot,
+      signature: buildWorkflowSignature(sessionId, store, live),
+    };
+  } catch (error) {
+    if (error instanceof WorkflowStateCorruptError || (isWorkflowError(error) && error.code === "WORKFLOW_STATE_CORRUPT")) {
+      return {
+        status: "corrupt",
+        signature: buildWorkflowSignature(sessionId, store, live, ":corrupt"),
+      };
+    }
+    return {
+      status: "invalid",
+      signature: buildWorkflowSignature(sessionId, store, live, ":error"),
+    };
+  }
+}
+
+/**
+ * Best-effort inline workflow snapshot for session hydration/state responses.
+ * Returns undefined on corrupt workflow files so dedicated /workflow endpoints
+ * still surface the explicit recovery action without blocking chat history.
+ */
+export function readInlineWorkflowSnapshot(sessionId: string): WorkflowSnapshot | undefined {
+  const state = readInlineWorkflowState(sessionId);
+  return state.status === "ok" ? state.snapshot : undefined;
+}
+
+/** Lightweight signature for 304 checks without reading, parsing, or cloning workflow JSON. */
+export function readInlineWorkflowSignature(sessionId: string): string {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) return "invalid";
+  const store = new WorkflowStore();
+  const live = findWorkflowRuntime(sessionId, store);
+  return buildWorkflowSignature(sessionId, store, live);
 }
 
 /** Explicit capability boundary: arbitrary shell programs cannot be proved read-only. */

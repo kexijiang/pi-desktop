@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "./useI18n";
 import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
+import {
+  cacheWorkflowSnapshot,
+  clearWorkflowSnapshotCache,
+  peekWorkflowSnapshot,
+  pickNewerWorkflowSnapshot,
+  shouldAcceptWorkflowSnapshot,
+} from "@/lib/workflow/client-cache";
 import type { WorkflowAction, WorkflowCriterion, WorkflowMode, WorkflowSnapshot } from "@/lib/workflow-types";
 
 const WORKFLOW_RETRY_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
@@ -24,19 +31,25 @@ export function useWorkflow(
   executeAction: (action: WorkflowAction) => Promise<WorkflowSnapshot>,
   liveSnapshot?: WorkflowSnapshot | null,
   deferInitialLoad = false,
+  liveCorrupt = false,
 ) {
   const { t } = useI18n();
-  const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(() => (
+    liveCorrupt
+      ? null
+      : pickNewerWorkflowSnapshot(sessionId, peekWorkflowSnapshot(sessionId), liveSnapshot)
+  ));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const latest = useRef({ sessionId, visible, deferInitialLoad, executeAction, t });
-  latest.current = { sessionId, visible, deferInitialLoad, executeAction, t };
+  const latest = useRef({ sessionId, visible, deferInitialLoad, executeAction, liveSnapshot, liveCorrupt, t });
+  latest.current = { sessionId, visible, deferInitialLoad, executeAction, liveSnapshot, liveCorrupt, t };
   const generation = useRef(0);
   const actionInFlight = useRef(false);
   const request = useRef<AbortController | null>(null);
-  const acceptedSnapshot = useRef<WorkflowSnapshot | null>(null);
+  const acceptedSnapshot = useRef<WorkflowSnapshot | null>(snapshot);
+  // Warm client cache is optimistic paint only; wait for an accepted authoritative read.
   const lastReadAt = useRef<number | null>(null);
   const readFailures = useRef(0);
   const lastLoggedFailure = useRef<string | null>(null);
@@ -47,20 +60,28 @@ export function useWorkflow(
     retryTimer.current = null;
   }, []);
 
-  const accept = useCallback((next: WorkflowSnapshot) => {
-    if (next.sessionId !== latest.current.sessionId) return;
-    const current = acceptedSnapshot.current;
-    if (current?.sessionId === next.sessionId && current.revision > next.revision) return;
-    acceptedSnapshot.current = next;
+  const accept = useCallback((next: WorkflowSnapshot, options?: { force?: boolean; authoritative?: boolean }): boolean => {
+    const sid = latest.current.sessionId;
+    if (!sid || next.sessionId !== sid) return false;
+    if (!options?.force && !shouldAcceptWorkflowSnapshot(acceptedSnapshot.current, next, sid)) {
+      return false;
+    }
+    const stored = cacheWorkflowSnapshot(next, { force: options?.force });
+    acceptedSnapshot.current = stored;
+    if (options?.authoritative !== false) {
+      lastReadAt.current = Date.now();
+      readFailures.current = 0;
+    }
     lastLoggedFailure.current = null;
-    setSnapshot(next);
+    setSnapshot(stored);
     setLoadError(null);
     setLoadErrorCode(null);
+    return true;
   }, []);
 
   const reconcile = useCallback(async function readWorkflow(explicit = false) {
     const { sessionId: sid, visible, deferInitialLoad } = latest.current;
-    if (!sid || request.current || deferInitialLoad) return;
+    if (!sid || request.current || (!explicit && deferInitialLoad)) return;
     if (!explicit && (!visible || document.visibilityState === "hidden" || retryTimer.current !== null)) return;
     clearRetry();
     const epoch = generation.current;
@@ -76,9 +97,7 @@ export function useWorkflow(
         || !["agent", "plan", "goal"].includes(next.mode) || !Array.isArray(next.history)) {
         throw new Error(latest.current.t("workflow.loadError"));
       }
-      lastReadAt.current = Date.now();
-      readFailures.current = 0;
-      accept(next);
+      accept(next, { authoritative: true });
     } catch (cause) {
       if (!isCurrent()) return;
       const failure = classifyWorkflowLoadException(cause, latest.current.t);
@@ -95,6 +114,12 @@ export function useWorkflow(
       }
       const failures = ++readFailures.current;
       if (!failure.retryable) {
+        if (failure.code === "WORKFLOW_STATE_CORRUPT") {
+          clearWorkflowSnapshotCache(sid);
+          acceptedSnapshot.current = null;
+          lastReadAt.current = null;
+          setSnapshot(null);
+        }
         setLoadError(failure.message);
         setLoadErrorCode(failure.code ?? null);
         return;
@@ -136,28 +161,38 @@ export function useWorkflow(
       if (!response.ok || !result.snapshot) {
         throw new Error(result.error ?? latest.current.t("workflow.actionError"));
       }
-      if (epoch !== generation.current) return false;
-      readFailures.current = 0;
-      accept(result.snapshot);
+      if (epoch !== generation.current || latest.current.sessionId !== sid) return false;
+      // Invalidate any in-flight reads sampled before the reset completed.
+      generation.current = epoch + 1;
+      request.current?.abort();
+      request.current = null;
+      clearRetry();
+      clearWorkflowSnapshotCache(sid);
+      acceptedSnapshot.current = null;
+      accept(result.snapshot, { force: true, authoritative: true });
       return true;
     } catch (cause) {
-      if (epoch === generation.current) {
+      if (epoch === generation.current && latest.current.sessionId === sid) {
         setActionError(cause instanceof Error ? cause.message : latest.current.t("workflow.actionError"));
       }
       return false;
     } finally {
-      if (epoch === generation.current) { actionInFlight.current = false; setBusy(false); }
+      if (latest.current.sessionId === sid) { actionInFlight.current = false; setBusy(false); }
     }
-  }, [accept]);
+  }, [accept, clearRetry]);
 
   useEffect(() => {
     const epoch = ++generation.current;
-    acceptedSnapshot.current = null;
+    const live = latest.current.liveSnapshot;
+    const initial = latest.current.liveCorrupt
+      ? null
+      : pickNewerWorkflowSnapshot(sessionId, peekWorkflowSnapshot(sessionId), live);
+    acceptedSnapshot.current = initial;
     lastReadAt.current = null;
     readFailures.current = 0;
     lastLoggedFailure.current = null;
     actionInFlight.current = false;
-    setSnapshot(null); setLoadError(null); setLoadErrorCode(null); setActionError(null); setBusy(false);
+    setSnapshot(initial); setLoadError(null); setLoadErrorCode(null); setActionError(null); setBusy(false);
     return () => {
       generation.current = epoch + 1;
       request.current?.abort();
@@ -167,8 +202,19 @@ export function useWorkflow(
   }, [sessionId, clearRetry]);
 
   useEffect(() => {
-    if (liveSnapshot && liveSnapshot.sessionId === sessionId) accept(liveSnapshot);
-  }, [liveSnapshot, sessionId, accept]);
+    if (!sessionId || !liveCorrupt) return;
+    clearWorkflowSnapshotCache(sessionId);
+    acceptedSnapshot.current = null;
+    lastReadAt.current = null;
+    setSnapshot(null);
+    void reconcile(true);
+  }, [liveCorrupt, sessionId, reconcile]);
+
+  useEffect(() => {
+    if (!liveCorrupt && liveSnapshot && liveSnapshot.sessionId === sessionId) {
+      accept(liveSnapshot, { authoritative: true });
+    }
+  }, [liveCorrupt, liveSnapshot, sessionId, accept]);
 
   const hasActiveWorkflow = Boolean(snapshot?.sessionId === sessionId && (snapshot.mode !== "agent" || snapshot.current));
 

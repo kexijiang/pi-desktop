@@ -24,9 +24,20 @@ import { purgeExpiredTrash, trashSession } from "@/lib/session-trash";
 import { collectSideChatFilesForParents, invalidateSideChatCache } from "@/lib/side-chat/store";
 import { notifyDesktopAgentSessionClosed } from "@/lib/desktop-browser-agent";
 import { fileRevision } from "@/lib/jsonl-file-index";
+import { readInlineWorkflowSignature, readInlineWorkflowState, type InlineWorkflowState } from "@/lib/workflow-runtime";
 import {
   buildSessionTranscript, decodeHistoryCursor, readHistoryAnchor, readSessionPage, readSessionTranscript, SessionHistoryPageError,
 } from "@/lib/session-read-repository";
+
+function inlineWorkflowFields(workflow: InlineWorkflowState) {
+  if (workflow.status === "ok") {
+    return { workflowSnapshot: workflow.snapshot, workflowStateStatus: "ok" as const };
+  }
+  if (workflow.status === "corrupt") {
+    return { workflowStateStatus: "corrupt" as const };
+  }
+  return {};
+}
 
 const MAX_PROJECTED_TREE_DEPTH = 200;
 const MAX_SESSION_RESPONSE_CACHE_BYTES = 48 * 1024 * 1024;
@@ -167,19 +178,24 @@ async function buildSessionResponse(
     parentSessionId,
   } : null;
 
+  const inlineWorkflow = readInlineWorkflowState(id);
   return {
-    sessionId: id,
-    stats: summarizeSessionStats(sm),
-    // A live manager can contain buffered messages before its first disk flush.
-    // User receipts require disk history; completed slash commands instead use
-    // the durable command journal, since the SDK may never add a user message.
-    persistedPromptIds: [...await new SessionControlStore().queryCompletedSlashPromptIds(id), ...(manager ? [] : persistedMessagePromptIds(sm.getEntries()))],
-    filePath,
-    info,
-    leafId,
-    tree,
-    context,
-    systemPromptBinding: readLatestSessionSystemPromptBinding(sm.getEntries()),
+    workflowSignature: inlineWorkflow.signature,
+    payload: {
+      sessionId: id,
+      stats: summarizeSessionStats(sm),
+      // A live manager can contain buffered messages before its first disk flush.
+      // User receipts require disk history; completed slash commands instead use
+      // the durable command journal, since the SDK may never add a user message.
+      persistedPromptIds: [...await new SessionControlStore().queryCompletedSlashPromptIds(id), ...(manager ? [] : persistedMessagePromptIds(sm.getEntries()))],
+      filePath,
+      info,
+      leafId,
+      tree,
+      context,
+      systemPromptBinding: readLatestSessionSystemPromptBinding(sm.getEntries()),
+      ...inlineWorkflowFields(inlineWorkflow),
+    },
   };
 }
 
@@ -248,11 +264,15 @@ async function loadHistoryResponse(id: string, path: string, query: URLSearchPar
   const info = await stat(path);
   const pendingModel = readPendingSessionModel(id);
   const running = Boolean(getRpcSession(id)?.isRunning());
-  const signature = [fileRevision(info), pendingModel?.revision, running].join(":");
+  const baseSignature = [fileRevision(info), pendingModel?.revision, running];
+  const workflowSig = readInlineWorkflowSignature(id);
+  const signature = [...baseSignature, workflowSig].join(":");
   const projection = transcript ? "transcript-v1" : "paged-v2:" + JSON.stringify([query.get("older"), leafId, around]);
-  const etag = sessionResponseEtag(id, signature, projection);
-  const headers = { "cache-control": "private, no-cache", etag, "content-type": "application/json; charset=utf-8" };
-  if (matchesEtag(request.headers.get("if-none-match"), etag)) return new Response(null, { status: 304, headers });
+  const initialEtag = sessionResponseEtag(id, signature, projection);
+  const baseHeaders = { "cache-control": "private, no-cache", "content-type": "application/json; charset=utf-8" };
+  if (matchesEtag(request.headers.get("if-none-match"), initialEtag)) {
+    return new Response(null, { status: 304, headers: { ...baseHeaders, etag: initialEtag } });
+  }
 
   const cache = sessionResponseCache();
   const key = path + "\0" + projection;
@@ -260,11 +280,18 @@ async function loadHistoryResponse(id: string, path: string, query: URLSearchPar
   if (!entry || entry.signature !== signature) {
     const modified = info.mtime.toISOString();
     const history = transcript ? readSessionTranscript(path, modified) : readSessionPage(path, modified, { cursor, leafId, around });
+    let finalSignature = signature;
     const promise = history.then(async result => {
       if (fileRevision(await stat(path)) !== fileRevision(info)) throw new SessionHistoryPageError(409, "History changed; refresh the conversation");
       if (pendingModel && !running) result.context.model = { provider: pendingModel.provider, modelId: pendingModel.modelId };
       if (result.info) result.info.id = id;
-      return serializeSessionResponse({ sessionId: id, filePath: path, tree: [], ...result }, etag);
+      const inlineWorkflow = readInlineWorkflowState(id);
+      finalSignature = [...baseSignature, inlineWorkflow.signature].join(":");
+      const finalEtag = sessionResponseEtag(id, finalSignature, projection);
+      return serializeSessionResponse(
+        { sessionId: id, filePath: path, tree: [], ...result, ...inlineWorkflowFields(inlineWorkflow) },
+        finalEtag,
+      );
     });
     entry = { signature, lastAccessedAt: Date.now(), byteLength: 0, promise };
     const owned = entry;
@@ -272,12 +299,14 @@ async function loadHistoryResponse(id: string, path: string, query: URLSearchPar
     pruneSessionResponseCache(cache);
     void promise.then(serialized => {
       if (cache.get(key) !== owned) return;
+      owned.signature = finalSignature;
       owned.byteLength = serialized.byteLength;
       pruneSessionResponseCache(cache);
     }, () => { if (cache.get(key) === owned) cache.delete(key); });
   }
   entry.lastAccessedAt = Date.now();
-  return new Response((await entry.promise).body, { status: 200, headers });
+  const serialized = await entry.promise;
+  return new Response(serialized.body, { status: 200, headers: { ...baseHeaders, etag: serialized.etag } });
 }
 
 async function loadCachedSessionResponse(
@@ -290,16 +319,21 @@ async function loadCachedSessionResponse(
 ): Promise<SerializedSessionResponse | { body: null; etag: string }> {
   const fileState = statSync(filePath);
   const commandState = statSync(new SessionControlStore().commandsPath(id), { throwIfNoEntry: false });
-  const signature = [fileRevision(fileState), readPendingSessionModel(id)?.revision, getRpcSession(id)?.isRunning(),
-    commandState && fileRevision(commandState)].join(":");
+  const baseSignature = [
+    fileRevision(fileState),
+    readPendingSessionModel(id)?.revision,
+    getRpcSession(id)?.isRunning(),
+    commandState && fileRevision(commandState),
+  ];
+  const signature = [...baseSignature, readInlineWorkflowSignature(id)].join(":");
   const projection = `${deferThinking ? "thinking-deferred" : "thinking-full"}\0${deferToolResultImages ? "media-deferred" : "media-full"}\0${includeTree ? "tree" : "no-tree"}`;
-  const etag = sessionResponseEtag(id, signature, projection);
-  if (matchesEtag(ifNoneMatch, etag)) return { body: null, etag };
+  const initialEtag = sessionResponseEtag(id, signature, projection);
+  if (matchesEtag(ifNoneMatch, initialEtag)) return { body: null, etag: initialEtag };
 
   // Only retain the lightweight chat-switch projection. Full-history callers
   // may include large base64 media and should not occupy the in-process LRU.
   if (!deferThinking || !deferToolResultImages) {
-    const payload = await buildSessionResponse(
+    const built = await buildSessionResponse(
       id,
       filePath,
       fileState.mtime.toISOString(),
@@ -307,7 +341,8 @@ async function loadCachedSessionResponse(
       deferToolResultImages,
       includeTree,
     );
-    return serializeSessionResponse(payload, etag);
+    const finalEtag = sessionResponseEtag(id, [...baseSignature, built.workflowSignature].join(":"), projection);
+    return serializeSessionResponse(built.payload, finalEtag);
   }
   const cacheKey = `${filePath}\0${projection}`;
   const cache = sessionResponseCache();
@@ -324,10 +359,13 @@ async function loadCachedSessionResponse(
     deferThinking,
     deferToolResultImages,
     includeTree,
-  ).then((payload) => {
-    const serialized = serializeSessionResponse(payload, etag);
+  ).then((built) => {
+    const finalSignature = [...baseSignature, built.workflowSignature].join(":");
+    const finalEtag = sessionResponseEtag(id, finalSignature, projection);
+    const serialized = serializeSessionResponse(built.payload, finalEtag);
     const current = cache.get(cacheKey);
     if (current?.promise === promise) {
+      current.signature = finalSignature;
       current.byteLength = serialized.byteLength;
       pruneSessionResponseCache(cache);
     }
@@ -379,7 +417,8 @@ export async function GET(
       if (manager) {
         const modified = manager.getLeafEntry()?.timestamp ?? manager.getHeader()?.timestamp ?? new Date().toISOString();
         const history = buildSessionTranscript(manager, source.filePath, modified);
-        return NextResponse.json({ sessionId: id, filePath: source.filePath, tree: [], ...history },
+        const inlineWorkflow = readInlineWorkflowState(id);
+        return NextResponse.json({ sessionId: id, filePath: source.filePath, tree: [], ...history, ...inlineWorkflowFields(inlineWorkflow) },
           { headers: { "cache-control": "private, no-store" } });
       }
     }
@@ -387,14 +426,16 @@ export async function GET(
       if (view === "chat" && !includeTree && !searchParams.has("older")) {
         const context = buildSessionContext(source.manager.getEntries() as never, source.manager.getLeafId(), { deferThinking: true, deferToolResultImages: true });
         if (context.messages.length === 0) {
+          const inlineWorkflow = readInlineWorkflowState(id);
           return NextResponse.json({
             sessionId: id, filePath: source.filePath, leafId: source.manager.getLeafId(), tree: [],
             context, systemPromptBinding: summarizeSessionSystemPromptBinding(readLatestSessionSystemPromptBinding(source.manager.getEntries())),
             historyPage: { older: null, contextVersion: "memory" },
+            ...inlineWorkflowFields(inlineWorkflow),
           }, { headers: { "cache-control": "private, no-store" } });
         }
       }
-      const payload = await buildSessionResponse(
+      const built = await buildSessionResponse(
         id,
         source.filePath,
         source.manager.getHeader()?.timestamp ?? new Date().toISOString(),
@@ -403,7 +444,7 @@ export async function GET(
         includeTree,
         source.manager,
       );
-      return new Response(JSON.stringify(payload), {
+      return new Response(JSON.stringify(built.payload), {
         status: 200,
         headers: {
           "cache-control": "private, no-store",

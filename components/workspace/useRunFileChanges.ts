@@ -20,12 +20,14 @@ function sameSnapshot(previous: PromptFileChanges | null, next: PromptFileChange
     && previous.partial === next.partial && previous.files.length === next.files.length
     && previous.files.every((file, index) => file.path === next.files[index].path
       && file.kind === next.files[index].kind && file.patchRevision === next.files[index].patchRevision
-      && file.additions === next.files[index].additions && file.deletions === next.files[index].deletions);
+      && file.additions === next.files[index].additions && file.deletions === next.files[index].deletions
+      && file.unavailableReason === next.files[index].unavailableReason);
 }
 
 export function useRunFileChanges(sessionId: string | null, active: boolean, running: boolean, refreshKey: number) {
   const [loaded, setLoaded] = useState<PromptFileChanges | null>(null);
   const [lastStart, setLastStart] = useState<RunStart | null>(null);
+  const [manualRefresh, setManualRefresh] = useState(0);
   const start = lastStart?.sessionId === sessionId ? lastStart : null;
   const snapshot = loaded?.sessionId === sessionId && belongsToRun(loaded, start) ? loaded : null;
 
@@ -33,6 +35,10 @@ export function useRunFileChanges(sessionId: string | null, active: boolean, run
     if (id === sessionId) setLastStart((current) => current?.sessionId === id
       && (current.runId === runId || current.timestamp > timestamp) ? current : { sessionId: id, runId, timestamp });
   }, [sessionId]);
+
+  const refresh = useCallback(() => {
+    setManualRefresh((count) => count + 1);
+  }, []);
 
   useEffect(() => {
     if (!active || !sessionId) return;
@@ -57,7 +63,7 @@ export function useRunFileChanges(sessionId: string | null, active: boolean, run
       if (!signal.aborted && !running && ++settlementReads >= 25) polling.stop();
     }, running ? 3000 : 1000);
     return () => polling.stop();
-  }, [active, refreshKey, running, sessionId, start]);
+  }, [active, manualRefresh, refreshKey, running, sessionId, start]);
 
-  return { snapshot, reportStart };
+  return { snapshot, reportStart, refresh };
 }
