@@ -53,8 +53,10 @@ export async function PUT(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { name?: unknown; prompt?: unknown };
-    return await finishMutation(createSystemPromptTemplate(body.name, body.prompt));
+    const body = await request.json() as { name?: unknown; prompt?: unknown; applyMode?: unknown };
+    return await finishMutation(createSystemPromptTemplate(body.name, body.prompt, undefined, {
+      applyMode: body.applyMode,
+    }));
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
@@ -66,6 +68,7 @@ export async function PATCH(request: Request) {
       id?: unknown;
       name?: unknown;
       prompt?: unknown;
+      applyMode?: unknown;
       selectorVisible?: unknown;
       defaultTemplateId?: unknown;
     };
@@ -74,7 +77,11 @@ export async function PATCH(request: Request) {
     }
     const config = Object.hasOwn(body, "defaultTemplateId")
       ? setDefaultSystemPromptTemplate(body.defaultTemplateId)
-      : updateSystemPromptTemplate(body.id, { name: body.name, prompt: body.prompt });
+      : updateSystemPromptTemplate(body.id, {
+          name: body.name,
+          prompt: body.prompt,
+          applyMode: body.applyMode,
+        });
     return await finishMutation(config);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });

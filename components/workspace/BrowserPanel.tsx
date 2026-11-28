@@ -318,12 +318,13 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, 
       width: Math.max(0, Math.floor(right) - Math.ceil(left)),
       height: Math.max(0, Math.floor(bottom) - Math.ceil(top)),
     };
-    const show = panelActiveRef.current && !deviceDragging && !resizingRef.current && visible && bounds.width > 0 && bounds.height > 0;
+    const show = panelActiveRef.current && readySession === sessionId && !deviceDragging && !resizingRef.current
+      && visible && bounds.width > 0 && bounds.height > 0;
     const covered = show && browserViewportCovered(element.ownerDocument, bounds);
     viewportLayoutRef.current = { bounds, covered };
     if (covered) viewportSyncRef.current?.suspend(bounds);
     else viewportSyncRef.current?.sync(bounds, show);
-  }, [deviceDragging, state?.url]);
+  }, [deviceDragging, readySession, sessionId, state?.url]);
 
   useLayoutEffect(() => {
     // WebContentsView lives above the renderer DOM and is not clipped by the
@@ -505,7 +506,7 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, 
   const agentWaiting = agentActivity?.sessionId === sessionId ? agentActivity.waiting === true : Boolean(state?.agentWaiting);
   const agentWaitReason = agentActivity?.sessionId === sessionId ? (agentActivity.reason || "") : (state?.agentWaitReason || "");
   const loginWaiting = browserWaitPurpose(agentWaitReason, agentActivity?.sessionId === sessionId ? agentActivity.purpose : state?.agentWaitPurpose) === "login";
-  const decideWait = async (decision: "continue" | "cancel") => {
+  const cancelWait = async () => {
     if (!sessionId) return;
     try {
       const lookup = await fetch(`/api/agent/${encodeURIComponent(sessionId)}/browser-wait`, { cache: "no-store" });
@@ -518,7 +519,7 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, 
       const response = await fetch(`/api/agent/${encodeURIComponent(sessionId)}/browser-wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision, toolCallId }),
+        body: JSON.stringify({ decision: "cancel", toolCallId }),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as { error?: string } | null;
@@ -543,8 +544,7 @@ function DesktopBrowserPanel({ active, bridge, maximized, sessionId, workspace, 
       {agentWaiting ? <>
         <span>{loginWaiting ? t("browser.loginWaiting") : (agentWaitReason || t("browser.waitTitle"))}</span>
         <span className={styles.browserAgentActions}>
-          {!loginWaiting && <button type="button" onClick={() => void decideWait("continue")}>{t("browser.waitContinue")}</button>}
-          <button type="button" onClick={() => void decideWait("cancel")}>{t("browser.waitCancel")}</button>
+          <button type="button" onClick={() => void cancelWait()}>{t("browser.waitCancel")}</button>
         </span>
       </> : <span>{t("browser.agentOperating")}</span>}
     </div> : null}

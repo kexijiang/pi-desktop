@@ -1,7 +1,8 @@
 import { commandOperationView } from "@/lib/chat-command-events";
 import { NextResponse } from "next/server";
 import { getRpcSession } from "@/lib/rpc-manager";
-import { resolveOrStartRpcSession } from "@/lib/session-runtime-resolver";
+import { resolveOrStartRpcSession, SessionRuntimeResolverError } from "@/lib/session-runtime-resolver";
+import { readColdSessionCommands } from "@/lib/rpc/cold-commands";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { getAgentRuntimeProfile } from "@/lib/agent-runtime-profile";
 import { resolveSessionAgentRuntimeProfile } from "@/lib/agent-profile-store";
@@ -23,7 +24,7 @@ function errorStatus(error: unknown): number {
     if (["SESSION_NOT_FOUND", "SESSION_FILE_INVALID", "COMMAND_NOT_FOUND"].includes(error.code)) return 404;
     if (["SESSION_BUSY", "STEER_REQUIRES_RUNNING_SESSION", "SESSION_QUEUE_FULL"].includes(error.code)) return 409;
     if (error.code === "SESSION_MESSAGE_TOO_LARGE") return 413;
-    if (["INVALID_SESSION_MESSAGE", "COMMAND_EXPIRED"].includes(error.code)) return 400;
+    if (["INVALID_SESSION_MESSAGE", "COMMAND_EXPIRED", "MODEL_IMAGE_UNSUPPORTED"].includes(error.code)) return 400;
   }
   return 500;
 }
@@ -109,6 +110,7 @@ export async function POST(
         ...(body.workflow !== undefined ? { workflow: parseWorkflowPromptOptions(body.workflow) } : {}),
         ...(Array.isArray(body.images) ? { images: body.images } : {}),
         ...(Array.isArray(body.materials) ? { materials: body.materials as Array<{ id: string }> } : {}),
+        ...(body.resumeInterrupted === true ? { resumeInterrupted: true } : {}),
       };
       const result = body.type === "steer"
         ? await router.steerSession(input)
@@ -139,6 +141,19 @@ export async function POST(
       return NextResponse.json({ success: true, data: result });
     }
 
+    // Do not cold-start a full AgentSession + MCP processes just to abort, restart,
+    // or inspect slash commands on a session that is not running.
+    if (body.type === "abort" || body.type === "abort_bash" || body.type === "abort_compaction") {
+      return NextResponse.json({ success: true, data: null });
+    }
+    if (body.type === "restart_extensions") {
+      return NextResponse.json({ success: true, data: { success: true } });
+    }
+    if (body.type === "get_commands") {
+      const result = await readColdSessionCommands(id, runtimeProfile);
+      return NextResponse.json({ success: true, data: result });
+    }
+
     const { session } = await resolveOrStartRpcSession(id, { runtimeProfile });
     const result = await session.send(body);
 
@@ -147,7 +162,13 @@ export async function POST(
     if (error instanceof WorkflowInputError) return NextResponse.json({ error: error.message, code: error.code }, { status: 400 });
     if (isWorkflowError(error)) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     if (error instanceof ChatInputDispatchError) return NextResponse.json({ error: error.message, code: error.code, commandName: error.commandName }, { status: error.status });
-    return NextResponse.json({ error: error instanceof Error ? error.message : String(error), ...(error instanceof SessionMessageRouterError ? { code: error.code } : {}) }, { status: errorStatus(error) });
+    if (error instanceof SessionRuntimeResolverError && error.code === "SESSION_NOT_FOUND") {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 404 });
+    }
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof SessionMessageRouterError ? { code: error.code, ...(error.details ? { errorDetails: error.details } : {}) } : {}),
+    }, { status: errorStatus(error) });
   }
 }
 

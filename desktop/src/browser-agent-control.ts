@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { BrowserInteractionWaits } from "./browser-interaction-wait.js";
 import { BROWSER_LOGIN_STATE_SCRIPT, browserLoginCompleted, LOGIN_VERIFICATION_DELAY_MS, readBrowserLoginState, type BrowserLoginState } from "./browser-login.js";
 import {
   ACTIVE_ELEMENT_PASSWORD_SCRIPT,
@@ -206,6 +207,7 @@ export class BrowserAgentControl {
   private readonly waiting = new Map<string, string>();
   private readonly waitIds = new Map<string, string>();
   private readonly loginWaits = new Map<string, { tabId: string; before: BrowserLoginState | null; candidateUrl: string; candidateSince: number; samples: number }>();
+  private readonly interactionWaits: BrowserInteractionWaits;
   private readonly meta = new Map<string, TabMeta>();
   private readonly lastUsed = new Map<string, number>();
   private readonly lastRequestAt = new Map<string, number>();
@@ -223,6 +225,8 @@ export class BrowserAgentControl {
 
   constructor(host: BrowserAgentHost, options: BrowserAgentControlOptions = {}) {
     this.host = host;
+    this.interactionWaits = new BrowserInteractionWaits((tabId, script) => this.runTabOp(tabId,
+      () => this.host.executeIsolated(tabId, ISOLATED_WORLD_ID, script), 500, "Browser interaction observation timed out"), () => this.host.now());
     this.cdpTimeoutMs = options.cdpTimeoutMs ?? CDP_TIMEOUT_MS;
     this.navigationTimeoutMs = options.navigationTimeoutMs ?? NAVIGATION_TIMEOUT_MS;
     this.idleUnloadMs = options.idleUnloadMs ?? IDLE_UNLOAD_MS;
@@ -270,6 +274,10 @@ export class BrowserAgentControl {
 
   noteUsed(tabId: string): void {
     this.lastUsed.set(tabId, this.host.now());
+  }
+
+  noteUserInteraction(sessionId: string, tabId: string): void {
+    if (this.host.isShowing(tabId)) this.interactionWaits.noteInput(sessionId, tabId);
   }
 
   heldTabs(): Array<{ id: string; bounds: { x: number; y: number; width: number; height: number } }> {
@@ -327,6 +335,7 @@ export class BrowserAgentControl {
       this.waiting.delete(sessionId);
       this.waitIds.delete(sessionId);
       this.loginWaits.delete(sessionId);
+      this.interactionWaits.delete(sessionId);
       try {
         await this.restoreSession(sessionId);
       } catch (error) {
@@ -718,6 +727,7 @@ export class BrowserAgentControl {
     this.waiting.set(request.sessionId, reason);
     this.waitIds.set(request.sessionId, request.waitId ?? "");
     this.loginWaits.delete(request.sessionId);
+    this.interactionWaits.delete(request.sessionId);
     const tabId = this.agentTabs.get(request.sessionId) ?? null;
     if (tabId) {
       this.host.activateSessionTab?.(request.sessionId, tabId);
@@ -726,6 +736,8 @@ export class BrowserAgentControl {
         const observation = { tabId, before: null as BrowserLoginState | null, candidateUrl: "", candidateSince: 0, samples: 0 };
         this.loginWaits.set(request.sessionId, observation);
         try { observation.before = await this.observeLogin(tabId); } catch { /* Retry after navigation settles. */ }
+      } else if (!this.tab(tabId)?.vaultProtected) {
+        await this.interactionWaits.begin(request.sessionId, tabId, request.selector);
       }
     }
     this.publish(request.sessionId);
@@ -738,6 +750,7 @@ export class BrowserAgentControl {
     const wasWaiting = this.waiting.delete(request.sessionId);
     this.waitIds.delete(request.sessionId);
     this.loginWaits.delete(request.sessionId);
+    this.interactionWaits.delete(request.sessionId);
     const tabId = this.agentTabs.get(request.sessionId) ?? null;
     if (wasWaiting && tabId) this.metaOf(tabId).refsInvalid = true;
     this.publish(request.sessionId);
@@ -748,8 +761,13 @@ export class BrowserAgentControl {
     this.assertSession(request.sessionId);
     if (request.waitId && this.waitIds.get(request.sessionId) !== request.waitId) return { completed: false };
     const observation = this.loginWaits.get(request.sessionId);
-    const tab = observation ? this.tab(observation.tabId) : undefined;
-    if (!observation || !tab || tab.closed || tab.unloaded) return { completed: false };
+    const tab = observation ? this.tab(observation.tabId) : this.currentTab(request.sessionId);
+    if (!tab || tab.closed || tab.unloaded || tab.sessionId !== request.sessionId) return { completed: false };
+    if (!observation) {
+      const completed = !tab.vaultProtected && await this.interactionWaits.check(request.sessionId, tab.id);
+      this.throwIfAborted(signal);
+      return { completed, verificationRequired: true };
+    }
     const after = await this.observeLogin(tab.id);
     this.throwIfAborted(signal);
     if (this.loginWaits.get(request.sessionId) !== observation || observation.tabId !== tab.id) return { completed: false };
@@ -978,6 +996,7 @@ export class BrowserAgentControl {
     this.waiting.delete(sessionId);
     this.waitIds.delete(sessionId);
     this.loginWaits.delete(sessionId);
+    this.interactionWaits.delete(sessionId);
     this.publish(sessionId);
     return { action: "session_closed", closed: tabs.length, text: `Closed ${tabs.length} browser tabs for this session.` };
   }

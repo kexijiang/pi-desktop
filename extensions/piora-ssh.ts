@@ -169,14 +169,16 @@ export default function pioraSSH(api: ExtensionAPI) {
       throw new Error("Unsupported SSH action.");
     },
   }));
-  api.on("before_agent_start", (event) => {
+  api.on("before_agent_start", (event, ctx) => {
     const selected = event.systemPromptOptions?.selectedTools ?? [];
     const hidden = new Set(event.systemPromptOptions?.hiddenTools ?? []);
     sshSelectedForTurn = selected.includes("ssh") && !hidden.has("ssh");
+    const sessionId = ctx?.sessionManager?.getSessionId?.();
+    const hasLinkedSsh = Boolean(sessionId && listSSHSessionSummariesForAgent(sessionId).length > 0);
     applyExtensionPromptGuidance(event, {
       key: "ssh",
       toolNames: ["ssh"],
-      active: sshSelectedForTurn,
+      active: sshSelectedForTurn && hasLinkedSsh,
     });
   });
 

@@ -22,7 +22,26 @@ type DispatcherGlobal = typeof globalThis & {
 
 const dispatcherGlobal = globalThis as DispatcherGlobal;
 const originalGlobalFetch = globalThis.fetch;
-const ignoreUndiciDispatcherError = (): void => {};
+const dispatcherWarnLastAt = new Map<string, number>();
+const DISPATCHER_WARN_WINDOW_MS = 5_000;
+const logUndiciDispatcherError = (error: unknown): void => {
+  const code = error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : "UNKNOWN";
+  const rawMessage = error instanceof Error ? error.message : String(error ?? "Unknown dispatcher error");
+  const safeMessage = rawMessage
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [REDACTED]")
+    .replace(/([?&](?:api[_-]?key|token|key|secret)=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/\s+/g, " ")
+    .slice(0, 200);
+  const signature = `${code}:${safeMessage}`;
+  const now = Date.now();
+  const lastAt = dispatcherWarnLastAt.get(signature) ?? 0;
+  if (now - lastAt < DISPATCHER_WARN_WINDOW_MS) return;
+  if (dispatcherWarnLastAt.size > 64) dispatcherWarnLastAt.clear();
+  dispatcherWarnLastAt.set(signature, now);
+  console.warn(`[pi-web:http] undici dispatcher error code=${code} message=${JSON.stringify(safeMessage)}`);
+};
 const PROXY_ENV_KEYS = [
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
   "http_proxy", "https_proxy", "no_proxy", "all_proxy",
@@ -62,7 +81,7 @@ export function readConfiguredHttpIdleTimeoutMs(settingsPath = join(getRuntimeAg
 // terminating the Next.js process first.
 function withUndiciErrorListener<T extends undici.Dispatcher>(dispatcher: T): T {
   if (dispatcher instanceof EventEmitter) {
-    EventEmitter.prototype.on.call(dispatcher, "error", ignoreUndiciDispatcherError);
+    EventEmitter.prototype.on.call(dispatcher, "error", logUndiciDispatcherError);
   }
   return dispatcher;
 }

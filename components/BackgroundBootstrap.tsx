@@ -2,7 +2,7 @@
 
 import { useBackground } from "@/hooks/useBackground";
 import { useInterfaceTransparency } from "@/hooks/useInterfaceTransparency";
-import { getFlagshipTheme } from "@/lib/appearance/flagship-themes";
+import { FLAGSHIP_THEMES_ENABLED, getFlagshipTheme } from "@/lib/appearance/flagship-themes";
 import { getBackgroundMotionKind, getBackgroundPreset } from "@/lib/backgrounds";
 import { BackgroundMotion } from "./BackgroundMotion";
 import { CharacterBackgroundMotion } from "./CharacterBackgroundMotion";
@@ -15,7 +15,7 @@ export function BackgroundBootstrap() {
   if (preference.source !== "builtin" || preference.motionEnabled === false) return null;
   const kind = getBackgroundMotionKind(preference.presetId);
   if (kind === "glacier") return <BackgroundMotion />;
-  if (kind === "flagship") {
+  if (FLAGSHIP_THEMES_ENABLED && kind === "flagship") {
     const flagship = getFlagshipTheme(preference.presetId);
     return flagship ? (
       <FlagshipBackgroundMotion

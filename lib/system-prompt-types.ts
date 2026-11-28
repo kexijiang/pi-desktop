@@ -1,7 +1,10 @@
+export type SystemPromptApplyMode = "append" | "replace";
+
 export interface SystemPromptTemplate {
   id: string;
   name: string;
   prompt: string;
+  applyMode?: SystemPromptApplyMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -17,6 +20,7 @@ export interface SessionSystemPromptBinding {
   templateId: string | null;
   templateName: string | null;
   prompt: string | null;
+  applyMode?: SystemPromptApplyMode;
   promptDeferred?: true;
   appliedAt: string;
 }

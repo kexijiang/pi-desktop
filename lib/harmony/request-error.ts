@@ -45,6 +45,9 @@ export class HarmonyRequestError extends Error {
     if (this.reason === "debug-video-sdk-missing") return chinese
       ? "未找到原生投屏运行时。请修复或更新 Piora 后重新连接；正常安装无需额外安装 DevEco Studio。"
       : "The native video runtime is missing. Repair or update Piora and reconnect; a normal installation does not require DevEco Studio.";
+    if (this.ownedByAnotherInstance && !this.controlStatus) return chinese
+      ? "设备正在被另一个 Piora 实例使用。请先在该实例中结束设备操作，再重试。"
+      : "Another Piora instance is using this device. End device operations in that instance, then retry.";
     if (this.reason === "debug-video-busy") return chinese
       ? "其他开发工具正在使用这台手机的视频通道。请关闭其投屏后重新连接，Piora 不会强行停止其他工具。"
       : "Another development tool is using this phone's video channel. Close its mirror and reconnect.";

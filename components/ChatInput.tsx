@@ -6,6 +6,7 @@ import type { ComposerActivity } from "@/lib/character-director-state";
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import { useReplyDraft } from "@/hooks/useReplyDraft";
 import { useReplySuggestions } from "@/hooks/useReplySuggestions";
+import { useInputPrediction } from "@/hooks/useInputPrediction";
 import { ReplySuggestionBar } from "./ReplySuggestionBar";
 import type { ReplySource } from "@/lib/reply-suggestions";
 import type { AttachedFile, BuiltinSlashCommandResult, CompactResultInfo, SlashCommandInfo } from "@/hooks/useAgentSession";
@@ -78,6 +79,8 @@ import {
   ModelErrorBanner,
   PromptOptimizationReview,
 } from "./chat-input/ComposerBanners";
+import { ImageUnsupportedComposerWarning } from "./chat-input/ImageUnsupportedNotice";
+import type { ModelSettingsFocusTarget } from "@/lib/model-image-error";
 import { FileMentionMenu, InputHistoryMenu, SlashCommandMenu } from "./chat-input/ComposerMenus";
 import { ContextUsageRing, SessionStatsBadge } from "./chat-input/ComposerMetrics";
 import { ModelSettingsMenu } from "./chat-input/ModelSettingsMenu";
@@ -102,6 +105,7 @@ export {
 
 interface Props {
   replySource?: ReplySource | null;
+  predictionActive?: boolean;
   onSend: (message: string, images?: AttachedImage[], files?: AttachedFile[], onDurable?: (clientPromptId?: string) => void, retryOfPromptIds?: string[], inputOptions?: ChatInputOptions) => boolean | void | Promise<boolean | void>;
   onQueueInput?: (message: string, images?: AttachedImage[], files?: AttachedFile[], onDurable?: (clientPromptId?: string) => void, inputOptions?: ChatInputOptions, retryOfPromptIds?: string[]) => Promise<boolean>;
   commandCatalog?: ChatCommandCatalog;
@@ -116,9 +120,10 @@ interface Props {
   model?: { provider: string; modelId: string } | null;
   isAutoModelSelection?: boolean;
   modelNames?: Record<string, string>;
-  modelList?: { id: string; name: string; provider: string; contextWindow?: number; isDefault?: boolean }[];
+  modelList?: { id: string; name: string; provider: string; contextWindow?: number; isDefault?: boolean; supportsImages?: boolean }[];
   modelError?: string | null;
   onModelChange?: (provider: string, modelId: string) => Promise<boolean>;
+  onOpenModels?: (target?: ModelSettingsFocusTarget) => void;
   onCompact?: () => void;
   onAbortCompaction?: () => void;
   isCompacting?: boolean;
@@ -141,6 +146,7 @@ interface Props {
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
   contextUsage?: ContextUsage | null;
+  promptBudget?: import("@/lib/prompt-runtime/budget").PromptBudgetReport | null;
   sessionStats?: SessionStatsInfo | null;
   extensionStatuses?: ExtensionStatusItem[];
   /** Reuses the production composer in a spacious new-task launch surface. */
@@ -191,7 +197,7 @@ export interface ChatInputHandle {
 }
 
 export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, sendDisabled = false, model, isAutoModelSelection, modelNames, modelList, modelError, onModelChange,
+  onSend, onAbort, onSteer, onFollowUp, isStreaming, sendDisabled = false, model, isAutoModelSelection, modelNames, modelList, modelError, onModelChange, onOpenModels,
   onCompact, onAbortCompaction, isCompacting, compactionStartedAt = null, compactError, onDismissCompactError, compactResult, onDismissCompactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, inputHistory = [],
@@ -202,6 +208,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   draftKey,
   cwd,
   contextUsage,
+  promptBudget,
   sessionStats,
   extensionStatuses = [],
   variant = "conversation",
@@ -213,6 +220,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   toolPermission, permissionSaving, onToolPermissionChange, onCharacterActivity,
   surfacePlacement = "main", sideChatEnabled = false, canOpenSideChat = false, onOpenSideChat,
   replySource = null,
+  predictionActive = true,
 }: Props, ref) {
   const { t, locale } = useI18n();
   const { mode: defaultSendMode } = useRunningSendMode();
@@ -788,13 +796,6 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   }, []);
 
   useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    if (value) resizeComposerTextarea(ta);
-  }, [value]);
-
-  useEffect(() => {
     return () => {
       stopVoiceInput(true);
       promptOptimizerAbortRef.current?.abort();
@@ -1223,6 +1224,22 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
       : Math.max(0, slashActiveIndex - 1);
   }, [filteredSlashCommands.length, slashActiveIndex]);
 
+  const prediction = useInputPrediction(
+    predictionActive && !sendingRef.current && (!draftKey || hydratedDraftKey === draftKey)
+      && !value && !attachedImages.length && !attachedFiles.length && !isProcessingImages && !isProcessingFiles
+      && !isStreaming && !isCompacting && !sendDisabled && !permissionSaving && !isAutoModelSelection
+      && !composerWorkflow.isGoalDrafting && !workflowAutoContinuing && !localVoiceRecording && !voiceTranscribing
+      ? replySource : null,
+    cwd, locale,
+  );
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    if (value || prediction) resizeComposerTextarea(ta);
+  }, [value, prediction]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const nativeEvent = e.nativeEvent;
@@ -1368,6 +1385,13 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
         return;
       }
 
+      if (prediction && e.key === "Tab" && !e.currentTarget.value && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+        && !historyMenuOpen && !slashMenuOpen && !atMenuOpen && !attachmentMenuOpen) {
+        e.preventDefault();
+        setValue(prediction);
+        return;
+      }
+
       if (matchesSendShortcut(e, newlineShortcut)) {
         e.preventDefault();
         const textarea = e.currentTarget;
@@ -1395,7 +1419,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
       // Only the configured newline binding inserts a line break.
       if (e.key === "Enter") e.preventDefault();
     },
-    [isStreaming, isCommandInput, surfacePlacement, sideChatEnabled, onQueueInput, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, selectSlashCommand, submitComposer, composerWorkflow, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, stopVoiceInput, localVoiceRecording, attachmentMenuOpen, submitStreamingMessage, undoReplyDraft, sendShortcut, newlineShortcut, setValue, updateAtQuery, closeSendModeMenu, sendModeMenuRef, setAtActiveIndex, setAtMenuOpen]
+    [prediction, isStreaming, isCommandInput, surfacePlacement, sideChatEnabled, onQueueInput, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, selectSlashCommand, submitComposer, composerWorkflow, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, stopVoiceInput, localVoiceRecording, attachmentMenuOpen, submitStreamingMessage, undoReplyDraft, sendShortcut, newlineShortcut, setValue, updateAtQuery, closeSendModeMenu, sendModeMenuRef, setAtActiveIndex, setAtMenuOpen]
   );
 
   const handleInput = useCallback(() => {
@@ -1463,7 +1487,13 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
   // Build model options: prefer modelList (has provider info), fallback to modelNames
   const modelOptions: ModelOption[] = (() => {
     if (modelList && modelList.length > 0) {
-      return modelList.map((m) => ({ provider: m.provider, modelId: m.id, name: m.name, isDefault: m.isDefault }));
+      return modelList.map((m) => ({
+        provider: m.provider,
+        modelId: m.id,
+        name: m.name,
+        isDefault: m.isDefault,
+        supportsImages: m.supportsImages,
+      }));
     }
     return Object.entries(modelNames ?? {}).map(([modelId, name]) => ({
         provider: model?.provider ?? "unknown",
@@ -1471,6 +1501,9 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
         name,
       }));
   })();
+  const activeModelOption = model && !isAutoModelSelection
+    ? modelOptions.find((o) => o.modelId === model.modelId && o.provider === model.provider) ?? null
+    : null;
   const filteredModelOptions = filterModelOptions(modelOptions, modelFilter);
   const showModelFilter = modelOptions.length > MODEL_FILTER_THRESHOLD;
 
@@ -1590,6 +1623,16 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
           </div>
         )}
         {isProcessingFiles && <div role="status" style={{ marginBottom: 6, color: "var(--text-muted)", fontSize: "var(--text-xs)" }}>{t("chat.processingFiles")}</div>}
+        {attachedImages.length > 0 && activeModelOption && activeModelOption.supportsImages === false && (
+          <ImageUnsupportedComposerWarning
+            currentModel={activeModelOption}
+            modelOptions={modelOptions}
+            disabled={isStreaming}
+            onOpenModels={onOpenModels}
+            onSelectModel={onModelChange}
+            onClearImages={clearImages}
+          />
+        )}
         <ComposerAttachmentsBar
           attachedImages={attachedImages}
           previewImage={previewImage}
@@ -1747,15 +1790,17 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
             }}
             onInput={handleInput}
             onPaste={handlePaste}
+            aria-keyshortcuts={prediction ? "Tab" : undefined}
+            title={prediction ? t("prediction.acceptHint") : undefined}
             placeholder={
-              workflowAutoContinuing
+              prediction || (workflowAutoContinuing
                 ? t("workflow.goal.continuing")
                 : composerWorkflow.isGoalDrafting
                   ? t("workflow.goal.draftPlaceholder")
                   : (placeholder ?? (isStreaming && (onSteer || onFollowUp)
                     ? t("chat.steerPlaceholder")
                     : isStreaming ? t("chat.agentPlaceholder")
-                    : t("chat.messagePlaceholder")))
+                    : t("chat.messagePlaceholder"))))
             }
             data-goal-drafting={composerWorkflow.isGoalDrafting ? "true" : undefined}
             rows={composerWorkflow.isGoalDrafting ? 3 : 1}
@@ -1852,7 +1897,7 @@ export const ChatInput = React.memo(forwardRef<ChatInputHandle, Props>(function 
             <div style={{ flex: 1 }} />
             {variant === "conversation" ? <ExtensionStatusBar statuses={extensionStatuses} /> : null}
             {variant === "conversation" ? <SessionStatsBadge sessionStats={sessionStats} /> : null}
-            {variant === "conversation" ? <ContextUsageRing contextUsage={contextUsage} /> : null}
+            {variant === "conversation" ? <ContextUsageRing contextUsage={contextUsage} promptBudget={promptBudget} /> : null}
             <div className="composer-submit-controls">
             {/* Codex-style model settings: one compact summary chip with focused submenus. */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (

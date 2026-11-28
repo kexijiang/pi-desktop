@@ -52,12 +52,12 @@ export function TrashSettings({ embedded = false, onChanged }: { embedded?: bool
     {restored && <p role="status" className={styles.restoredNotice}>{t("trash.restored", { title: restored.title })} <a href={`?session=${encodeURIComponent(restored.id)}`}>{t("trash.openConversation")}</a></p>}
     {error && <div className={styles.error} role="alert"><span>{t("trash.failed", { error })}</span><button onClick={() => void load()}>{t("archive.retry")}</button></div>}
     {loading ? <p role="status">{t("archive.loading")}</p> : filtered.length === 0 ? <p className={styles.state}>{t("trash.empty")}</p> : null}
-    <div className={styles.list}>{filtered.map((item) => <article className={styles.row} key={item.id}>
+    <div className={styles.list}>{filtered.map((item) => <article className={`${styles.row} ${styles.trashRow}`} key={item.id}>
       <div className={styles.rowCopy}><div className={styles.rowTitle}>{item.title}</div>
         <div>{t("trash.item", { count: item.count, date: new Date(item.expiresAt).toLocaleDateString(locale) })}</div>
         <small title={item.cwd}>{item.cwd}</small>
       </div>
-      <button className={styles.unarchiveButton} disabled={busy !== null} onClick={() => void restore(item.id)}>{busy === item.id ? t("archive.working") : t("trash.restore")}</button>
+      <button type="button" className={styles.unarchiveButton} disabled={busy !== null} onClick={() => void restore(item.id)}>{busy === item.id ? t("archive.working") : t("trash.restore")}</button>
     </article>)}</div>
   </div>;
 }

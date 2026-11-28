@@ -3,7 +3,7 @@ import { requireRoomMemberBySession } from "@/lib/team-agent-api";
 import { teamApiError } from "@/lib/team-api";
 import { TeamError } from "@/lib/team-errors";
 import { listRoomMessages } from "@/lib/room-store";
-import { drainRoomSubmissions, listRoomSubmissions, submitRoomMessage, type RoomSubmissionInput } from "@/lib/room-submissions";
+import { canRetryRoomSubmissionBySession, drainRoomSubmissions, listRoomSubmissions, submitRoomMessage, type RoomSubmissionInput } from "@/lib/room-submissions";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params;
     const body = await parseJsonWithinLimit(request, 512 * 1024) as RoomSubmissionInput;
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new TeamError("TEAM_INVALID_INPUT", "消息格式无效。");
-    requireRoomMemberBySession(id, body.sessionId);
+    if (!canRetryRoomSubmissionBySession(id, body.clientPromptId, body.sessionId)) {
+      requireRoomMemberBySession(id, body.sessionId);
+    }
     const { message, submission } = await submitRoomMessage(id, body, undefined, true);
     const { input: _input, requestHash: _hash, ...receipt } = submission as typeof submission & { input?: unknown; requestHash?: string };
     void _input; void _hash;

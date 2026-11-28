@@ -1,10 +1,39 @@
 import { mergePendingPrompts, readPendingPrompts } from "./prompt-recovery";
-import type { SessionContext } from "./types";
+import type { SessionStatsInfo } from "./pi-types";
+import type { SessionSystemPromptBinding } from "./system-prompt-types";
+import type { SessionContext, SessionInfo, SessionTreeNode } from "./types";
 
 export interface ChatHistoryResource {
   context: SessionContext;
   leafId: string | null;
   persistedPromptIds?: string[];
+}
+
+export interface SessionData extends ChatHistoryResource {
+  stats?: SessionStatsInfo;
+  sessionId: string;
+  filePath: string;
+  info?: SessionInfo | null;
+  tree: SessionTreeNode[];
+  systemPromptBinding?: SessionSystemPromptBinding | null;
+}
+
+export interface ChatHistorySnapshot {
+  data: SessionData;
+  byteLength: number;
+  etag: string | null;
+}
+
+export async function readChatHistorySnapshot(response: Response, signal?: AbortSignal): Promise<ChatHistorySnapshot> {
+  const body = await response.text();
+  signal?.throwIfAborted();
+  return { data: JSON.parse(body), byteLength: new Blob([body]).size, etag: response.headers.get("etag") };
+}
+
+export function isSessionChatHistory(data: SessionData, sessionId: string): boolean {
+  return Array.isArray(data?.context?.messages)
+    && (!data.info?.id || data.info.id === sessionId)
+    && (!data.sessionId || data.sessionId === sessionId);
 }
 
 export function chatHistoryUrl(sessionId: string, branch?: { leafId: string | null }): string {

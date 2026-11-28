@@ -276,13 +276,26 @@ export class MirrorCaptureSession {
       this.source?.cancel(); this.rpc?.close();
       // Never terminate another IDE's global uitest service or remove its forwarding rules.
       const stopped = async () => {
-        const matched = await this.findOwnedProcesses();
-        const ordered = [...matched].sort((left, right) => Number(left.isShellWrapper) - Number(right.isShellWrapper));
+        let matched = await this.findOwnedProcesses();
+        let ordered = [...matched].sort((left, right) => Number(left.isShellWrapper) - Number(right.isShellWrapper));
         for (const proc of ordered) {
           await this.shell(`kill -9 ${proc.pid}`, "debug_video_stop");
         }
         if (ordered.length > 0 || this.daemonDispatched) {
           let sockets = await this.shell("cat /proc/net/unix", "debug_video_stop_socket");
+          if (ordered.length === 0 && sockets.includes("@scrcpy_grpc_socket")) {
+            for (let probe = 0; probe < 3 && ordered.length === 0; probe++) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+              matched = await this.findOwnedProcesses();
+              ordered = [...matched].sort((left, right) => Number(left.isShellWrapper) - Number(right.isShellWrapper));
+            }
+            for (const proc of ordered) {
+              await this.shell(`kill -9 ${proc.pid}`, "debug_video_stop");
+            }
+            if (ordered.length > 0) {
+              sockets = await this.shell("cat /proc/net/unix", "debug_video_stop_socket");
+            }
+          }
           for (let attempt = 0; ordered.length > 0 && sockets.includes("@scrcpy_grpc_socket") && attempt < 15; attempt++) {
             await new Promise(resolve => setTimeout(resolve, 100));
             sockets = await this.shell("cat /proc/net/unix", "debug_video_stop_socket");

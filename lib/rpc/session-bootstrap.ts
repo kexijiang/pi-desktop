@@ -1,5 +1,4 @@
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -34,7 +33,7 @@ import {
   readProjectToolSettings,
 } from "../project-tool-settings";
 import { installProviderPayloadValidation } from "../provider-payload";
-import { readRemoteSessionPolicy, remotePolicyResources } from "../remote-session-policy";
+import { isLegacyNotesSession, notesSessionResourceOptions } from "../notes-session";
 import {
   appendSessionCapabilityPolicy,
   buildSessionCapabilityCatalog,
@@ -51,8 +50,10 @@ import {
   buildSessionAppendSystemPrompt,
   createSessionSystemPromptBinding,
   readLatestSessionSystemPromptBinding,
+  resolveSessionAppendTemplatePrompt,
   resolveSessionSystemPrompt,
 } from "../session-system-prompt";
+import { bindPromptBudgetTracker, createSessionPromptBudgetTracker } from "../prompt-runtime/session-budget";
 import { listSSHSessionSummariesForAgent, subscribeSSHRegistry } from "../ssh/session-manager";
 import { readRuntimePromptSettings } from "../prompt-runtime/settings";
 import { readSystemPromptConfig } from "../system-prompt-config";
@@ -64,9 +65,23 @@ import { readDefaultToolPermission, writeToolPermission } from "../tool-permissi
 import { DEVICE_CONTROL_AGENT_TOOLS, resolveAgentToolsForRuntimeProfile } from "../tool-presets";
 import { ensureWindowsBashShellPath } from "../windows-bash";
 import { resolveProject } from "../worktree";
-import { getLocks, getRegistry, getServicesCache, trackStartingSession } from "./registry";
+import { evictIdleRpcSessions, getLocks, getRegistry, getServicesCache, trackStartingSession } from "./registry";
 import { AgentSessionWrapper, registerRpcSessionStarter } from "./session-wrapper";
 import type { RpcSessionStartOptions } from "./types";
+
+const NATIVE_MCP_SUBAGENT_TOOLS = new Set([
+  "codemode",
+  "tool_search",
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+function needsNativeMcpForSession(runtimeProfile: string, options: RpcSessionStartOptions): boolean {
+  if (runtimeProfile !== "normal") return false;
+  if (!options.subagentParent || !options.toolNames) return true;
+  return options.toolNames.some((name) => name.startsWith("mcp__") || NATIVE_MCP_SUBAGENT_TOOLS.has(name));
+}
 
 /**
  * Get or create an AgentSession for the given session.
@@ -130,22 +145,9 @@ export async function startRpcSession(
 
     const sessionManager = sessionFile
       ? SessionManager.open(sessionFile, undefined)
-      : options.preparedSessionFile
-        ? SessionManager.open(options.preparedSessionFile, undefined)
-        : SessionManager.create(cwd, options.subagentDirectory);
+      : SessionManager.create(cwd, options.subagentDirectory);
 
-    if (options.preparedSessionFile && (sessionManager.getSessionId() !== sessionId
-      || resolve(sessionManager.getCwd()) !== resolve(cwd)
-      || readRemoteSessionPolicy(sessionManager.getEntries()) !== options.remotePolicy)) {
-      throw new Error("Prepared remote session identity or policy does not match the creation request.");
-    }
-
-    if (!sessionFile && options.remotePolicy === "notes") {
-      if (runtimeProfile !== "normal") throw new Error("Notes-only sessions require the normal process runtime");
-      if (readRemoteSessionPolicy(sessionManager.getEntries()) !== "notes") sessionManager.appendCustomEntry("piora-remote-policy", { policy: "notes" });
-    }
-    const remotePolicy = readRemoteSessionPolicy(sessionManager.getEntries());
-    const notesOnly = remotePolicy === "notes";
+    const notesOnly = isLegacyNotesSession(sessionManager.getEntries());
     const sideChatMeta = readSideChatMetaFromEntries(sessionManager.getEntries());
     if (sideChatMeta) {
       if (runtimeProfile !== "normal") {
@@ -195,13 +197,14 @@ export async function startRpcSession(
     // mutable and must never be shared with another task in the same cwd.
     let services = getServicesCache().get(sessionServicesKey);
     if (!services && notesOnly) {
-      services = await createAgentSessionServices({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir), resourceLoaderOptions: remotePolicyResources(remotePolicy) });
+      services = await createAgentSessionServices({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir), resourceLoaderOptions: notesSessionResourceOptions() });
       getServicesCache().set(sessionServicesKey, services);
     }
     if (!services) {
       const settingsManager = SettingsManager.create(cwd, agentDir);
       const extensionPlan = await resolveExtensionLoadPlan({ cwd, agentDir, settingsManager, profile: runtimeProfile, installMissing: true });
-      const nativeMcp = runtimeProfile === "normal" ? new NativeMcpController(cwd, agentDir) : undefined;
+      const nativeMcp = needsNativeMcpForSession(runtimeProfile, options) ? new NativeMcpController(cwd, agentDir) : undefined;
+      const budgetTracker = runtimeProfile === "normal" && !notesOnly ? createSessionPromptBudgetTracker() : undefined;
       services = await createAgentSessionServices({
         cwd,
         agentDir,
@@ -227,12 +230,20 @@ export async function startRpcSession(
                 noExtensions: true,
                 extensionFactories: nativeMcp?.factories,
                 extensionsOverride: (result) => applyExtensionLoadPlan(result, extensionPlan),
+                ...(budgetTracker ? {
+                  agentsFilesOverride: budgetTracker.agentsFilesOverride,
+                  skillsOverride: budgetTracker.skillsOverride,
+                } : {}),
                 systemPromptOverride: (base) => resolveSessionSystemPrompt(
                   sessionManager.getEntries(),
                   base,
                   readSystemPromptConfig(),
                 ),
                 appendSystemPromptOverride: (baseAppend) => buildSessionAppendSystemPrompt(baseAppend, {
+                  customInstructions: resolveSessionAppendTemplatePrompt(
+                    sessionManager.getEntries(),
+                    readSystemPromptConfig(),
+                  ),
                   fileReferenceInstructions: readRuntimePromptSettings().extensions.fileReferences
                     ? FILE_REFERENCE_INSTRUCTIONS
                     : undefined,
@@ -248,6 +259,7 @@ export async function startRpcSession(
         await settingsManager.reload();
         return resolveExtensionLoadPlan({ cwd, agentDir, settingsManager, profile: runtimeProfile, installMissing: true });
       });
+      if (budgetTracker) bindPromptBudgetTracker(services.resourceLoader, budgetTracker);
       if (nativeMcp) setNativeMcpController(services, nativeMcp);
       if (runtimeProfile === "device-control") {
         if (
@@ -405,6 +417,7 @@ export async function startRpcSession(
     if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);
 
     registry.set(realSessionId, wrapper);
+    void evictIdleRpcSessions(realSessionId);
     let previousSSHInventory = JSON.stringify(listSSHSessionSummariesForAgent(realSessionId).map(item => [item.id, item.connected]));
     const unsubscribeSSH = subscribeSSHRegistry((owner) => {
       if (owner && owner !== realSessionId) return;

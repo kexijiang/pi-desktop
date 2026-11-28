@@ -4,6 +4,7 @@ import type { AgentSessionLike } from "./pi-types";
 import { applyConfiguredImageInput } from "./model-capabilities";
 import { resolveVisibleModels } from "./model-scope";
 import { omitHistoricalImages } from "./image-context";
+import { logRunEvent } from "./rpc/run-telemetry";
 
 export const MAX_MODEL_FALLBACKS = 3;
 
@@ -85,7 +86,25 @@ export async function runPromptWithModelFallback(options: {
       else if (!admitted && /no api key|no model selected|authentication|invalid.{0,10}api.?key|model.{0,50}(not found|not available)/i.test(errorText(error))) failure = error;
       else throw error;
     }
-    if (!options.enabled() || !isModelUnavailable(failure) || switches >= MAX_MODEL_FALLBACKS) throw new Error(errorText(failure));
+    if (!options.enabled() || !isModelUnavailable(failure) || switches >= MAX_MODEL_FALLBACKS) {
+      if (options.enabled() && switches >= MAX_MODEL_FALLBACKS) {
+        logRunEvent("warn", {
+          sessionId: session.sessionId,
+          reason: "model_fallback_exhausted",
+          model: session.model ? key(session.model) : undefined,
+          errorMessage: errorText(failure),
+          extra: { switches },
+        });
+      }
+      throw new Error(errorText(failure));
+    }
+    logRunEvent("warn", {
+      sessionId: session.sessionId,
+      reason: "model_fallback_triggered",
+      model: session.model ? key(session.model) : undefined,
+      errorMessage: errorText(failure),
+      extra: { attempt: switches + 1 },
+    });
     // Re-read scope for every switch so a model disabled between attempts is
     // not selected from an earlier snapshot.
     await session.settingsManager.reload();
@@ -99,9 +118,10 @@ export async function runPromptWithModelFallback(options: {
     const rank = (model: Model<Api>) => model.id === current?.id ? 0 : model.provider !== current?.provider ? 1 : 2;
     candidates.sort((a, b) => rank(a) - rank(b));
     let selected: Model<Api> | undefined;
+    let skippedCount = 0;
     for (const candidate of candidates) {
-      if (attempted.has(key(candidate)) || (requiresImages && !candidate.input.includes("image"))) continue;
-      if (contextTokens && candidate.contextWindow <= contextTokens + 4_096) continue;
+      if (attempted.has(key(candidate)) || (requiresImages && !candidate.input.includes("image"))) { skippedCount += 1; continue; }
+      if (contextTokens && candidate.contextWindow <= contextTokens + 4_096) { skippedCount += 1; continue; }
       if (switches >= MAX_MODEL_FALLBACKS) break;
       if (!options.enabled()) throw new Error(errorText(failure));
       attempted.add(key(candidate));
@@ -117,9 +137,24 @@ export async function runPromptWithModelFallback(options: {
         if (!isModelUnavailable(error)) throw error;
       }
     }
-    if (!selected) throw new Error(errorText(failure));
+    if (!selected) {
+      logRunEvent("warn", {
+        sessionId: session.sessionId,
+        reason: "model_fallback_exhausted",
+        model: current ? key(current) : undefined,
+        errorMessage: errorText(failure),
+        extra: { candidates: candidates.length, skipped: skippedCount, switches },
+      });
+      throw new Error(errorText(failure));
+    }
     const from = current ? key(current) : "unavailable model";
     const to = key(selected);
+    logRunEvent("warn", {
+      sessionId: session.sessionId,
+      reason: "model_fallback_switched",
+      model: to,
+      extra: { from, to, attempt: switches },
+    });
     options.onSwitch(from, to);
     const notice = {
       customType: "piora-model-fallback",

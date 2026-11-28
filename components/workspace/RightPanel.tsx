@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { useI18n } from "@/hooks/useI18n";
@@ -18,14 +18,15 @@ import { AutomationPanel } from "../AutomationPanel";
 import { SSHPanel } from "./SSHPanel";
 import { PlanSidePanelTab } from "../workflow/PlanSidePanelTab";
 import { GoalSidePanelTab } from "../workflow/GoalSidePanelTab";
+import { isWorkflowSidePanelTab, type WorkflowSidePanelTab } from "../workflow/workflow-events";
 import { RunChangesPane } from "./RunChangesPane";
+import { RunChangesDetail } from "./RunChangesDetail";
 import {
   dispatchFocusSideChatComposer,
   isSideChatTab,
   parseSideChatTabId,
   toSideChatLoadingTabId,
   toSideChatTabId,
-  type SideChatTabId,
 } from "../side-chat/side-chat-events";
 import {
   SideChatMenuEntries,
@@ -35,9 +36,10 @@ import {
 } from "../side-chat/SideChatRightPanelSlots";
 import type { SessionCapabilitiesState } from "@/lib/session-capabilities";
 import type { BrowserNavigationRequest } from "@/lib/answer-links";
+import type { PromptFileChanges } from "@/lib/prompt-file-changes";
+import type { RightPanelTab, RightPanelToolTab } from "@/hooks/useRightPanelLayout";
 
-type StaticToolTab = "automation" | "review" | "files" | "commands" | "ssh" | "browser" | "design" | "harmony" | "plan" | "goal";
-export type RightPanelTab = "home" | StaticToolTab | SideChatTabId;
+export type { RightPanelTab } from "@/hooks/useRightPanelLayout";
 export interface RightPanelHandle { focusActiveTab: () => void; focusFileSearch: () => void; }
 
 interface Props {
@@ -48,12 +50,18 @@ interface Props {
   contextHeader?: ReactNode;
   activeTab: RightPanelTab;
   onActiveTabChange: (tab: RightPanelTab) => void;
+  openTools: RightPanelToolTab[];
+  onOpenToolsChange: Dispatch<SetStateAction<RightPanelToolTab[]>>;
+  onCloseWorkflowTab: () => void;
   cwd: string | null;
   refreshKey: number;
   active: boolean;
   maximized: boolean;
   onMaximizedChange: (maximized: boolean) => void;
   onClosePanel: () => void;
+  fileNavMode: "tree" | "run";
+  onFileNavModeChange: (mode: "tree" | "run") => void;
+  runFileChanges: PromptFileChanges | null;
   fileTabs: Tab[];
   activeFileTabId: string | null;
   canReopenClosedFileTab: boolean;
@@ -80,7 +88,7 @@ interface Props {
   capabilities: SessionCapabilitiesState | null;
 }
 
-const TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; shortcut?: string; labelKey?: string }> = [
+const TOOLS: Array<{ id: RightPanelToolTab; icon: AliIconName; shortcut?: string; labelKey?: string }> = [
   { id: "automation", icon: "calendar" },
   { id: "review", icon: "diff", shortcut: "Ctrl+Shift+G" },
   { id: "commands", icon: "code" },
@@ -92,7 +100,7 @@ const TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; shortcut?: string; la
   { id: "files", icon: "folder-open", shortcut: "Ctrl+P" },
 ];
 
-const DYNAMIC_TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; labelKey: string }> = [
+const DYNAMIC_TOOLS: Array<{ id: WorkflowSidePanelTab; icon: AliIconName; labelKey: string }> = [
   { id: "plan", icon: "list-check", labelKey: "workflow.plan.panelTitle" },
   { id: "goal", icon: "target", labelKey: "workflow.goal.panelTitle" },
 ];
@@ -104,7 +112,7 @@ const DesignToHarmonyPanel = dynamic(
   { ssr: false },
 );
 
-type ToolTab = StaticToolTab;
+type ToolTab = RightPanelToolTab;
 const TREE_SPLIT_KEY = "piora-file-tree-share";
 const TREE_HANDLE_WIDTH = 6;
 
@@ -168,7 +176,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   const [treeShare, setTreeShare] = useState(0.28);
   const [treeDrawerOpen, setTreeDrawerOpen] = useState(false);
   const [resizingTree, setResizingTree] = useState(false);
-  const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
+  const [runSelection, setRunSelection] = useState<{ sessionId: string; runId: string; path: string } | null>(null);
   const [browserNavigation, setBrowserNavigation] = useState<BrowserNavigationRequest | undefined>();
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const firstLauncherRef = useRef<HTMLButtonElement | null>(null);
@@ -176,9 +184,11 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   const addButtonRef = useRef<HTMLButtonElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const { activeTab, onActiveTabChange, cwd, refreshKey, active, fileTabs, activeFileTabId, onOpenFile } = props;
+  const { fileNavMode, onFileNavModeChange: setFileNavMode, runFileChanges } = props;
+  const browsingRunFiles = fileNavMode === "run";
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuPosition, setAddMenuPosition] = useState({ left: 8, top: 48, width: 278 });
-  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" || isSideChatTab(activeTab) ? [] : [activeTab]);
+  const { openTools, onOpenToolsChange: setOpenTools } = props;
   const [filesHasOpened, setFilesHasOpened] = useState(activeTab === "files");
   const [draggedTool, setDraggedTool] = useState<ToolTab | null>(null);
   const [dropTargetTool, setDropTargetTool] = useState<ToolTab | null>(null);
@@ -216,10 +226,12 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     setTreeDrawerOpen(false);
   }, [onOpenFile]);
   const handleOpenReview = useCallback(() => onActiveTabChange("review"), [onActiveTabChange]);
-  const handleOpenRunFile = useCallback((path: string, name: string, options?: { modeHint?: "diff" }) => {
-    onOpenFile(path, name, options);
+  const selectedRunFile = runFileChanges?.files.find((file) => runSelection?.sessionId === runFileChanges.sessionId
+    && runSelection.runId === runFileChanges.runId && file.path === runSelection.path) ?? runFileChanges?.files[0];
+  const handleSelectRunFile = (path: string) => {
+    if (runFileChanges) setRunSelection({ sessionId: runFileChanges.sessionId, runId: runFileChanges.runId, path });
     setTreeDrawerOpen(false);
-  }, [onOpenFile]);
+  };
 
   const changeTreeWidth = (candidate: number) => {
     const width = filesRootRef.current?.getBoundingClientRect().width ?? 0;
@@ -266,7 +278,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
       (activeTab === "home" ? firstLauncherRef.current : activeTabRef.current)?.focus({ preventScroll: true });
     },
     focusFileSearch: () => { setFileNavMode("tree"); setTreeDrawerOpen(true); requestAnimationFrame(() => explorerRef.current?.focusSearch()); },
-  }), [activeTab]);
+  }), [activeTab, setFileNavMode]);
 
   useEffect(() => { setAddMenuOpen(false); }, [active, activeTab]);
 
@@ -319,13 +331,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     if (activeTab === "files") setFilesHasOpened(true);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (activeTab === "home" || isSideChatTab(activeTab)) return;
-    setOpenTools((current) => current.includes(activeTab) ? current : [...current, activeTab]);
-  }, [activeTab]);
-
   const selectTool = (tab: ToolTab) => {
-    setOpenTools((current) => current.includes(tab) ? current : [...current, tab]);
     onActiveTabChange(tab);
     setAddMenuOpen(false);
   };
@@ -334,7 +340,11 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTab, openTools]);
 
-  const closeTool = (tab: ToolTab) => {
+  const closeTool = (tab: ToolTab | WorkflowSidePanelTab) => {
+    if (isWorkflowSidePanelTab(tab)) {
+      props.onCloseWorkflowTab();
+      return;
+    }
     const closingIndex = openTools.indexOf(tab);
     const remaining = openTools.filter((openTool) => openTool !== tab);
     setOpenTools(remaining);
@@ -363,7 +373,8 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
         ...props.sideChat.pendingCreates.map((entry) => toSideChatLoadingTabId(entry.clientId)),
       ]
     : [];
-  const allRenderedTabs: RightPanelTab[] = [...openTools, ...sideChatTabIds];
+  const shownTools = active && isWorkflowSidePanelTab(activeTab) ? [...openTools, activeTab] : openTools;
+  const allRenderedTabs: RightPanelTab[] = [...shownTools, ...sideChatTabIds];
 
   const moveToolTabFocus = (event: React.KeyboardEvent<HTMLButtonElement>, tab: RightPanelTab) => {
     const currentIndex = allRenderedTabs.indexOf(tab);
@@ -386,32 +397,35 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     {props.contextHeader}
     <div className={`${styles.panelChrome} right-panel-chrome`}>
       <div className={styles.toolTabs} role="tablist" aria-label={t("workspace.panelTabs")}>
-        {openTools.map((toolId) => {
+        {shownTools.map((toolId) => {
           const tool = ALL_TOOLS.find((candidate) => candidate.id === toolId);
           if (!tool) return null;
           const selected = activeTab === tool.id;
+          const contextual = isWorkflowSidePanelTab(toolId);
           return <div
             key={tool.id}
             className={styles.activeToolTab}
             data-active={selected ? "true" : "false"}
             data-dragging={draggedTool === tool.id ? "true" : undefined}
             data-drop-target={dropTargetTool === tool.id ? "true" : undefined}
-            draggable
+            draggable={!contextual}
             onDragStart={(event) => {
-              setDraggedTool(tool.id);
+              if (contextual) return;
+              setDraggedTool(toolId);
               event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/piora-tool-tab", tool.id);
+              event.dataTransfer.setData("text/piora-tool-tab", toolId);
             }}
             onDragOver={(event) => {
-              if (!draggedTool || draggedTool === tool.id) return;
+              if (contextual || !draggedTool || draggedTool === toolId) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
-              setDropTargetTool(tool.id);
+              setDropTargetTool(toolId);
             }}
             onDrop={(event) => {
+              if (contextual) return;
               event.preventDefault();
-              const source = (draggedTool ?? event.dataTransfer.getData("text/piora-tool-tab")) as ToolTab;
-              if (ALL_TOOLS.some((candidate) => candidate.id === source)) moveTool(source, tool.id);
+              const source = draggedTool ?? openTools.find((id) => id === event.dataTransfer.getData("text/piora-tool-tab"));
+              if (source) moveTool(source, toolId);
               setDraggedTool(null);
               setDropTargetTool(null);
             }}
@@ -464,18 +478,19 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     <section id="workspace-files" role="tabpanel" aria-labelledby="workspace-files-tab" hidden={activeTab !== "files"} className={styles.panel} style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
       {filesHasOpened ? <RenderErrorBoundary resetKey={`files:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}>
       <div ref={filesRootRef} className={styles.filesRoot} data-compact={compactFiles ? "true" : undefined} data-tree-open={treeDrawerOpen ? "true" : undefined} data-resizing={resizingTree ? "true" : undefined} style={{ position: "relative", display: "grid", height: "100%", minHeight: 0, minWidth: 0, gridTemplateColumns: compactFiles ? "40px minmax(0, 1fr)" : `${treeWidth}px ${TREE_HANDLE_WIDTH}px minmax(0, 1fr)` }}>
-        {compactFiles ? <button className={styles.fileTreeRail} type="button" aria-label={t("files.explorer")} aria-expanded={treeDrawerOpen} onClick={() => setTreeDrawerOpen((open) => !open)}><AliIcon name="folder-open" size={16} /></button> : null}
+        {compactFiles ? <button className={styles.fileTreeRail} type="button"
+          aria-label={t(browsingRunFiles ? "files.runFileList" : "files.explorer")}
+          title={t(browsingRunFiles ? "files.runFileList" : "files.explorer")} aria-controls="piora-file-explorer"
+          aria-expanded={treeDrawerOpen} onClick={() => setTreeDrawerOpen((open) => !open)}><AliIcon name={browsingRunFiles ? "diff" : "folder-open"} size={16} /></button> : null}
         {compactFiles && treeDrawerOpen ? <button className={styles.fileTreeBackdrop} type="button" aria-label={t("i18n.close")} onClick={() => setTreeDrawerOpen(false)} /> : null}
         <div id="piora-file-explorer" className={styles.explorer} style={{ gridColumn: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: compactFiles ? treeDrawerOpen ? "flex" : "none" : "flex", flexDirection: "column", ...(compactFiles ? { position: "absolute" as const, zIndex: 12, left: 40, top: 0, bottom: 0, width: "min(320px, calc(100% - 40px))", background: "var(--bg-panel)", boxShadow: "var(--shadow-popover)" } : {}) }}>
           <RunChangesPane
-            active={activeTab === "files"}
-            sessionId={props.sessionId}
-            sessionRunning={props.sessionRunning}
-            refreshKey={refreshKey}
+            runChanges={runFileChanges}
+            selectedRunFilePath={selectedRunFile?.path}
             fileNavMode={fileNavMode}
             onFileNavModeChange={setFileNavMode}
             onOpenReview={handleOpenReview}
-            onOpenRunFile={handleOpenRunFile}
+            onSelectRunFile={handleSelectRunFile}
           >
             {cwd ? <FileExplorer ref={explorerRef} cwd={cwd} selectedFilePath={selectedFilePath} onOpenFile={handleExplorerOpenFile} refreshKey={refreshKey} onAtMention={props.onMention} onAtMentions={props.onMentions} changesCollapsed /> : <div className={styles.empty}>{t("workspace.selectProject")}</div>}
           </RunChangesPane>
@@ -492,7 +507,9 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
           onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
           onLostPointerCapture={() => setResizingTree(false)} />
         <div id="piora-file-viewer" className={styles.fileViewer} style={{ gridColumn: compactFiles ? 2 : 3, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <div className={styles.fileTabs} style={{ flex: "0 0 auto", minHeight: 36 }}><TabBar
+          {browsingRunFiles && <RunChangesDetail snapshot={runFileChanges} file={selectedRunFile}
+            active={active && activeTab === "files"} onOpenFile={handleExplorerOpenFile} />}
+          <div className={styles.fileTabs} hidden={browsingRunFiles}><TabBar
             tabs={fileTabs}
             activeTabId={activeFileTabId ?? ""}
             canReopenClosedTab={props.canReopenClosedFileTab}
@@ -503,12 +520,12 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
             onMoveTab={props.onMoveFileTab}
             onReopenClosedTab={props.onReopenClosedFileTab}
           /></div>
-          <div className={styles.fileBody} style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden" }}>{fileTabs.length ? fileTabs.map((tab) => (
+          <div className={styles.fileBody} hidden={browsingRunFiles}>{fileTabs.length ? fileTabs.map((tab) => (
             <FileViewerTabSlot
               key={tab.id}
               tab={tab}
               selected={tab.id === activeFileTabId}
-              panelActive={active && activeTab === "files"}
+              panelActive={active && activeTab === "files" && !browsingRunFiles}
               cwd={cwd}
               refreshKey={refreshKey}
               onDirtyChange={props.onDirtyChange}
@@ -569,10 +586,10 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
       {active && activeTab === "automation" ? <RenderErrorBoundary resetKey={`automation:${props.selectedAutomationId ?? "list"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><AutomationPanel automationId={props.selectedAutomationId} sessionId={props.sessionId} sessionName={props.sessionName} cwd={cwd} onSelectAutomation={props.onSelectAutomation} onAutomationChanged={props.onAutomationChanged} /></RenderErrorBoundary> : null}
     </section>
     <section id="workspace-plan" role="tabpanel" aria-labelledby="workspace-plan-tab" hidden={activeTab !== "plan"} className={styles.panel}>
-      {activeTab === "plan" ? <RenderErrorBoundary resetKey={`plan:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><PlanSidePanelTab sessionId={props.sessionId} cwd={cwd} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+      {active && activeTab === "plan" ? <RenderErrorBoundary resetKey={`plan:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><PlanSidePanelTab sessionId={props.sessionId} cwd={cwd} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
     </section>
     <section id="workspace-goal" role="tabpanel" aria-labelledby="workspace-goal-tab" hidden={activeTab !== "goal"} className={styles.panel}>
-      {activeTab === "goal" ? <RenderErrorBoundary resetKey={`goal:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><GoalSidePanelTab sessionId={props.sessionId} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
+      {active && activeTab === "goal" ? <RenderErrorBoundary resetKey={`goal:${props.sessionId ?? "none"}:${refreshKey}`} fallbackLabel={t("workspace.panelRenderFailed")}><GoalSidePanelTab sessionId={props.sessionId} sessionRunning={props.sessionRunning} refreshKey={refreshKey} /></RenderErrorBoundary> : null}
     </section>
     <SideChatTabPanels sideChat={props.sideChat} panelActive={active} activeTab={activeTab} panelClassName={styles.panel} />
   </div>;

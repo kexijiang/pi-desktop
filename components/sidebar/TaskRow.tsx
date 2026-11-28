@@ -275,6 +275,7 @@ export const TaskRow = memo(function TaskRow({
   const itemHeight = "max(31px, calc(var(--text-sm) + 16px))";
   const mutationError = renameError || deleteError;
   const rowBackground = isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent";
+  const actionWidth = onToggleArchived ? 91 : 64;
 
   return (
     <div
@@ -376,9 +377,9 @@ export const TaskRow = memo(function TaskRow({
       ) : (
         <>
           {depth > 0 ? <AliIcon name="fork" size={10} style={{ color: "var(--text-dim)" }} /> : null}
-          <div style={{ flex: 1, minWidth: 0, paddingRight: hovered ? 64 : 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div
-              style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, fontSize: "var(--text-sm)", fontWeight: isSelected ? 500 : 400, lineHeight: 1.4, color: "var(--text)" }}
+              style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginRight: hovered ? actionWidth : 0, fontSize: "var(--text-sm)", fontWeight: isSelected ? 500 : 400, lineHeight: 1.4, color: "var(--text)" }}
               title={title}
             >
               <span ref={titleViewportRef} className={styles.titleViewport}>
@@ -442,6 +443,16 @@ export const TaskRow = memo(function TaskRow({
             }}
           >
             <RowActionButton label={t("sidebar.rename")} icon="edit" onClick={startRename} />
+            {onToggleArchived && (
+              <RowActionButton
+                label={t(archived ? "sidebar.unarchiveTask" : "sidebar.archiveTask")}
+                icon="archive"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleArchived();
+                }}
+              />
+            )}
             <RowActionButton
               label={t("sidebar.delete")}
               icon="delete"
@@ -487,7 +498,7 @@ function RowActionButton({
   onClick,
 }: {
   label: string;
-  icon: "pushpin" | "edit" | "delete";
+  icon: "pushpin" | "edit" | "archive" | "delete";
   danger?: boolean;
   active?: boolean;
   onClick: (event: React.MouseEvent) => void;
@@ -499,6 +510,8 @@ function RowActionButton({
     : "var(--bg-selected)";
   return (
     <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
       onClick={onClick}
       title={label}
       aria-label={label}

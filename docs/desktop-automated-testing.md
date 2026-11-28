@@ -47,6 +47,10 @@ node scripts/run-desktop-e2e.mjs --scenario subagents-real --executable 'C:\实�
 
 ## 运行
 
+`node scripts/run-desktop-e2e.mjs --scenario send-prediction-navigation --step-timeout-ms 180000 --timeout-ms 1800000` 使用合成 A/B 会话和本地模型夹具，通过真实输入框、发送按钮与侧栏验证发送后切换、晚到成功/失败、预测期间切换或手输，以及 Tab 仅采纳为可编辑草稿。只读接口预热用于避免开发冷编译消耗界面加载期限；请求归属、持久化和截图保存在运行产物中，不复制真实凭据。
+
+`node scripts/run-desktop-e2e.mjs --scenario browser-session-navigation --step-timeout-ms 180000 --timeout-ms 1800000` 使用无账号本地网页验证切到已有对话、进入新对话时不弹空白浏览器，随后验证原页面恢复、手动打开及浏览器设置。两者均为开发桌面验收，不代表真实供应商、外部网站或发布安装包验证。
+
 `node scripts/run-desktop-e2e.mjs --scenario workspace-issue-fixes --step-timeout-ms 180000 --timeout-ms 1200000` 复用右键菜单场景，再验证文件名引用的唯一定位/多候选选择、浏览器设置中的下载位置、实际下载文件与同名避让、立即切换目录、原生网页等宽字体、快捷键和站点缩放、面板拖拽及进程重启后的配置。使用合成历史和两个 loopback 站点；只读 API、磁盘文件和 CDP 字体信息用于核对，功能操作通过 UI 完成。系统“另存为”对话框的手动选择、报告者的 JupyterLab/CodeHub、真实模型和安装包均不计入此场景。
 
 在专用 worktree 安装锁文件依赖，使用 Node.js 22.19.0 或仓库支持的更新版本：
@@ -196,7 +200,7 @@ node --test lib/desktop-e2e.test.mjs
 
 ## 浏览器登录自动继续
 
-`npm run test:desktop:e2e -- --scenario browser-login` 使用隔离的真实 Electron 开发窗口、本地确定性模型和本地登录页面，验证发送任务后自动展开浏览器、没有登录卡片或完成按钮、通过原生页面 UI 登录后继续工具调用并回复；夹具关闭工具批准开关，核对批准模式入口隐藏，并检查能力包菜单和新会话快捷卡片。模型与登录凭据均为合成夹具，不代表真实模型、第三方账号、SSO、后台 Playwright 或安装包验收。产物和失败清理由同一生命周期入口管理。
+`npm run test:desktop:e2e -- --scenario browser-login` 使用隔离的真实 Electron 开发窗口、本地确定性模型和本地测试站点。场景验证进入站点的单次工具批准、自动显示浏览器，以及用户在原生页面登录或提交表单后自动恢复。它还检查普通点击时继续等待、手动继续按钮已移除，以及设置和新对话的相关入口。模型和凭据均为合成夹具。真实模型、第三方账号、SSO、后台 Playwright 和安装包需单独验收。产物和失败清理由同一生命周期入口管理。
 
 ### Agent 浏览器上传
 

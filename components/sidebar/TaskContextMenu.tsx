@@ -108,7 +108,7 @@ export function TaskContextMenu(props: Props) {
         </div>
       ) : null}
       <MenuItem icon="edit" label={t("sidebar.rename")} onClick={() => run(props.onRename)} />
-      <MenuItem icon="folder" label={props.archived ? t("sidebar.unarchiveTask") : t("sidebar.archiveTask")} onClick={() => run(props.onArchive)} />
+      <MenuItem icon="archive" label={props.archived ? t("sidebar.unarchiveTask") : t("sidebar.archiveTask")} onClick={() => run(props.onArchive)} />
       <MenuItem icon="copy" label={t("sidebar.duplicateTask")} onClick={() => run(props.onDuplicate)} />
       <MenuItem icon="copy" label={t("sidebar.copySessionPath")} onClick={() => run(() => navigator.clipboard.writeText(props.session.path))} />
       <MenuItem
@@ -125,7 +125,7 @@ export function TaskContextMenu(props: Props) {
 }
 
 function MenuItem({ icon, label, onClick, danger, disabled }: {
-  icon: "pushpin" | "edit" | "folder" | "copy" | "folder-open" | "delete" | "message";
+  icon: "pushpin" | "edit" | "folder" | "copy" | "folder-open" | "delete" | "message" | "archive";
   label: string;
   onClick: () => void;
   danger?: boolean;

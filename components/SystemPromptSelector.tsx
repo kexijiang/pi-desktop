@@ -246,7 +246,7 @@ export function SystemPromptSelector({ selection, binding, sessionId, disabled =
             <span className={styles.optionIcon}><AliIcon name="file" size={15} /></span>
             <span className={styles.optionCopy}>
               <strong>{template.name}</strong>
-              <small>{template.prompt.replace(/\s+/g, " ").slice(0, 120) || t("system.emptyTemplate")}</small>
+              <small>[{t(template.applyMode === "append" ? "system.applyMode.badgeAppend" : "system.applyMode.badgeReplace")}] {template.prompt.replace(/\s+/g, " ").slice(0, 120) || t("system.emptyTemplate")}</small>
             </span>
             {selectedValue === template.id ? <AliIcon name="check" size={15} /> : null}
           </button>

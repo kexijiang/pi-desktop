@@ -59,6 +59,8 @@ export interface UserMessage {
   deferredLineCount?: number;
   /** Local-only delivery error for an optimistic message; never persisted to Pi. */
   sendError?: string;
+  sendErrorCode?: string;
+  sendErrorDetails?: Record<string, unknown>;
   sendUnconfirmed?: boolean;
   /** Stable delivery identity persisted with the SDK user message. */
   clientPromptId?: string;

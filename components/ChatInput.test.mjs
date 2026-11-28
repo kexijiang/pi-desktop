@@ -500,3 +500,67 @@ test("queue keeps a single row across submission and runtime handoff", () => {
   assert.equal((legacy.match(/title="handoff-message"/g)??[]).length, 1, "runtime snapshots without source identities must not duplicate delivered records");
   assert.equal(render("completed", {steering:[],followUp:[],pendingInputs:[]}), "");
 });
+
+test("renders skills, addendum breakdown rows and a dismissible prompt budget hint", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(ChatInput, {
+        onSend() {},
+        onAbort() {},
+        isStreaming: false,
+        contextUsage: {
+          percent: 60,
+          contextWindow: 100_000,
+          tokens: 60_000,
+          breakdown: {
+            systemPrompt: 6_000,
+            projectInstructions: 12_000,
+            skills: 4_000,
+            addendum: 2_000,
+            toolDefinitions: 16_000,
+            conversationMessages: 18_000,
+            otherRuntime: 2_000,
+          },
+        },
+        promptBudget: {
+          enabled: true,
+          projectContext: { totalFiles: 2, truncatedFiles: [{ path: "AGENTS.md", originalChars: 30_000, keptChars: 12_000 }], omittedFiles: [], originalChars: 30_000, keptChars: 12_000 },
+          skills: { totalSkills: 40, visibleSkills: 40, truncatedDescriptions: ["s1"], omittedFromPrompt: ["s31"], originalChars: 10_000, keptChars: 5_000 },
+          truncated: true,
+          warnings: [
+            { kind: "project_context_truncated", truncatedFiles: 1, omittedFiles: 0, originalChars: 30_000, keptChars: 12_000 },
+            { kind: "skills_truncated", truncatedDescriptions: 1, omittedSkills: 1, totalVisibleSkills: 40 },
+          ],
+          fingerprint: "test-budget-fp-1",
+        },
+      }),
+    ),
+  );
+  assert.match(html, /技能列表/);
+  assert.match(html, /运行时附加说明/);
+  assert.match(html, /data-prompt-budget-hint/);
+  assert.match(html, /AGENTS\.md 项目指令过长/);
+  assert.match(html, /知道了/);
+});
+
+test("renders ImageUnsupportedComposerWarning guidance cleanly", async () => {
+  const { ImageUnsupportedComposerWarning } = await jiti.import("./chat-input/ImageUnsupportedNotice.tsx");
+  const html = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(ImageUnsupportedComposerWarning, {
+        currentModel: { provider: "custom", modelId: "deepseek-r1", name: "DeepSeek R1", supportsImages: false },
+        modelOptions: [{ provider: "openai", modelId: "gpt-5", name: "GPT-5", supportsImages: true }],
+        onOpenModels() {},
+        onSelectModel() {},
+        onClearImages() {},
+      }),
+    ),
+  );
+  assert.match(html, /DeepSeek R1/);
+  assert.match(html, /去模型配置/);
+  assert.match(html, /移除图片/);
+});

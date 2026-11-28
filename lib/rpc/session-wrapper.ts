@@ -9,13 +9,12 @@ import { mergeCommandOutputDetails } from "../command-execution";
 import type { NativeMcpController } from "../native-mcp";
 import type { AgentSessionLike, ExtensionUiContextLike } from "../pi-types";
 import type { ProjectToolSettingsRecord } from "../project-tool-settings";
-import { beginPromptFileChanges, finishPromptFileChanges, recordPromptFileTouch } from "../prompt-file-changes";
+import { beginPromptFileChanges, finishPromptFileChanges } from "../prompt-file-changes";
 import { PromptInputEnrichment } from "../prompt-input-enrichment";
 import type { PromptMaterialReference } from "../prompt-material-format";
 import { buildPromptWithMaterials, resolvePromptMaterialReferences } from "../prompt-materials";
 import { beginPromptRun, finishPromptRun, type PromptRunIdentity } from "../prompt-run-registry";
-import { RemoteContentProjection } from "../remote-content";
-import { assertRemotePolicyCommand, readRemoteSessionPolicy, type RemoteSessionPolicy } from "../remote-session-policy";
+import { assertNotesSessionCommand, isLegacyNotesSession } from "../notes-session";
 import { getRoom, listRooms } from "../room-store";
 import { notifyRunningChange, scheduleRunningChange } from "../rpc-running-status";
 import { compactTaskActivityText } from "../rpc-task-activity";
@@ -65,8 +64,11 @@ import {
 import { ExtensionUiBridge } from "./extension-ui-bridge";
 import { SessionQueueTracker } from "./queue-tracker";
 import { isImmediateRunningSnapshotEvent } from "./registry";
+import { classifyErrorKind } from "./run-outcome";
+import { formatTelemetryModel, logRunEvent, redactTelemetryText, type RunInterruptionInfo } from "./run-telemetry";
 import { SessionActivityTracker } from "./runtime-activity-tracker";
 import { SystemPromptReloader } from "./system-prompt-reloader";
+import { readPromptBudgetReport } from "../prompt-runtime/session-budget";
 import { ToolPermissionBridge } from "./tool-permission-bridge";
 import {
   DEVICE_CONTROL_DENIED_RPC_COMMANDS,
@@ -100,8 +102,7 @@ export class AgentSessionWrapper {
   private readonly queueTracker: SessionQueueTracker;
   private readonly activity = new SessionActivityTracker();
   private readonly systemPromptReloader: SystemPromptReloader;
-  readonly remotePolicy: RemoteSessionPolicy;
-  private readonly remoteContent = new RemoteContentProjection();
+  readonly notesOnly: boolean;
   private listeners: EventListener[] = [];
   private promptRunning = false;
   // Synchronous admission guard shared by UI and routed prompts. The guard is
@@ -120,6 +121,9 @@ export class AgentSessionWrapper {
   private readonly streamingMetrics = new StreamingMetricsTracker();
   private pendingClientPromptId: string | undefined;
   private lastPromptErrorSummary: string | undefined;
+  private lastAbortReason: string | undefined;
+  private lastAbortDetail: string | undefined;
+  private lastRunInterruption: RunInterruptionInfo | null = null;
   private cachedSessionTitle: string | null = null;
   private fallbackTaskTitle: string | null = null;
   private extensionsBound = false;
@@ -157,7 +161,7 @@ export class AgentSessionWrapper {
     this.permissionParent = capabilityOptions.subagentParent;
     this.nativeMcp = capabilityOptions.nativeMcp;
     this.sideChatMeta = capabilityOptions.sideChatMeta ?? readSideChatMetaFromEntries(inner.sessionManager.getEntries());
-    this.remotePolicy = readRemoteSessionPolicy(inner.sessionManager.getEntries());
+    this.notesOnly = isLegacyNotesSession(inner.sessionManager.getEntries());
     this.cachedSessionTitle = inner.sessionManager.getSessionName()?.trim() || null;
     this._projectRoot = capabilityOptions.projectRoot ?? inner.sessionManager.getCwd();
 
@@ -184,12 +188,13 @@ export class AgentSessionWrapper {
       clearUiStatusesAndWidgets: () => this.uiBridge.clearStatusesAndWidgets(),
       createExtensionUiContext: () => this.uiBridge.createExtensionUiContext(),
       reapplySessionCapabilities: () => this.capabilities.reapplySessionCapabilities(),
+      getPromptBudget: () => this.getPromptBudget(),
       emit: (event) => this.emit(event),
     });
 
     this.capabilities = new SessionCapabilityController({
       runtimeProfile: this.runtimeProfile,
-      remotePolicy: this.remotePolicy,
+      notesOnly: this.notesOnly,
       getInner: () => this.inner,
       isAlive: () => this._alive,
       isRunning: () => this.isRunning(),
@@ -216,7 +221,13 @@ export class AgentSessionWrapper {
       getActivePromptRunId: () => this.activePromptRun?.runId,
       isToolAllowedByCapability: (name) => this.isToolAllowedByCapability(name),
       emit: (event) => this.emit(event),
-      abortSession: () => { void this.send({ type: "abort" }).catch(() => undefined); },
+      abortSession: (reason, detail) => {
+        void this.send({
+          type: "abort",
+          abortReason: reason ?? "tool_review_denied",
+          ...(detail ? { abortDetail: detail } : {}),
+        }).catch(() => undefined);
+      },
       releaseToolApprovals: () => this.uiBridge.releaseToolApprovals(),
       requestToolApprovalUi: (toolName, message, signal) => this.uiBridge.requestExtensionUi<"once" | "full" | "deny">(
         { method: "confirm", toolApproval: true, title: toolName, message },
@@ -319,7 +330,7 @@ export class AgentSessionWrapper {
   }
 
   async executeChatCommand(commandId: string, message: string, onPhase: (phase: ChatCommandPhase) => void = () => {}, activity?: { execute(): Promise<void>; source?: SessionMessageSourceKind }): Promise<void> {
-    assertRemotePolicyCommand(this.remotePolicy, { type: "prompt", message });
+    assertNotesSessionCommand(this.notesOnly, { type: "prompt", message });
     await this.waitForExtensionsBound();
     if (!this._alive || this.stopping) throw new Error("Command cancelled");
     this.assertWorkflowExtensionCommand(message);
@@ -329,6 +340,7 @@ export class AgentSessionWrapper {
     let ownedRun: PromptRunIdentity | undefined;
     let fileChangeCapture: ReturnType<typeof beginPromptFileChanges> | undefined;
     let failed = false;
+    let caughtError: unknown;
     this.inputAdmissions++;
     notifyRunningChange();
     const execution = this.chatCommandActivities.run(commandId, activity?.execute ?? (() => this.inner.prompt(message, { source: "rpc", streamingBehavior: "steer" })), {
@@ -337,6 +349,9 @@ export class AgentSessionWrapper {
           this.activity.beginRun("prompt", compactTaskActivityText(message) || "Extension request", "waiting_model");
           this.lastPromptFailed = false;
           this.lastPromptErrorSummary = undefined;
+          this.lastAbortReason = undefined;
+          this.lastAbortDetail = undefined;
+          this.lastRunInterruption = null;
           ownedRun = beginPromptRun(this.sessionId, { source: activity?.source ?? "ui" });
           this.activePromptRun = ownedRun;
           this.activeCommandId = commandId;
@@ -358,18 +373,65 @@ export class AgentSessionWrapper {
     const writer = execution.then(() => undefined, () => undefined);
     this.promptTasks.add(writer);
     try { await execution; }
-    catch (error) { failed = true; throw error; }
+    catch (error) { failed = true; caughtError = error; throw error; }
     finally {
       try {
         if (ownedRun) {
           const cancelled = abortGeneration !== this.abortGeneration || !this._alive;
+          const abortReason = cancelled ? (this.lastAbortReason ?? (!this._alive ? "wrapper_destroyed" : "user_abort")) : undefined;
+          const isUserAbort = cancelled && abortReason === "user_abort";
+          const errorMessage = failed ? (caughtError instanceof Error ? caughtError.message : String(caughtError ?? "Command failed")) : undefined;
+          const classified = errorMessage ? classifyErrorKind(errorMessage) : null;
+          const interruption: RunInterruptionInfo | null = failed && !isUserAbort
+            ? {
+                runId: ownedRun.runId,
+                commandId,
+                kind: classified?.kind ?? "command_failed",
+                reason: classified?.reason ?? "command_failed",
+                detail: redactTelemetryText(errorMessage),
+                timestamp: Date.now(),
+                hasToolProgress: false,
+                resumable: true,
+              }
+            : null;
           try {
             if (fileChangeCapture) await finishPromptFileChanges(fileChangeCapture, cancelled ? "aborted" : failed ? "error" : "complete");
             await finishPromptRun(ownedRun, cancelled ? "abort" : failed ? "error" : "idle");
           } finally {
             if (this.activePromptRun?.runId === ownedRun.runId) this.activePromptRun = undefined;
             if (this.activeCommandId === commandId) this.activeCommandId = undefined;
-            this.emit({ type: failed ? "prompt_error" : "prompt_done", sessionId: this.sessionId, commandId, runId: ownedRun.runId, timestamp: Date.now(), aborted: cancelled });
+            if (failed && !isUserAbort) {
+              this.lastPromptFailed = true;
+              this.lastPromptErrorSummary = interruption?.detail ?? errorMessage;
+              this.lastRunInterruption = interruption;
+              logRunEvent("warn", {
+                sessionId: this.sessionId,
+                runId: ownedRun.runId,
+                commandId,
+                reason: interruption?.reason ?? "command_failed",
+                model: formatTelemetryModel(this.inner.model),
+                errorMessage: interruption?.detail ?? errorMessage,
+              });
+              this.emit({
+                type: "prompt_error",
+                sessionId: this.sessionId,
+                commandId,
+                runId: ownedRun.runId,
+                timestamp: Date.now(),
+                errorMessage: interruption?.detail ?? errorMessage,
+                ...(interruption ? { interruption } : {}),
+              });
+            }
+            this.emit({
+              type: "prompt_done",
+              sessionId: this.sessionId,
+              commandId,
+              runId: ownedRun.runId,
+              timestamp: Date.now(),
+              aborted: cancelled,
+              ...(abortReason ? { abortReason } : {}),
+              ...(interruption ? { interruption } : {}),
+            });
           }
         }
       } finally {
@@ -394,13 +456,6 @@ export class AgentSessionWrapper {
         return materials.length ? buildPromptWithMaterials(enriched, materials) : enriched;
       }, () => this.inner.prompt(message, { source: "rpc", streamingBehavior: options.delivery, ...(options.images?.length ? { images: options.images } : {}) })),
     });
-  }
-
-  getRemoteContentSnapshot() {
-    const runId = this.activePromptRun?.runId ?? null;
-    this.remoteContent.resetForRun(runId);
-    const snapshot = this.remoteContent.snapshot();
-    return { ...snapshot, sessionId: this.sessionId, runId, running: runId !== null };
   }
 
   isToolAllowedByCapability(name: string): boolean { return this.capabilities.isToolAllowedByCapability(name); }
@@ -442,6 +497,7 @@ export class AgentSessionWrapper {
     images?: Array<{ type: "image"; data: string; mimeType: string }>;
     materials?: PromptMaterialReference[];
     teamExecution?: TeamExecutionContext;
+    resumeInterrupted?: boolean;
   }): Promise<{ accepted: true; sessionId: string; commandId: string; runId: string }> {
     if (input.teamExecution) this.validateTeamRuntimePolicy(input.teamExecution);
     // Keep even a first-send/auth failure discoverable after server restart.
@@ -539,7 +595,7 @@ export class AgentSessionWrapper {
   }
 
   start(): void {
-    if (!this.permissionParent && !this.sideChatMeta && this.runtimeProfile === "normal" && this.remotePolicy !== "notes") {
+    if (!this.permissionParent && !this.sideChatMeta && this.runtimeProfile === "normal" && !this.notesOnly) {
       if (!registeredSessionStarter) throw new Error("RPC session starter is not registered.");
       this.subagents = new SubagentRuntime(this.sessionId, this.cwd, createSubagentDriver(this, registeredSessionStarter));
       this.onDestroy(bindSubagentRuntime(this.subagents));
@@ -554,7 +610,6 @@ export class AgentSessionWrapper {
       if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end")
         && (event.message as { role?: string } | undefined)?.role === "system") return;
       this.streamingMetrics.update(event);
-      this.remoteContent.update(event);
       if (event.type === "message_start" && (event.message as { role?: string } | undefined)?.role === "user") {
         this.promptInputEnrichment.apply(event.message as { content?: unknown });
       }
@@ -572,15 +627,60 @@ export class AgentSessionWrapper {
       this.activity.updateStatusPhase(event, this.inner, this.stopping, this.promptRunning);
       if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "assistant") {
         this.lastAssistantResponse = event.message;
+        const msg = event.message as { stopReason?: string; errorMessage?: string; provider?: string; model?: string };
+        if (msg.stopReason === "error" || msg.stopReason === "length" || msg.stopReason === "aborted") {
+          logRunEvent(msg.stopReason === "aborted" && this.lastAbortReason === "user_abort" ? "info" : "warn", {
+            sessionId: this.sessionId,
+            runId: this.activePromptRun?.runId,
+            commandId: this.activeCommandId,
+            reason: msg.stopReason === "length" ? "model_output_truncated" : msg.stopReason === "aborted" ? "model_upstream_abort" : "model_error",
+            model: formatTelemetryModel(msg) ?? formatTelemetryModel(this.inner.model),
+            stopReason: msg.stopReason,
+            errorMessage: msg.errorMessage,
+          });
+        }
+      }
+      if (event.type === "auto_retry_start") {
+        logRunEvent("warn", {
+          sessionId: this.sessionId,
+          runId: this.activePromptRun?.runId,
+          commandId: this.activeCommandId,
+          reason: "auto_retry_start",
+          model: formatTelemetryModel(this.inner.model),
+          errorMessage: typeof event.errorMessage === "string" ? event.errorMessage : undefined,
+          extra: {
+            attempt: typeof event.attempt === "number" ? event.attempt : undefined,
+            maxAttempts: typeof event.maxAttempts === "number" ? event.maxAttempts : undefined,
+            delayMs: typeof event.delayMs === "number" ? event.delayMs : undefined,
+          },
+        });
+      }
+      if (event.type === "auto_retry_end" && event.success === false) {
+        logRunEvent("warn", {
+          sessionId: this.sessionId,
+          runId: this.activePromptRun?.runId,
+          commandId: this.activeCommandId,
+          reason: "auto_retry_end",
+          model: formatTelemetryModel(this.inner.model),
+          errorMessage: typeof event.finalError === "string" ? event.finalError : undefined,
+          extra: { attempt: typeof event.attempt === "number" ? event.attempt : undefined, success: false },
+        });
+      }
+      if (event.type === "auto_compaction_end" && (event.errorMessage || event.aborted)) {
+        logRunEvent("warn", {
+          sessionId: this.sessionId,
+          runId: this.activePromptRun?.runId,
+          commandId: this.activeCommandId,
+          reason: "auto_compaction_failed",
+          model: formatTelemetryModel(this.inner.model),
+          errorMessage: typeof event.errorMessage === "string" ? event.errorMessage : "Auto compaction aborted",
+        });
       }
       if (event.type === "tool_execution_start") {
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : "";
         const toolName = typeof event.toolName === "string" ? event.toolName : "";
         if (toolCallId && toolName) {
           this.runtimeToolCalls.set(toolCallId, { toolName, args: event.args });
-        }
-        if ((toolName === "write" || toolName === "edit") && typeof (event.args as { path?: unknown } | undefined)?.path === "string") {
-          void recordPromptFileTouch(this.sessionId, (event.args as { path: string }).path, this.cwd);
         }
       }
       if (event.type === "tool_execution_update") {
@@ -684,6 +784,14 @@ export class AgentSessionWrapper {
             message: "Extension requested shutdown, but shutdown is not supported in Pi Web.",
           } as ExtensionUiRequest as AgentEvent),
           onError: (error) => {
+            logRunEvent("warn", {
+              sessionId: this.sessionId,
+              runId: this.activePromptRun?.runId,
+              commandId: this.chatCommandActivities.commandId ?? this.activeCommandId,
+              reason: "extension_error",
+              errorMessage: error.error,
+              extra: { event: error.event, extension: error.extensionPath },
+            });
             this.chatCommandActivities.fail(new Error(error.error));
             this.emit({
               type: "extension_error",
@@ -736,7 +844,7 @@ export class AgentSessionWrapper {
   private assertWorkflowSession(): void {
     if (
       this.runtimeProfile !== "normal"
-      || this.remotePolicy === "notes"
+      || this.notesOnly
       || this.isSideConversation()
       || listRooms(this.sessionId).some(room => room.members.some(member => member.binding.sessionId === this.sessionId))
     ) {
@@ -779,6 +887,9 @@ export class AgentSessionWrapper {
     for (const l of this.listeners) l(event);
   }
 
+  private _lastActivityAt = Date.now();
+  get lastActivityAt(): number { return this._lastActivityAt; }
+
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
@@ -786,8 +897,9 @@ export class AgentSessionWrapper {
         this.resetIdleTimer();
         return;
       }
-      this.destroy();
+      this.destroy("idle_timeout");
     }, 10 * 60 * 1000);
+    this.idleTimer.unref();
   }
 
   persistSessionFile(): void {
@@ -844,6 +956,12 @@ export class AgentSessionWrapper {
     return () => this.onDestroyCallbacks.delete(cb);
   }
 
+  getPromptBudget() {
+    const inner = this.inner;
+    const chars = (inner.systemPrompt ?? inner.agent.state?.systemPrompt ?? "").length;
+    return readPromptBudgetReport(inner.resourceLoader, chars);
+  }
+
   getRuntimeState(view: SessionRuntimeStateView = "full") {
     const runtime = this.getForegroundRuntime();
     const progress = {
@@ -858,6 +976,7 @@ export class AgentSessionWrapper {
       lastProgressAt: runtime === "idle" ? null : this.activity.lastProgressAt,
       isCompacting: this.inner.isCompacting,
       compactionStartedAt: this.inner.isCompacting ? this.activity.compactionStartedAt : null,
+      ...(this.lastRunInterruption ? { lastRunInterruption: this.lastRunInterruption } : {}),
     };
     if (view === "progress") return progress;
 
@@ -869,7 +988,6 @@ export class AgentSessionWrapper {
       ...(this.runtimeProfile === "normal" ? { workflow: readWorkflowSnapshot(this.sessionId) } : {}),
       ...(view === "full" ? { stats: summarizeLiveSessionStats(this.inner.sessionManager) } : {}),
       runtimeProfile: this.runtimeProfile,
-      remotePolicy: this.remotePolicy,
       sessionFile: this.inner.sessionFile ?? "",
       activeTools: Array.from(this.runtimeToolCalls, ([id, tool]) => ({ id, name: tool.toolName })),
       pendingApproval: this.uiBridge.hasPendingApproval(),
@@ -886,6 +1004,7 @@ export class AgentSessionWrapper {
         followUp: [...this.inner.getFollowUpMessages()],
       },
       ...projectRuntimeContext(this.inner, this.systemPromptReloader.forceEmptySystemPrompt),
+      ...(() => { const promptBudget = this.getPromptBudget(); return promptBudget ? { promptBudget } : {}; })(),
       systemPromptBinding: view === "full" ? this.getSystemPromptBinding() : summarizeSessionSystemPromptBinding(this.getSystemPromptBinding()),
       thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
       extensionStatuses: this.uiBridge.getExtensionStatuses(),
@@ -943,6 +1062,12 @@ export class AgentSessionWrapper {
       set lastPromptFailed(value) { wrapper.lastPromptFailed = value; },
       get lastPromptErrorSummary() { return wrapper.lastPromptErrorSummary; },
       set lastPromptErrorSummary(value) { wrapper.lastPromptErrorSummary = value; },
+      get lastAbortReason() { return wrapper.lastAbortReason; },
+      set lastAbortReason(value) { wrapper.lastAbortReason = value; },
+      get lastAbortDetail() { return wrapper.lastAbortDetail; },
+      set lastAbortDetail(value) { wrapper.lastAbortDetail = value; },
+      get lastRunInterruption() { return wrapper.lastRunInterruption; },
+      set lastRunInterruption(value) { wrapper.lastRunInterruption = value; },
       get fallbackTaskTitle() { return wrapper.fallbackTaskTitle; },
       set fallbackTaskTitle(value) { wrapper.fallbackTaskTitle = value; },
       get activePromptRun() { return wrapper.activePromptRun; },
@@ -968,7 +1093,7 @@ export class AgentSessionWrapper {
       abortSubagentUi: () => wrapper.subagentUiController.abort(),
       emit: (event) => wrapper.emit(event),
       send: (command) => wrapper.send(command),
-      destroy: () => wrapper.destroy(),
+      destroy: (reason) => wrapper.destroy(reason),
       assertSessionIdle: (action) => wrapper.assertSessionIdle(action),
       assertWorkflowSession: () => wrapper.assertWorkflowSession(),
       assertWorkflowExtensionCommand: (message, inputMode, mode) => wrapper.assertWorkflowExtensionCommand(message, inputMode, mode),
@@ -989,8 +1114,11 @@ export class AgentSessionWrapper {
   }
 
   async send(command: SessionRpcCommand): Promise<unknown> {
-    const type = authorizeSessionCommand(this.sessionId, this.remotePolicy, command);
-    this.resetIdleTimer();
+    const type = authorizeSessionCommand(this.sessionId, this.notesOnly, command);
+    if (!type.startsWith("get_")) {
+      this._lastActivityAt = Date.now();
+      this.resetIdleTimer();
+    }
     this.capabilities.flushPendingProjectCapabilitySettings();
     const abortGeneration = this.abortGeneration;
     enforceCommandProfile(type, this.runtimeProfile, DEVICE_CONTROL_DENIED_RPC_COMMANDS);
@@ -1014,7 +1142,7 @@ export class AgentSessionWrapper {
         this.uiBridge.recordUserInputActivity(typeof command.id === "string" ? command.id : undefined);
         return null;
       case "prompt": return handlePromptCommand(host, command, abortGeneration);
-      case "abort": return handleAbortCommand(host);
+      case "abort": return handleAbortCommand(host, command);
       case "get_state": return this.getRuntimeState(parseRuntimeStateView(command.view));
       case "set_model": return handleSetModelCommand(host, command);
       case "fork": return handleForkCommand(host, command);
@@ -1045,7 +1173,7 @@ export class AgentSessionWrapper {
       case "reload": return handleReloadCommand(host);
       case "restart_extensions":
         this.assertSessionIdle("restart extensions");
-        this.destroy();
+        this.destroy("restart_extensions");
         return { success: true };
       case "abort_compaction": return handleAbortCompactionCommand(host);
       case "extension_ui_response":
@@ -1070,21 +1198,43 @@ export class AgentSessionWrapper {
   async shutdownForFileMutation(): Promise<void> {
     if (this._alive) {
       await this.extensionBindingPromise?.catch(() => undefined);
-      await this.send({ type: "abort" });
+      await this.send({ type: "abort", abortReason: "file_mutation" });
       await this.abortCleanupTask;
-      this.destroy();
+      this.destroy("file_mutation");
     }
     await this.shutdownTask;
   }
 
-  destroy(): void {
+  destroy(reason = "explicit"): void {
     if (!this._alive) return;
     this._alive = false;
+    const activeMcpTransports = this.nativeMcp?.activeTransportCount ?? 0;
+    const wasRunning = this.promptRunning || this.inner.isStreaming || this.inner.isBashRunning;
+    if (wasRunning || activeMcpTransports > 0 || reason === "idle_timeout" || reason === "lru_eviction") {
+      const log = wasRunning ? console.warn : console.log;
+      log(`[pi-web:session] destroy session=${this.sessionId} reason=${reason} running=${wasRunning} mcpTransports=${activeMcpTransports}`);
+    }
+    if (wasRunning) {
+      this.lastAbortReason ??= reason;
+      logRunEvent("warn", {
+        sessionId: this.sessionId,
+        runId: this.activePromptRun?.runId,
+        commandId: this.activeCommandId,
+        reason: reason === "idle_timeout" || reason === "restart_extensions" || reason === "fork" || reason === "file_mutation" || reason === "process_shutdown" || reason === "lru_eviction"
+          ? reason
+          : "wrapper_destroyed",
+        model: formatTelemetryModel(this.inner.model),
+        extra: { mcpTransports: activeMcpTransports, destroyReason: reason },
+      });
+    }
     this.subagentUiController.abort();
     findWorkflowRuntime(this.sessionId)?.dispose();
     this.unsubscribeWorkflow?.();
     this.permissions.cancel();
     const writers: Promise<unknown>[] = [this.abortCleanupTask, ...this.promptTasks];
+    // Retire MCP at the start of teardown, even if a prompt or extension still hangs.
+    const mcpRetirement = this.nativeMcp?.shutdown?.();
+    if (mcpRetirement) writers.push(mcpRetirement);
     if (this.subagents) writers.push(this.subagents.dispose());
     if (this.promptRunning || this.inner.isStreaming) {
       writers.push(this.inner.abort());

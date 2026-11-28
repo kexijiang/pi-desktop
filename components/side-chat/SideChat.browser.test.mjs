@@ -34,15 +34,15 @@ test.before(async () => {
   await writeFile(
     path.join(directory, "entry.tsx"),
     `
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nProvider } from "@/hooks/useI18n";
 import { ChatWindow } from "@/components/ChatWindow";
-import { RightPanel, type RightPanelTab } from "@/components/workspace/RightPanel";
+import { RightPanel } from "@/components/workspace/RightPanel";
+import { rightPanelLayoutScope, useRightPanelLayout } from "@/hooks/useRightPanelLayout";
 import { useSideChatController } from "@/components/side-chat/useSideChatController";
 import { SideChatSwitcherPopover } from "@/components/side-chat/SideChatSwitcherPopover";
 import { SideChatCloseConfirmDialog } from "@/components/side-chat/SideChatCloseConfirmDialog";
-import { parseSideChatTabId, type SideChatTabId } from "@/components/side-chat/side-chat-events";
 
 const noop = () => {};
 const SESSIONS = {
@@ -72,42 +72,12 @@ function App() {
   const initParent = new URLSearchParams(window.location.search).get("initialParent") ?? "parent-a";
   const delayParentRestore = new URLSearchParams(window.location.search).get("delayParent") === "1";
   const [session, setSession] = useState(delayParentRestore ? null : SESSIONS[initParent] ?? SESSIONS["parent-a"]);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("home");
-  const [restoredSideChatTab, setRestoredSideChatTab] = useState<SideChatTabId | null>(null);
-  const [tabRestored, setTabRestored] = useState(false);
+  const {
+    rightPanelOpen, rightPanelTab, rightPanelMaximized, openRightPanelTools, restoredSideChatTab,
+    setRightPanelOpen, setRightPanelTab, setRightPanelMaximized, setOpenRightPanelTools, clearLegacySideChatTab, closeWorkflowTab,
+  } = useRightPanelLayout(rightPanelLayoutScope(session?.id), rightPanelLayoutScope(initParent), session?.id);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem("piora-right-panel-tab");
-    const parsed = stored ? parseSideChatTabId(stored) : null;
-    if (stored === "files" || stored === "review" || stored === "commands" || stored === "browser") {
-      setRightPanelTab(stored);
-      setRestoredSideChatTab(null);
-    } else {
-      setRightPanelTab("home");
-      setRestoredSideChatTab(parsed?.kind === "live" ? (stored as SideChatTabId) : null);
-    }
-    setTabRestored(true);
-  }, []);
-
-  useEffect(() => {
-    if (restoredSideChatTab && rightPanelTab !== "home") {
-      setRestoredSideChatTab(null);
-    }
-  }, [restoredSideChatTab, rightPanelTab]);
-
-  useEffect(() => {
-    if (!tabRestored) return;
-    if (rightPanelTab === "home" && restoredSideChatTab !== null) return;
-    if (parseSideChatTabId(rightPanelTab)?.kind === "loading") return;
-    window.localStorage.setItem("piora-right-panel-tab", rightPanelTab);
-  }, [restoredSideChatTab, rightPanelTab, tabRestored]);
-
-  const handleRestoredHandled = useCallback(() => {
-    setRestoredSideChatTab(null);
-  }, []);
 
   const sideChat = useSideChatController({
     enabled: true,
@@ -119,7 +89,7 @@ function App() {
     setRightPanelOpen,
     setRightPanelTab,
     restoredSideChatTab,
-    onRestoredSideChatTabHandled: handleRestoredHandled,
+    onRestoredSideChatTabHandled: clearLegacySideChatTab,
     onPromotedSession: noop,
     onJumpToParent: noop,
   });
@@ -160,12 +130,18 @@ function App() {
               sideChat={sideChat.panelProps}
               activeTab={rightPanelTab}
               onActiveTabChange={setRightPanelTab}
+              openTools={openRightPanelTools}
+              onOpenToolsChange={setOpenRightPanelTools}
+              onCloseWorkflowTab={closeWorkflowTab}
               cwd="F:/fixture"
               refreshKey={0}
               active={rightPanelOpen}
-              maximized={false}
-              onMaximizedChange={noop}
+              maximized={rightPanelMaximized}
+              onMaximizedChange={setRightPanelMaximized}
               onClosePanel={() => setRightPanelOpen(false)}
+              fileNavMode="tree"
+              onFileNavModeChange={noop}
+              runFileChanges={null}
               fileTabs={[]}
               activeFileTabId={null}
               canReopenClosedFileTab={false}
@@ -342,6 +318,7 @@ async function setupHarnessPage(options = {}) {
   await page.addInitScript(
     ({ locale, initialStorage }) => {
       localStorage.setItem("pi-locale", locale);
+      if (!localStorage.getItem("piora-right-panel-layouts-v1")) localStorage.setItem("piora-right-panel-open", "true");
       for (const [k, v] of Object.entries(initialStorage ?? {})) {
         if (v === null) localStorage.removeItem(k);
         else localStorage.setItem(k, v);
@@ -868,10 +845,13 @@ test("R3 & R8 & A01: switching parent isolates side chats immediately, late crea
     state.holdGetByParent.delete("parent-b");
     await heldB.route.fulfill({ json: { enabled: true, parentArchived: false, sideChats: [] } });
     await page.waitForFunction(() => window.fixtureApi.getSideChatState().openIds.length === 0);
-    assert.equal(await filesTab.getAttribute("aria-selected"), "true");
+    assert.equal(await filesTab.isVisible(), false, "Parent B cannot inherit the Parent A layout");
+    assert.equal(await page.evaluate(() => window.fixtureApi.getSideChatState().rightPanelOpen), false);
 
     // Verify stale sidechat tab resets to home when B resolves empty
     await page.getByRole("button", { name: "Switch Parent A" }).click();
+    await filesTab.waitFor();
+    assert.equal(await filesTab.getAttribute("aria-selected"), "true");
     await alphaTab.click();
     assert.equal(await page.evaluate(() => window.fixtureApi.getSideChatState().rightPanelTab), "sidechat:side-a1");
 
@@ -883,7 +863,10 @@ test("R3 & R8 & A01: switching parent isolates side chats immediately, late crea
     const heldBAgain = await state.nextHeldGet();
     state.holdGetByParent.delete("parent-b");
     await heldBAgain.route.fulfill({ json: { enabled: true, parentArchived: false, sideChats: [] } });
-    await page.waitForFunction(() => window.fixtureApi.getSideChatState().rightPanelTab === "home");
+    await page.waitForFunction(() => {
+      const { openIds, rightPanelTab } = window.fixtureApi.getSideChatState();
+      return rightPanelTab === "home" && openIds.length === 0;
+    });
     assert.equal(await page.evaluate(() => window.fixtureApi.getSideChatState().openIds.length), 0);
     assert.deepEqual(errors, []);
   } finally {
@@ -922,6 +905,14 @@ test("S05: reload restores valid active sidechat:<id> tab and falls back to home
     const restoredTab = valid.page.getByRole("tab", { name: "Restored Chat" });
     await restoredTab.waitFor();
     assert.equal(await restoredTab.getAttribute("aria-selected"), "true");
+    await valid.page.waitForFunction(() => {
+      const layouts = JSON.parse(localStorage.getItem("piora-right-panel-layouts-v1") ?? "{}");
+      return layouts["session:parent-a"]?.activeTab === "sidechat:side-persist-1";
+    });
+    await valid.page.reload();
+    await valid.page.evaluate(() => window.fixtureApi.switchParent("parent-a"));
+    await restoredTab.waitFor();
+    assert.equal(await restoredTab.getAttribute("aria-selected"), "true");
     assert.deepEqual(valid.errors, []);
   } finally {
     await valid.page.close();
@@ -938,7 +929,10 @@ test("S05: reload restores valid active sidechat:<id> tab and falls back to home
   });
   try {
     await invalid.page.evaluate(() => window.fixtureApi.switchParent("parent-a"));
-    await invalid.page.waitForFunction(() => localStorage.getItem("piora-right-panel-tab") === "home");
+    await invalid.page.waitForFunction(() => {
+      const layouts = JSON.parse(localStorage.getItem("piora-right-panel-layouts-v1") ?? "{}");
+      return layouts["session:parent-a"]?.activeTab === "home";
+    });
     assert.equal(await invalid.page.evaluate(() => window.fixtureApi.getSideChatState().rightPanelTab), "home");
     assert.deepEqual(invalid.errors, []);
   } finally {

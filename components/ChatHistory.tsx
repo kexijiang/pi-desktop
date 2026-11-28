@@ -16,10 +16,11 @@ import { type ModelChangeNotice as ModelChange } from "@/lib/model-change-notice
 import type { TaskTiming } from "@/lib/task-timing";
 import type { ChatCommandView } from "@/lib/chat-command-types";
 import type { CompletedGoalBadge } from "@/lib/workflow-types";
+import { hasTurnToolProgress, type RunInterruptionInfo } from "@/lib/prompt-interruption";
 
 export interface ChatHistoryHandle { revealEntry(id: string): void; cancelNavigation(): void }
 type MessageProps = ComponentProps<typeof MessageView>;
-interface Props extends Pick<MessageProps, "modelNames" | "cwd" | "onOpenFile" | "onFork" | "onNavigate" | "onEditContent" | "onEditFailed" | "onRetry" | "retryDisabled" | "sessionId" | "onOpenAutomation" | "onOpenCommandExecution"> {
+interface Props extends Pick<MessageProps, "modelNames" | "modelList" | "onSelectModel" | "onOpenModels" | "cwd" | "onOpenFile" | "onFork" | "onNavigate" | "onEditContent" | "onEditFailed" | "onRetry" | "onRetryWithoutImages" | "retryDisabled" | "sessionId" | "onOpenAutomation" | "onOpenCommandExecution"> {
   visible?: boolean;
   onBranch?: (entryId: string) => Promise<void>;
   messages: AgentMessage[];
@@ -45,6 +46,8 @@ interface Props extends Pick<MessageProps, "modelNames" | "cwd" | "onOpenFile" |
   operations?: ChatCommandView[];
   commandActions?: ChatCommandCardActions;
   completedGoal?: CompletedGoalBadge | null;
+  runInterruption?: RunInterruptionInfo | null;
+  onContinueInterrupted?: (interruption: RunInterruptionInfo) => Promise<void>;
 }
 
 const NO_MODEL_CHANGES: ModelChange[] = [];
@@ -88,7 +91,7 @@ function DeleteMessageAction({ message, entryId, onDelete, disabled }: { message
 }
 
 /** One turn projection for saved history and the live tail in both display modes. */
-function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelChanges = NO_MODEL_CHANGES, compactProcess = true, directProcess = false, streamingMessage, entryIds, busy, streaming, interruptionId, isNew, forkingEntryId, highlightedEntryId, lastUserMsgRef, pendingScrollToUserRef, scrollContainer, handleRef, onBranch, onDeleteMessage, deleteDisabled = false, operations = NO_OPERATIONS, commandActions, responseTimings, completedGoal, ...messageProps }: Props) {
+function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelChanges = NO_MODEL_CHANGES, compactProcess = true, directProcess = false, streamingMessage, entryIds, busy, streaming, interruptionId, isNew, forkingEntryId, highlightedEntryId, lastUserMsgRef, pendingScrollToUserRef, scrollContainer, handleRef, onBranch, onDeleteMessage, deleteDisabled = false, operations = NO_OPERATIONS, commandActions, responseTimings, completedGoal, runInterruption, onContinueInterrupted, ...messageProps }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const [inspectCommand, setInspectCommand] = useState<string | null>(null);
@@ -196,7 +199,11 @@ function ChatHistoryContent({ visible: _visible, messages: savedMessages, modelC
           prevAssistantEntryId={!busy && message.role === "user" && messages[index - 1]?.role === "assistant" ? entryIds[index - 1] : undefined}
           showTimestamp={showTimestamp} prevTimestamp={messages[index - 1]?.timestamp}
           taskTiming={responseTimings?.get(index)}
-          completedGoal={completedGoal && !busy && !streaming && index === lastAssistantIndex && !row.intermediate ? completedGoal : null} />
+          completedGoal={completedGoal && !busy && !streaming && index === lastAssistantIndex && !row.intermediate ? completedGoal : null}
+          isLastMessage={!busy && !streaming && index === messages.length - 1}
+          hasToolProgress={!busy && !streaming && index === lastAssistantIndex ? hasTurnToolProgress(messages, index) : false}
+          runInterruption={!busy && !streaming && index === lastAssistantIndex && !row.intermediate ? runInterruption : null}
+          onContinueInterrupted={busy || streaming ? undefined : onContinueInterrupted} />
       </RenderErrorBoundary>
     </div></RevealProcessCommandContext.Provider></CompactProcessContext.Provider>;
   }} />;

@@ -79,20 +79,20 @@ test("command cards expose exit-code conflicts, warnings and unknown receipts wi
   assert.doesNotMatch(success, /is-failed|is-warning/);
 });
 
-test("a non-login handoff preserves its reason and explicit confirmation buttons", () => {
+test("a non-login handoff preserves its reason and only offers cancellation", () => {
   const message = { role: "assistant", content: [{ type: "toolCall", toolCallId: "wait-1", toolName: "browser", input: { action: "wait_for_user", reason: "请完成登录", purpose: "confirmation" } }] };
   const running = renderMessage(message, { sessionId: "550e8400-e29b-41d4-a716-446655440000" });
   assert.match(running, /请完成登录/);
-  assert.match(running, /我已完成，继续/);
+  assert.doesNotMatch(running, /我已完成，继续/);
   assert.match(running, /取消/);
   assert.doesNotMatch(running, /打开浏览器/);
   const finished = renderMessage(message, { toolResults: new Map([["wait-1", {
     role: "toolResult",
     toolCallId: "wait-1",
-    content: [{ type: "text", text: "User reported done. Take a new snapshot before continuing." }],
+    content: [{ type: "text", text: "The browser is ready to check again." }],
     details: { status: "continued", backend: "desktop" },
   }]]) });
-  assert.match(finished, /你已完成/);
+  assert.match(finished, /页面已更新，Agent 将继续检查/);
   assert.doesNotMatch(finished, /我已完成，继续/);
   const unsupported = renderMessage(message, { toolResults: new Map([["wait-1", {
     role: "toolResult",
@@ -100,15 +100,10 @@ test("a non-login handoff preserves its reason and explicit confirmation buttons
     content: [{ type: "text", text: "The user cannot take over the browser in this mode." }],
     details: { status: "unsupported", backend: "playwright" },
   }]]) });
-  assert.match(unsupported, /当前模式下无法在浏览器里登录/);
+  assert.match(unsupported, /当前浏览器模式无法手动操作页面/);
   assert.doesNotMatch(unsupported, /我已完成，继续/);
   assert.doesNotMatch(unsupported, /取消/);
   assert.doesNotMatch(unsupported, /打开浏览器/);
-  const card = readFileSync(new URL("./BrowserUserWaitCard.tsx", import.meta.url), "utf8");
-  assert.match(card, /backend === "desktop"/);
-  assert.match(card, /piora:open-agent-browser/);
-  assert.match(card, /JSON\.stringify\(\{ decision, toolCallId \}\)/);
-  assert.match(card, /status === "unsupported"/);
 });
 
 test("nested tool history restores bounded summaries without inventing child output or success", () => {
@@ -529,4 +524,76 @@ test("write cards distinguish streamed parameters, execution, interruption and a
   const result = { role: "toolResult", toolCallId: "write-state", content: [{ type: "text", text: "Successfully wrote 0 bytes to empty.txt" }] };
   const completed = renderMessage({ ...message, content: [{ ...message.content[0], input: { path: "empty.txt", content: "" } }] }, { toolResults: new Map([["write-state", result]]) });
   assert.match(completed, /empty\.txt/); assert.doesNotMatch(completed, /未完成|准备参数/);
+});
+
+test("interrupted assistant messages render durable interruption notices and continue action when tool progress exists", () => {
+  const truncated = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "length", content: [{ type: "text", text: "partial output" }] },
+    { isLastMessage: true, onContinueInterrupted: async () => {}, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(truncated, /data-interruption-kind="output_truncated"/);
+  assert.match(truncated, /继续执行（保留已完成步骤）/);
+  assert.match(truncated, /从头重试/);
+
+  const emptyFinal = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "stop", content: [] },
+    { isLastMessage: true, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(emptyFinal, /data-interruption-kind="empty_response"/);
+  assert.match(emptyFinal, /模型返回了空回复/);
+
+  const providerErrWithTools = renderMessage(
+    { role: "assistant", model: "m", provider: "p", stopReason: "error", errorMessage: "503 upstream failed", content: [] },
+    { isLastMessage: true, hasToolProgress: true, onContinueInterrupted: async () => {}, onRetry: async () => {}, retryPrompt: { message: { role: "user", content: "go" } } },
+  );
+  assert.match(providerErrWithTools, /继续执行（保留已完成步骤）/);
+  assert.match(providerErrWithTools, /从头重试/);
+});
+
+test("MODEL_IMAGE_UNSUPPORTED failure renders actionable guidance and hides remove-images action for image-only messages", () => {
+  const withText = renderMessage(
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "请看这张截图" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "YWJj" } },
+      ],
+      sendError: "The selected model (custom/deepseek-r1) does not support image input.",
+      sendErrorCode: "MODEL_IMAGE_UNSUPPORTED",
+      sendErrorDetails: { provider: "custom", modelId: "deepseek-r1", modelName: "DeepSeek R1", imageCount: 1 },
+      recoveryDraft: { value: "请看这张截图", files: [], images: [{ data: "YWJj", mimeType: "image/png" }] },
+    },
+    {
+      modelList: [{ id: "gpt-4o", name: "GPT-4o", provider: "openai", supportsImages: true }],
+      onOpenModels: () => {},
+      onSelectModel: async () => true,
+      onRetry: async () => {},
+      onRetryWithoutImages: async () => {},
+    },
+  );
+  assert.match(withText, /data-image-unsupported-card="true"/);
+  assert.match(withText, /去模型配置/);
+  assert.match(withText, /切换支持图片的模型/);
+  assert.match(withText, /GPT-4o/);
+  assert.match(withText, /移除图片继续发送/);
+
+  const imageOnly = renderMessage(
+    {
+      role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "YWJj" } }],
+      sendError: "The selected model (custom/deepseek-r1) does not support image input.",
+      sendErrorCode: "MODEL_IMAGE_UNSUPPORTED",
+      sendErrorDetails: { provider: "custom", modelId: "deepseek-r1", modelName: "DeepSeek R1", imageCount: 1 },
+      recoveryDraft: { value: "", files: [], images: [{ data: "YWJj", mimeType: "image/png" }] },
+    },
+    {
+      modelList: [],
+      onOpenModels: () => {},
+      onSelectModel: async () => true,
+      onRetryWithoutImages: async () => {},
+    },
+  );
+  assert.match(imageOnly, /去模型配置/);
+  assert.match(imageOnly, /暂无已启用的视觉模型/);
+  assert.doesNotMatch(imageOnly, /移除图片继续发送/);
 });

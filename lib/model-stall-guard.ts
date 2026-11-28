@@ -20,6 +20,7 @@ import {
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { formatTelemetryModel, logRunEvent } from "./rpc/run-telemetry.ts";
 
 export const DEFAULT_MODEL_STALL_FIRST_EVENT_TIMEOUT_MS = 180_000;
 export const DEFAULT_MODEL_STALL_IDLE_TIMEOUT_MS = 120_000;
@@ -156,6 +157,32 @@ function isTerminal(event: AssistantMessageEvent): boolean {
   return event.type === "done" || event.type === "error";
 }
 
+function isUpstreamAbortedEvent(event: AssistantMessageEvent): boolean {
+  if (event.type !== "error") return false;
+  return event.reason === "aborted"
+    || (event.error as { stopReason?: string } | undefined)?.stopReason === "aborted";
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (!error) return false;
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return true;
+    if (/\b(?:aborted|request was aborted|operation was aborted|signal is aborted)\b/i.test(error.message)) return true;
+  }
+  return false;
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === "string" && direct) return direct;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === "object" && typeof (cause as { code?: unknown }).code === "string") {
+    return (cause as { code: string }).code;
+  }
+  return undefined;
+}
+
 export interface StallGuardOptions {
   model?: unknown;
   controller: AbortController;
@@ -198,8 +225,17 @@ export function guardAssistantStream(
     stopReading = undefined;
   };
 
+  const startedAt = Date.now();
+  const modelLabel = formatTelemetryModel(options.model);
+
   function onAbort(): void {
     if (settled) return;
+    logRunEvent("info", {
+      reason: "user_abort",
+      model: modelLabel,
+      stopReason: "aborted",
+      elapsedMs: Date.now() - startedAt,
+    });
     settleWith(abortedEvent(options.model, partial));
     controller.abort();
   }
@@ -207,7 +243,15 @@ export function guardAssistantStream(
   const fire = (kind: "first-event" | "idle"): void => {
     if (settled) return;
     if (userSignal?.aborted) { onAbort(); return; }
-    settleWith(modelStallTimeoutEvent(kind, kind === "first-event" ? firstEventTimeoutMs : idleTimeoutMs, { model: options.model, partial }));
+    const timeoutMs = kind === "first-event" ? firstEventTimeoutMs : idleTimeoutMs;
+    logRunEvent("warn", {
+      reason: kind === "first-event" ? "model_first_event_timeout" : "model_idle_timeout",
+      model: modelLabel,
+      stopReason: "error",
+      elapsedMs: Date.now() - startedAt,
+      extra: { timeoutMs },
+    });
+    settleWith(modelStallTimeoutEvent(kind, timeoutMs, { model: options.model, partial }));
     try {
       controller.abort();
     } catch {
@@ -241,6 +285,23 @@ export function guardAssistantStream(
         const event = next.value;
         if ("partial" in event && event.partial) partial = event.partial;
         if (isTerminal(event)) {
+          // A provider or proxy can emit `aborted` without user cancellation.
+          // Convert that into a retryable stream-interrupted failure so auto-retry,
+          // fallback, and UI error surfacing engage instead of stopping silently.
+          if (!userSignal?.aborted && isUpstreamAbortedEvent(event)) {
+            const rawError = event.type === "error"
+              ? (event.error as { errorMessage?: string } | undefined)?.errorMessage
+              : undefined;
+            logRunEvent("warn", {
+              reason: "model_upstream_abort",
+              model: modelLabel,
+              stopReason: "aborted",
+              errorMessage: rawError ?? "Upstream stream emitted aborted without user cancellation",
+              elapsedMs: Date.now() - startedAt,
+            });
+            settleWith(modelStallTimeoutEvent("stream-interrupted", 0, { model: options.model, partial }));
+            return;
+          }
           settleWith(event);
           return;
         }
@@ -250,12 +311,37 @@ export function guardAssistantStream(
       // A well-behaved provider always terminates with done/error. If the stream
       // object ends silently, fail loudly rather than leaving result() pending,
       // without misreporting an early disconnect as a full idle timeout.
+      logRunEvent("warn", {
+        reason: "model_stream_interrupted",
+        model: modelLabel,
+        stopReason: "error",
+        errorMessage: "Provider stream ended silently before emitting a terminal event",
+        elapsedMs: Date.now() - startedAt,
+      });
       settleWith(modelStallTimeoutEvent("stream-interrupted", 0, { model: options.model, partial }));
     } catch (error) {
       if (settled) return;
       if (userSignal?.aborted) {
         onAbort();
+      } else if (isAbortLikeError(error)) {
+        logRunEvent("warn", {
+          reason: "model_upstream_abort",
+          model: modelLabel,
+          stopReason: "error",
+          errorCode: errorCodeOf(error),
+          errorMessage: error instanceof Error ? error.message : String(error),
+          elapsedMs: Date.now() - startedAt,
+        });
+        settleWith(modelStallTimeoutEvent("stream-interrupted", 0, { model: options.model, partial }));
       } else {
+        logRunEvent("warn", {
+          reason: "model_transport_error",
+          model: modelLabel,
+          stopReason: "error",
+          errorCode: errorCodeOf(error),
+          errorMessage: error instanceof Error ? error.message : String(error),
+          elapsedMs: Date.now() - startedAt,
+        });
         settleWith(thrownErrorEvent(error));
       }
     } finally {

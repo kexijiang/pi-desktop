@@ -112,7 +112,7 @@
 .taskSummaryBody progress::-webkit-progress-bar { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); border-radius: 10px; }
 .taskSummaryBody progress::-webkit-progress-value { background: var(--accent); border-radius: 10px; }
 .taskSummaryActions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-.taskSummaryActions > button, .detailsScroll > button, .runDetails > button, .recoveryRow > button { border: 1px solid var(--border); border-radius: 5px; padding: 7px 11px; background: var(--bg); color: var(--text-muted); font-size: var(--text-sm); }
+.taskSummaryActions > button, .detailsScroll > button, .runDetails > button, .recoveryRow > button, .recoveryActions > button:not(.iconButton), .recoveryHeader > button { border: 1px solid var(--border); border-radius: 5px; padding: 7px 11px; background: var(--bg); color: var(--text-muted); font-size: var(--text-sm); }
 .workspace .primaryButton { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent); color: #fff; font-size: var(--text-sm); }
 .workspace .primaryButton:hover { filter: brightness(.96); }
 .queueHint { display: flex; align-items: center; gap: 8px; padding: 8px 0; color: var(--text-muted); font-size: var(--text-sm); }
@@ -147,11 +147,14 @@
 .mentionMenu strong, .mentionMenu small { display: block; font-size: var(--text-sm); }
 .mentionMenu small { margin-top: 2px; color: var(--text-muted); font-size: var(--text-xs); }
 .error { padding: 9px 12px; margin: 8px 0; background: color-mix(in srgb, #d05252 6%, var(--bg)); color: color-mix(in srgb, #d05252 80%, var(--text)); border: 1px solid color-mix(in srgb, #d05252 20%, var(--border)); border-radius: 6px; font-size: var(--text-sm); overflow-wrap: anywhere; }
-.recoveryList { max-height: 150px; overflow-y: auto; }
+.recoveryList { max-height: 170px; overflow-y: auto; }
+.recoveryHeader { display: flex; align-items: center; justify-content: flex-end; margin-bottom: 6px; }
+.recoveryHeader > button { padding: 4px 9px; font-size: var(--text-xs); }
 .recoveryRow { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; padding: 9px; border: 1px solid var(--border); border-radius: 6px; }
 .recoveryRow > span { flex: 1; min-width: 0; }
 .recoveryRow strong, .recoveryRow small { display: block; font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recoveryRow small { margin-top: 4px; color: var(--text-muted); }
+.recoveryActions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .scrollToBottom { position: absolute; z-index: 4; bottom: 15px; left: 50%; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 50%; background: var(--bg); color: var(--text-muted); box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 8%, transparent); }
 .loadOlder { display: block; margin: 0 auto 20px; border: 0; background: transparent; color: var(--text-muted); font-size: var(--text-sm) !important; }
 .details { display: flex; flex-direction: column; flex: 0 0 var(--room-details-width, 324px); width: var(--room-details-width, 324px); max-width: 100%; min-width: 0; min-height: 0; background: var(--bg); }

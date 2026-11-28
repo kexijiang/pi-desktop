@@ -8,6 +8,8 @@ import {
   type SessionInboxState,
 } from "./session-inbox";
 import { getRpcSession, type AgentSessionWrapper } from "./rpc-manager";
+import { logRunEvent } from "./rpc/run-telemetry";
+import { extractErrorDetails, MODEL_IMAGE_UNSUPPORTED } from "./model-image-error";
 import { resolveSessionPath } from "./session-reader";
 import { resolveOrStartRpcSession } from "./session-runtime-resolver";
 import { SessionControlStore } from "./session-control-store";
@@ -28,7 +30,6 @@ import type {
   SessionMessageInput,
 } from "./session-message-types";
 import {
-  assertPrincipal,
   buildSteeringText,
   resolveRouterErrorCode,
   safeErrorMessage,
@@ -37,7 +38,6 @@ import {
   TERMINAL_STATUSES,
   validateSessionMessageInput,
   type SessionMessageRouterErrorCode,
-  type SessionRoutePrincipal,
 } from "./session-router/errors";
 import { ChatOperationRunner, type SessionAdmission } from "./session-router/chat-operation-runner";
 import {
@@ -49,7 +49,6 @@ import {
 export {
   SessionMessageRouterError,
   type SessionMessageRouterErrorCode,
-  type SessionRoutePrincipal,
 };
 
 interface RouterOptions {
@@ -160,6 +159,13 @@ export class SessionMessageRouter {
   private async restoreInbox(sessionId: string): Promise<void> {
     for (const command of await this.store.loadActiveCommands(sessionId)) {
       this.rememberCommand(command);
+      if (command.source === "remote") {
+        await this.transition(command, "interrupted", {
+          errorCode: "RUN_INTERRUPTED",
+          errorMessage: "Remote control has been removed.",
+        });
+        continue;
+      }
       if (command.workflowAction) {
         const live = getRpcSession(sessionId);
         if (command.runId && live?.isAlive() && live.getActivePromptRunId() === command.runId) {
@@ -278,6 +284,7 @@ export class SessionMessageRouter {
       timestamp: Date.now(),
       ...(command.errorCode ? { errorCode: command.errorCode } : {}),
       ...(command.errorMessage ? { errorMessage: command.errorMessage } : {}),
+      ...(command.errorDetails ? { errorDetails: command.errorDetails } : {}),
       ...(command.operation ? { operation: command.operation } : {}),
       idempotencyKey: command.idempotencyKey,
       acceptedAt: command.acceptedAt,
@@ -286,6 +293,17 @@ export class SessionMessageRouter {
       preview: command.content.slice(0, 180),
       queuePaused: command.queuePaused ?? false,
     });
+    if (TERMINAL_STATUSES.has(status) && status !== "completed") {
+      logRunEvent(status === "cancelled" ? "info" : "warn", {
+        sessionId: command.targetSessionId,
+        runId: command.runId,
+        commandId: command.commandId,
+        reason: status === "interrupted" ? "process_interrupted" : status === "expired" ? "command_expired" : status === "cancelled" ? "command_cancelled" : "command_failed",
+        errorCode: command.errorCode,
+        errorMessage: command.errorMessage,
+        extra: { source: command.source, delivery: command.delivery },
+      });
+    }
     if (TERMINAL_STATUSES.has(status) && command.teamExecution) {
       try { deleteTeamExecutionSecret(command.teamExecution); }
       catch (error) { console.error("[pi-web] failed to remove Team execution secret:", safeErrorMessage(error)); }
@@ -303,6 +321,7 @@ export class SessionMessageRouter {
       ...(input.promptSuffix ? { promptSuffix: input.promptSuffix } : {}),
       ...(input.localFiles?.length ? { localFiles: structuredClone(input.localFiles) } : {}),
       ...(input.operation ? { operation: structuredClone(input.operation) } : {}),
+      ...(input.resumeInterrupted ? { resumeInterrupted: true } : {}),
       idempotencyKey: input.idempotencyKey,
       targetSessionId: input.targetSessionId,
       content: input.content,
@@ -319,11 +338,10 @@ export class SessionMessageRouter {
     };
   }
 
-  async dispatchSessionMessage(input: SessionMessageInput, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async dispatchSessionMessage(input: SessionMessageInput): Promise<DispatchReceipt> {
     validateSessionMessageInput(input, this.maxMessageBytes);
-    assertPrincipal(input, principal);
     if (input.delivery === "steer") {
-      return this.steerSession(input, principal);
+      return this.steerSession(input);
     }
     const key = submissionKey(input.targetSessionId, input.idempotencyKey);
     const pending = this.pendingSubmissions.get(key);
@@ -468,7 +486,7 @@ export class SessionMessageRouter {
 
   async dispatchManySessionMessages(
     inputs: SessionMessageInput[],
-    options: { maxConcurrency?: number; principal?: SessionRoutePrincipal } = {},
+    options: { maxConcurrency?: number } = {},
   ): Promise<DispatchReceipt[]> {
     const results: DispatchReceipt[] = [];
     const limit = Math.max(1, Math.min(this.maxConcurrency, Math.floor(options.maxConcurrency ?? this.maxConcurrency)));
@@ -476,7 +494,7 @@ export class SessionMessageRouter {
     const worker = async () => {
       while (next < inputs.length) {
         const index = next++;
-        try { results[index] = await this.dispatchSessionMessage(inputs[index], options.principal); }
+        try { results[index] = await this.dispatchSessionMessage(inputs[index]); }
         catch (error) {
           results[index] = {
             accepted: true,
@@ -492,10 +510,9 @@ export class SessionMessageRouter {
     return results;
   }
 
-  async steerSession(input: Omit<SessionMessageInput, "delivery">, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async steerSession(input: Omit<SessionMessageInput, "delivery">): Promise<DispatchReceipt> {
     const message = { ...input, delivery: "steer" as const };
     validateSessionMessageInput(message, this.maxMessageBytes);
-    assertPrincipal(message, principal);
     const existing = await this.store.queryByIdempotencyKey(input.targetSessionId, input.idempotencyKey);
     if (existing) {
       return {
@@ -529,8 +546,16 @@ export class SessionMessageRouter {
     } catch (error) {
       command.errorCode = resolveRouterErrorCode(error);
       command.errorMessage = safeErrorMessage(error);
+      const details = extractErrorDetails(error);
+      if (details) command.errorDetails = details;
       await this.transition(command, "failed", {}, "command_failed");
-      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, "Steer could not be delivered.", { cause: error });
+      const publicMessage = command.errorCode === MODEL_IMAGE_UNSUPPORTED
+        ? command.errorMessage
+        : "Steer could not be delivered.";
+      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, publicMessage, {
+        cause: error,
+        ...(details ? { details } : {}),
+      });
     }
   }
 
@@ -594,10 +619,9 @@ export class SessionMessageRouter {
     return performQueuedInputAction(this.createQueueMutationHost(), sessionId, commandId, action, text, expectedRevision);
   }
 
-  async followUpSession(input: Omit<SessionMessageInput, "delivery">, principal?: SessionRoutePrincipal): Promise<DispatchReceipt> {
+  async followUpSession(input: Omit<SessionMessageInput, "delivery">): Promise<DispatchReceipt> {
     const message = { ...input, delivery: "steer" as const };
     validateSessionMessageInput(message, this.maxMessageBytes);
-    assertPrincipal(message, principal);
     const session = await this.getLiveSession(input.targetSessionId);
     await this.ensureLoaded(input.targetSessionId);
     if (!session.isRunning() || !session.getActivePromptRunId()) {
@@ -619,8 +643,16 @@ export class SessionMessageRouter {
     } catch (error) {
       command.errorCode = resolveRouterErrorCode(error);
       command.errorMessage = safeErrorMessage(error);
+      const details = extractErrorDetails(error);
+      if (details) command.errorDetails = details;
       await this.transition(command, "failed", {}, "command_failed");
-      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, "Follow-up could not be delivered.", { cause: error });
+      const publicMessage = command.errorCode === MODEL_IMAGE_UNSUPPORTED
+        ? command.errorMessage
+        : "Follow-up could not be delivered.";
+      throw new SessionMessageRouterError(command.errorCode as SessionMessageRouterErrorCode, publicMessage, {
+        cause: error,
+        ...(details ? { details } : {}),
+      });
     }
   }
 
@@ -670,9 +702,32 @@ export class SessionMessageRouter {
           if (admission?.session === session) admission.runId = event.runId;
         }
         const cancelled = this.isCancelled(command);
-        if (event.type === "prompt_done") finish(cancelled ? "cancelled" : "completed");
-        else if (event.type === "prompt_error") {
+        if (event.type === "prompt_done") {
+          if (cancelled) {
+            finish("cancelled");
+            return;
+          }
+          if (event.aborted === true) {
+            const abortReason = typeof event.abortReason === "string" ? event.abortReason : undefined;
+            if (abortReason === "user_abort") {
+              finish("cancelled");
+              return;
+            }
+            const interruption = event.interruption as { reason?: string; detail?: string } | undefined;
+            command.errorCode = abortReason === "tool_review_denied" ? "TOOL_REVIEW_DENIED" : "RUN_INTERRUPTED";
+            command.errorMessage = safeErrorMessage(
+              interruption?.detail
+                ?? (abortReason ? `Run interrupted (${abortReason}).` : "The target runtime stopped before completion."),
+            );
+            finish("interrupted");
+            return;
+          }
+          finish("completed");
+        } else if (event.type === "prompt_error") {
+          if (typeof event.errorCode === "string" && event.errorCode) command.errorCode = event.errorCode;
           if (typeof event.errorMessage === "string") command.errorMessage = safeErrorMessage(event.errorMessage);
+          const details = extractErrorDetails(event);
+          if (details) command.errorDetails = details;
           finish(cancelled ? "cancelled" : "failed");
         }
       });
@@ -715,6 +770,8 @@ export class SessionMessageRouter {
           getSessionInboxRegistry().shift(inbox);
           command.errorCode = code;
           command.errorMessage = safeErrorMessage(error);
+          const details = extractErrorDetails(error);
+          if (details) command.errorDetails = details;
           await this.transition(command, "failed", {}, "command_failed");
           continue;
         }
@@ -759,6 +816,7 @@ export class SessionMessageRouter {
             images: command.images,
             materials: command.materials,
             teamExecution,
+            ...(command.resumeInterrupted ? { resumeInterrupted: true } : {}),
           });
           command.runId = started.runId;
           admission.runId = started.runId;
@@ -783,6 +841,8 @@ export class SessionMessageRouter {
           }
           command.errorCode = code;
           command.errorMessage = safeErrorMessage(error);
+          const details = extractErrorDetails(error);
+          if (details) command.errorDetails = details;
           await this.transition(command, "failed", {}, "command_failed");
           continue;
         }
@@ -797,12 +857,12 @@ export class SessionMessageRouter {
           await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: "COMMAND_CANCELLED" });
           await this.transition(command, "cancelled", {}, "command_cancelled");
         } else if (status === "interrupted") {
-          command.errorCode = "RUN_INTERRUPTED";
-          command.errorMessage = "The target runtime stopped before completion.";
-          await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: "RUN_INTERRUPTED" });
+          command.errorCode ??= "RUN_INTERRUPTED";
+          command.errorMessage ??= "The target runtime stopped before completion.";
+          await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: command.errorCode, errorMessage: command.errorMessage });
           await this.transition(command, "interrupted", {}, "command_interrupted");
         } else {
-          command.errorCode = "PROMPT_ERROR";
+          command.errorCode ??= "PROMPT_ERROR";
           await this.publish({ type: "prompt_error", sessionId, commandId: command.commandId, runId: command.runId, timestamp: Date.now(), errorCode: command.errorCode, errorMessage: command.errorMessage });
           await this.transition(command, "failed", {}, "command_failed");
         }
@@ -818,8 +878,7 @@ export class SessionMessageRouter {
     });
   }
 
-  async abortSessionRun(input: { targetSessionId: string; idempotencyKey?: string }, principal?: SessionRoutePrincipal): Promise<AbortReceipt> {
-    assertPrincipal({ targetSessionId: input.targetSessionId, content: "", source: "system", idempotencyKey: input.idempotencyKey ?? "abort" }, principal);
+  async abortSessionRun(input: { targetSessionId: string; idempotencyKey?: string }): Promise<AbortReceipt> {
     const session = getRpcSession(input.targetSessionId);
     const command = this.activeCommands.get(input.targetSessionId);
     if (!session?.isAlive()) {
@@ -842,9 +901,8 @@ export class SessionMessageRouter {
     };
   }
 
-  async cancelCommand(commandId: string, principal?: SessionRoutePrincipal): Promise<AbortReceipt> {
+  async cancelCommand(commandId: string): Promise<AbortReceipt> {
     const command = this.canonicalCommand(commandId);
-    assertPrincipal({ targetSessionId: command.targetSessionId, content: "", source: "system", idempotencyKey: command.idempotencyKey }, principal);
     const receipt = await this.cancelRecord(command);
     return { ...receipt, status: receipt.status === "cancelled" || receipt.status === "interrupted" ? receipt.status : "idle" };
   }
@@ -859,7 +917,6 @@ export class SessionMessageRouter {
 
   async cancelPromptSubmission(
     input: { targetSessionId: string; idempotencyKey: string; promptCommandId?: string },
-    principal?: SessionRoutePrincipal,
   ): Promise<PromptCancellationReceipt> {
     if (
       typeof input.targetSessionId !== "string"
@@ -872,7 +929,6 @@ export class SessionMessageRouter {
     ) {
       throw new SessionMessageRouterError("INVALID_SESSION_MESSAGE", "A bounded original submission identity is required.");
     }
-    assertPrincipal({ targetSessionId: input.targetSessionId, content: "", source: "ui", idempotencyKey: input.idempotencyKey }, principal);
     let command = await this.submissionCommand(input.targetSessionId, input.idempotencyKey);
     if (input.promptCommandId) {
       command = this.canonicalCommand(input.promptCommandId);

@@ -3,6 +3,7 @@
 import React from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { ContextUsage, SessionStatsInfo } from "@/lib/pi-types";
+import type { PromptBudgetReport } from "@/lib/prompt-runtime/budget";
 import { AliIcon } from "../AliIcon";
 import { formatTokenCount, getContextRemainingPercent } from "./shared";
 
@@ -73,8 +74,27 @@ export function SessionStatsBadge({ sessionStats }: { sessionStats?: SessionStat
   );
 }
 
-export function ContextUsageRing({ contextUsage }: { contextUsage?: ContextUsage | null }) {
+const dismissedBudgetFingerprints = new Set<string>();
+
+function describePromptBudget(report: PromptBudgetReport, t: (key: string, values?: Record<string, string | number>) => string): string[] {
+  return report.warnings.map((warning) => {
+    if (warning.kind === "project_context_truncated") {
+      return t("chat.promptBudgetProjectContext", { files: warning.truncatedFiles + warning.omittedFiles });
+    }
+    if (warning.kind === "skills_truncated") {
+      return t("chat.promptBudgetSkills", { omitted: warning.omittedSkills, truncated: warning.truncatedDescriptions });
+    }
+    return t("chat.promptBudgetLarge", { chars: warning.totalChars.toLocaleString(), limit: warning.warnChars.toLocaleString() });
+  });
+}
+
+export function ContextUsageRing({ contextUsage, promptBudget }: { contextUsage?: ContextUsage | null; promptBudget?: PromptBudgetReport | null }) {
   const { t } = useI18n();
+  const [dismissedFingerprint, setDismissedFingerprint] = React.useState<string | null>(null);
+  const budgetHints = promptBudget && promptBudget.warnings.length > 0 ? describePromptBudget(promptBudget, t) : [];
+  const showBudgetHint = Boolean(promptBudget && budgetHints.length > 0
+    && dismissedFingerprint !== promptBudget.fingerprint
+    && !dismissedBudgetFingerprints.has(promptBudget.fingerprint));
   const contextRemainingPercent = getContextRemainingPercent(contextUsage);
   const contextUsedPercent = contextRemainingPercent === null ? null : 100 - contextRemainingPercent;
   const contextUsageLabel = contextUsedPercent === null
@@ -89,6 +109,12 @@ export function ContextUsageRing({ contextUsage }: { contextUsage?: ContextUsage
   const contextBreakdownRows: [string, string][] | null = contextUsage?.breakdown ? [
     [t("chat.contextSystemPrompt"), formatTokenCount(contextUsage.breakdown.systemPrompt)],
     [t("chat.contextProjectInstructions"), formatTokenCount(contextUsage.breakdown.projectInstructions)],
+    ...((contextUsage.breakdown.skills ?? 0) > 0
+      ? [[t("chat.contextSkills"), formatTokenCount(contextUsage.breakdown.skills ?? 0)] as [string, string]]
+      : []),
+    ...((contextUsage.breakdown.addendum ?? 0) > 0
+      ? [[t("chat.contextAddendum"), formatTokenCount(contextUsage.breakdown.addendum ?? 0)] as [string, string]]
+      : []),
     [t("chat.contextToolDefinitions"), formatTokenCount(contextUsage.breakdown.toolDefinitions)],
     [t("chat.contextConversationMessages"), formatTokenCount(contextUsage.breakdown.conversationMessages)],
     ...(contextUsage.breakdown.otherRuntime > 0
@@ -126,6 +152,18 @@ export function ContextUsageRing({ contextUsage }: { contextUsage?: ContextUsage
           <span>{contextUsageLabel}</span>
         </div>
         <div className="context-usage-tooltip-value">{contextTokenLabel}</div>
+        {showBudgetHint && promptBudget ? (
+          <div className="context-usage-budget-hint" role="status" data-prompt-budget-hint>
+            {budgetHints.map((hint) => <div key={hint}>{hint}</div>)}
+            <div>{t("chat.promptBudgetAdvice")}</div>
+            <button
+              type="button"
+              onClick={() => { dismissedBudgetFingerprints.add(promptBudget.fingerprint); setDismissedFingerprint(promptBudget.fingerprint); }}
+            >
+              {t("chat.promptBudgetDismiss")}
+            </button>
+          </div>
+        ) : null}
         {contextBreakdownRows ? (
           <div className="context-usage-breakdown">
             <div className="context-usage-breakdown-title">{t("chat.contextBreakdownTitle")}</div>

@@ -35,6 +35,7 @@ import {
   getEditorChangeRanges,
 } from "@/lib/file-change-navigation";
 import { FileReferenceRecovery } from "./FileReferenceRecovery";
+import { UnsupportedFileViewer } from "./file-viewer/UnsupportedFileViewer";
 import { FileConflictBanner, FileSaveErrorBanner } from "./file-viewer/FileConflictBanner";
 import { FilePreviewPane } from "./file-viewer/FilePreviewPane";
 import { AudioViewer, DocumentViewer, ImageViewer } from "./file-viewer/MediaViewers";
@@ -85,6 +86,9 @@ function FileViewerContent({
   onLocateFile,
 }: FileViewerProps & { onLocateFile: (path: string) => void }) {
   const viewerKind = getFileViewerKind(filePath);
+  if (viewerKind === "unsupported") {
+    return <UnsupportedFileViewer key={filePath} filePath={filePath} sourceSessionId={sourceSessionId} active={active} />;
+  }
   if (viewerKind === "image") {
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
   }
@@ -138,6 +142,7 @@ function TextFileViewer({
   const [gitDiffLoading, setGitDiffLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
   const [missing, setMissing] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => isMarkdownPath(filePath) ? "preview" : "edit");
   const [viewerWidth, setViewerWidth] = useState(0);
@@ -222,8 +227,9 @@ function TextFileViewer({
   const fetchContent = useCallback((targetPath: string, replaceDraft = true) => {
     return fetch(getFileApiUrl(targetPath, "read", sourceSessionId))
       .then(async (response) => {
-        const next = await response.json() as FileData & { error?: string };
+        const next = await response.json() as FileData & { error?: string; code?: string };
         if (!response.ok || next.error) {
+          if (replaceDraft) setUnsupported(response.status === 415 && next.code === "FILE_NOT_UTF8_TEXT");
           if (replaceDraft) setMissing(response.status === 404);
           throw new Error(next.error ?? `HTTP ${response.status}`);
         }
@@ -231,6 +237,7 @@ function TextFileViewer({
       })
       .then((next) => {
         setError(null);
+        setUnsupported(false);
         setMissing(false);
         setData(next);
         loadedRef.current = true;
@@ -653,6 +660,7 @@ function TextFileViewer({
   }
 
   if (error && !isDeletedDiff) {
+    if (unsupported) return <UnsupportedFileViewer key={filePath} filePath={filePath} sourceSessionId={sourceSessionId} active={active} />;
     if (missing) return <FileReferenceRecovery key={filePath} filePath={filePath} cwd={cwd} active={active} onFound={onLocateFile} />;
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#f87171", fontSize: "var(--text-base)" }}>

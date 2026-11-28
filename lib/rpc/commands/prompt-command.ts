@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { omitFailedPromptHistory } from "../../failed-prompt-context";
+import { omitFailedPromptHistory, omitTrailingAssistantErrorOnly } from "../../failed-prompt-context";
 import { validateAgentImages } from "../../image-attachments";
 import { applyConfiguredImageInput, modelSupportsImages } from "../../model-capabilities";
+import { extractErrorDetails, ModelImageUnsupportedError } from "../../model-image-error";
 import { runPromptWithModelFallback } from "../../model-fallback";
 import { readModelFallbackConfig } from "../../model-fallback-config";
 import { invalidateModelsCache } from "../../models-cache";
@@ -22,6 +23,8 @@ import { bindTeamPromptContext, validateTeamExecutionContext } from "../../team-
 import type { TeamExecutionContext } from "../../team-types";
 import { parseWorkflowAction, parseWorkflowPromptOptions } from "../../workflow-input";
 import { findWorkflowRuntime, getWorkflowRuntime, WorkflowError } from "../../workflow-runtime";
+import { classifyErrorKind, classifyRunOutcome, extractRunMetrics } from "../run-outcome";
+import { formatTelemetryModel, logRunEvent, redactTelemetryText, type RunInterruptionInfo } from "../run-telemetry";
 import type { RpcCommandHost } from "./host";
 
 function validatePromptOrQueueImages(
@@ -43,7 +46,12 @@ function validatePromptOrQueueImages(
         ? host.inner.modelRuntime.getModel(host.inner.model.provider, host.inner.model.id) ?? host.inner.model
         : host.inner.model;
     if (!(isNewTurn ? modelSupportsImages(targetModel) : targetModel?.input?.includes("image"))) {
-      throw new Error("The selected model does not support image input. Choose an image-capable model.");
+      throw new ModelImageUnsupportedError({
+        provider: targetModel?.provider ?? pending?.provider ?? "",
+        modelId: targetModel?.id ?? pending?.modelId ?? "",
+        modelName: targetModel?.name ?? targetModel?.id ?? pending?.modelId ?? "",
+        imageCount: command.images.length,
+      });
     }
   }
 }
@@ -94,12 +102,18 @@ export async function handlePromptCommand(
   const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
   const promptMaterials = command.materials as PromptMaterialReference[] | undefined;
   const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+  const resumeInterrupted = command.resumeInterrupted === true;
   if (!streamingBehavior) {
     host.assertSessionIdle("send a prompt");
     if (host.promptAdmissionBusy) throw new Error("Cannot send a prompt while the session is starting another prompt");
     // A new submission must not revive requests that exhausted retries.
     // Keep raw chat rows while excluding those turns from SDK context.
-    if (omitFailedPromptHistory(host.inner.sessionManager)) host.persistSessionFile();
+    // When explicitly resuming an interrupted multi-step run, remove only the
+    // trailing failed/aborted assistant entry so completed tool results stay intact.
+    const omitted = resumeInterrupted
+      ? omitTrailingAssistantErrorOnly(host.inner.sessionManager)
+      : omitFailedPromptHistory(host.inner.sessionManager);
+    if (omitted) host.persistSessionFile();
     host.abortedQueuedMessages = undefined;
   }
   const teamExecution = command.teamExecution as TeamExecutionContext | undefined;
@@ -164,6 +178,14 @@ export async function handlePromptCommand(
   }
   host.lastPromptFailed = false;
   host.lastPromptErrorSummary = undefined;
+  if (!streamingBehavior) {
+    host.lastAbortReason = undefined;
+    host.lastAbortDetail = undefined;
+    host.lastRunInterruption = null;
+  }
+  const runStartedAt = Date.now();
+  const startMessageIndex = host.inner.agent.state?.messages?.length ?? 0;
+  const priorAssistant = host.lastAssistantResponse;
   const ownsPromptRun = !streamingBehavior || !host.activePromptRun;
   const promptSource = command.source as SessionMessageSourceKind | undefined;
   const promptRun = ownsPromptRun
@@ -249,7 +271,13 @@ export async function handlePromptCommand(
       }
       // Settings or the pending model can change during async admission.
       if (promptImages?.length && !host.inner.model?.input?.includes("image")) {
-        throw new Error("The selected model does not support image input. Choose an image-capable model.");
+        const liveModel = host.inner.model;
+        throw new ModelImageUnsupportedError({
+          provider: liveModel?.provider ?? "",
+          modelId: liveModel?.id ?? "",
+          modelName: liveModel?.name ?? liveModel?.id ?? "",
+          imageCount: promptImages.length,
+        });
       }
     }
     const prompt = (admitted: () => void) => {
@@ -309,47 +337,201 @@ export async function handlePromptCommand(
       prompt,
     });
   }).then(async () => {
-    if (!streamingBehavior && abortGeneration === host.abortGeneration && host.isAlive()) preparedWorkflow?.onPromptSettled();
-    host.promptRunning = false;
-    if (fileChangeCapture) await finishPromptFileChanges(fileChangeCapture, abortGeneration !== host.abortGeneration ? "aborted" : "complete");
-    if (ownsPromptRun) {
-      await finishPromptRun(promptRun, "idle");
-      if (host.activePromptRun?.runId === promptRun.runId) host.activePromptRun = undefined;
-      if (host.activeCommandId === commandId) host.activeCommandId = undefined;
+    const aborted = abortGeneration !== host.abortGeneration || !host.isAlive();
+    const abortReason = aborted ? (host.lastAbortReason ?? "user_abort") : undefined;
+    const abortDetail = aborted ? host.lastAbortDetail : undefined;
+    const messages = host.inner.agent.state?.messages ?? [];
+    const metrics = extractRunMetrics(messages, startMessageIndex);
+    const interruption = !streamingBehavior
+      ? classifyRunOutcome({
+          sessionMessages: messages,
+          startMessageIndex,
+          lastAssistant: host.lastAssistantResponse,
+          priorAssistant,
+          aborted,
+          abortReason,
+          abortDetail,
+          runId: promptRun.runId,
+          commandId,
+        })
+      : null;
+
+    try {
+      if (!streamingBehavior && !aborted && host.isAlive()) {
+        try { preparedWorkflow?.onPromptSettled(); }
+        catch (workflowError) {
+          console.error("[pi-web] workflow settle failed:", workflowError instanceof Error ? workflowError.message : workflowError);
+        }
+      }
+      if (fileChangeCapture) {
+        await finishPromptFileChanges(fileChangeCapture, aborted ? "aborted" : "complete").catch((fileError) => {
+          console.error("[pi-web] finishPromptFileChanges failed:", fileError instanceof Error ? fileError.message : fileError);
+        });
+      }
+      if (ownsPromptRun) {
+        await finishPromptRun(promptRun, aborted ? "abort" : interruption ? "error" : "idle").catch((runError) => {
+          console.error("[pi-web] finishPromptRun failed:", runError instanceof Error ? runError.message : runError);
+        });
+      }
+    } finally {
+      host.promptRunning = false;
+      if (ownsPromptRun) {
+        if (host.activePromptRun?.runId === promptRun.runId) host.activePromptRun = undefined;
+        if (host.activeCommandId === commandId) host.activeCommandId = undefined;
+      }
+      if (!streamingBehavior) {
+        host.promptAdmissionBusy = false;
+        if (interruption) {
+          host.lastRunInterruption = interruption;
+          const isFailureInterruption = interruption.kind !== "empty_response" && interruption.kind !== "output_truncated";
+          if (isFailureInterruption) {
+            host.lastPromptFailed = true;
+            host.lastPromptErrorSummary = interruption.detail ?? interruption.reason;
+          }
+          logRunEvent("warn", {
+            sessionId: host.sessionId,
+            runId: promptRun.runId,
+            commandId,
+            reason: interruption.reason,
+            turn: metrics.turn,
+            lastTool: metrics.lastTool,
+            model: formatTelemetryModel(host.inner.model),
+            errorMessage: interruption.detail,
+            elapsedMs: Date.now() - runStartedAt,
+            extra: { hasToolProgress: interruption.hasToolProgress, aborted },
+          });
+        } else {
+          logRunEvent("info", {
+            sessionId: host.sessionId,
+            runId: promptRun.runId,
+            commandId,
+            reason: aborted ? "user_abort" : "completed",
+            turn: metrics.turn,
+            lastTool: metrics.lastTool,
+            model: formatTelemetryModel(host.inner.model),
+            elapsedMs: Date.now() - runStartedAt,
+          });
+        }
+        host.emit({
+          type: "prompt_done",
+          sessionId: host.sessionId,
+          commandId,
+          runId: promptRun.runId,
+          timestamp: Date.now(),
+          aborted,
+          ...(abortReason ? { abortReason } : {}),
+          ...(interruption ? { interruption } : {}),
+        });
+      }
+      host.capabilities.flushPendingProjectCapabilitySettings();
+      notifyRunningChange();
     }
-    if (!streamingBehavior) {
-      host.promptAdmissionBusy = false;
-      host.emit({ type: "prompt_done", sessionId: host.sessionId, commandId, runId: promptRun.runId, timestamp: Date.now(), aborted: abortGeneration !== host.abortGeneration });
-    }
-    host.capabilities.flushPendingProjectCapabilitySettings();
-    notifyRunningChange();
   }).catch(async (error) => {
-    host.promptRunning = false;
     const cancelled = abortGeneration !== host.abortGeneration || !host.isAlive();
-    if (!streamingBehavior && !cancelled) preparedWorkflow?.onPromptError(error instanceof Error ? error.message : String(error));
-    if (fileChangeCapture) await finishPromptFileChanges(fileChangeCapture, cancelled ? "aborted" : "error");
-    if (ownsPromptRun) {
-      await finishPromptRun(promptRun, "error");
-      if (host.activePromptRun?.runId === promptRun.runId) host.activePromptRun = undefined;
-      if (host.activeCommandId === commandId) host.activeCommandId = undefined;
-    }
-    if (!streamingBehavior) host.promptAdmissionBusy = false;
-    host.lastPromptFailed = !cancelled;
-    host.lastPromptErrorSummary = cancelled ? undefined : error instanceof Error ? error.message : String(error);
-    invalidateSessionListCache();
-    if (!cancelled) {
-      host.emit({
-        type: "prompt_error",
+    const abortReason = cancelled ? (host.lastAbortReason ?? (!host.isAlive() ? "wrapper_destroyed" : "user_abort")) : undefined;
+    const abortDetail = cancelled ? host.lastAbortDetail : undefined;
+    const isUserAbort = cancelled && abortReason === "user_abort";
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const messages = host.inner.agent.state?.messages ?? [];
+    const metrics = extractRunMetrics(messages, startMessageIndex);
+    const classifiedError = classifyErrorKind(errorMessage);
+    const interruption: RunInterruptionInfo | null = isUserAbort
+      ? null
+      : cancelled
+        ? classifyRunOutcome({
+            sessionMessages: messages,
+            startMessageIndex,
+            lastAssistant: host.lastAssistantResponse,
+            priorAssistant,
+            aborted: true,
+            abortReason,
+            abortDetail: abortDetail ?? errorMessage,
+            runId: promptRun.runId,
+            commandId,
+          })
+        : {
+            runId: promptRun.runId,
+            commandId,
+            kind: classifiedError.kind,
+            reason: classifiedError.reason,
+            detail: redactTelemetryText(errorMessage),
+            timestamp: Date.now(),
+            hasToolProgress: metrics.hasToolProgress,
+            resumable: true,
+          };
+
+    try {
+      if (!streamingBehavior && !cancelled) {
+        try { preparedWorkflow?.onPromptError(errorMessage); }
+        catch (workflowError) {
+          console.error("[pi-web] workflow error hook failed:", workflowError instanceof Error ? workflowError.message : workflowError);
+        }
+      }
+      if (fileChangeCapture) {
+        await finishPromptFileChanges(fileChangeCapture, cancelled ? "aborted" : "error").catch((fileError) => {
+          console.error("[pi-web] finishPromptFileChanges failed:", fileError instanceof Error ? fileError.message : fileError);
+        });
+      }
+      if (ownsPromptRun) {
+        await finishPromptRun(promptRun, cancelled ? "abort" : "error").catch((runError) => {
+          console.error("[pi-web] finishPromptRun failed:", runError instanceof Error ? runError.message : runError);
+        });
+      }
+    } finally {
+      host.promptRunning = false;
+      if (ownsPromptRun) {
+        if (host.activePromptRun?.runId === promptRun.runId) host.activePromptRun = undefined;
+        if (host.activeCommandId === commandId) host.activeCommandId = undefined;
+      }
+      if (!streamingBehavior) host.promptAdmissionBusy = false;
+      host.lastPromptFailed = !isUserAbort;
+      host.lastPromptErrorSummary = isUserAbort ? undefined : (interruption?.detail ?? errorMessage);
+      if (!streamingBehavior && interruption) host.lastRunInterruption = interruption;
+      invalidateSessionListCache();
+      logRunEvent(isUserAbort ? "info" : "warn", {
         sessionId: host.sessionId,
-        commandId,
         runId: promptRun.runId,
-        timestamp: Date.now(),
-        errorMessage: error instanceof Error ? error.message : String(error),
+        commandId,
+        reason: isUserAbort ? "user_abort" : (interruption?.reason ?? "model_error"),
+        turn: metrics.turn,
+        lastTool: metrics.lastTool,
+        model: formatTelemetryModel(host.inner.model),
+        errorMessage: interruption?.detail ?? errorMessage,
+        elapsedMs: Date.now() - runStartedAt,
+        extra: { hasToolProgress: metrics.hasToolProgress, cancelled },
       });
+      if (!isUserAbort) {
+        const errorCode = error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : undefined;
+        const errorDetails = extractErrorDetails(error);
+        host.emit({
+          type: "prompt_error",
+          sessionId: host.sessionId,
+          commandId,
+          runId: promptRun.runId,
+          timestamp: Date.now(),
+          errorMessage: interruption?.detail ?? errorMessage,
+          ...(errorCode ? { errorCode } : {}),
+          ...(errorDetails ? { errorDetails } : {}),
+          ...(interruption ? { interruption } : {}),
+        });
+      }
+      if (!streamingBehavior) {
+        host.emit({
+          type: "prompt_done",
+          sessionId: host.sessionId,
+          commandId,
+          runId: promptRun.runId,
+          timestamp: Date.now(),
+          aborted: cancelled,
+          ...(abortReason ? { abortReason } : {}),
+          ...(interruption ? { interruption } : {}),
+        });
+      }
+      host.capabilities.flushPendingProjectCapabilitySettings();
+      notifyRunningChange();
     }
-    if (!streamingBehavior) host.emit({ type: "prompt_done", sessionId: host.sessionId, commandId, runId: promptRun.runId, timestamp: Date.now(), aborted: cancelled });
-    host.capabilities.flushPendingProjectCapabilitySettings();
-    notifyRunningChange();
   }).finally(() => {
     if (!streamingBehavior && host.pendingClientPromptId === command.clientPromptId) host.pendingClientPromptId = undefined;
     host.promptTasks.delete(promptTask);

@@ -600,3 +600,35 @@
   font: var(--text-xs)/1.5 var(--font-mono);
   overflow-wrap: anywhere;
 }
+
+.applyMode {
+  display: grid;
+  gap: 6px;
+  margin: 12px 12px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.applyMode label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.applyModeWarning {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, #f59e0b 14%, var(--bg));
+  color: var(--text);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.templateList em[data-mode="replace"] {
+  background: color-mix(in srgb, #f59e0b 14%, var(--bg));
+  color: var(--text-muted);
+}

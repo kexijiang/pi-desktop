@@ -13,6 +13,7 @@ import type { TeamExecutionContext } from "../../team-types";
 import type { getWorkflowRuntime } from "../../workflow-runtime";
 import type { SessionCapabilityController } from "../capability-controller";
 import type { ExtensionUiBridge } from "../extension-ui-bridge";
+import type { RunInterruptionInfo } from "../run-telemetry";
 import type { ToolPermissionBridge } from "../tool-permission-bridge";
 import type { AgentEvent } from "../types";
 
@@ -41,6 +42,9 @@ export interface RpcCommandHost {
   pendingClientPromptId: string | undefined;
   lastPromptFailed: boolean;
   lastPromptErrorSummary: string | undefined;
+  lastAbortReason: string | undefined;
+  lastAbortDetail: string | undefined;
+  lastRunInterruption: RunInterruptionInfo | null;
   fallbackTaskTitle: string | null;
   activePromptRun: PromptRunIdentity | undefined;
   activeCommandId: string | undefined;
@@ -57,7 +61,7 @@ export interface RpcCommandHost {
   abortSubagentUi(): void;
   emit(event: AgentEvent): void;
   send(command: SessionRpcCommand): Promise<unknown>;
-  destroy(): void;
+  destroy(reason?: string): void;
   assertSessionIdle(action: string): void;
   assertWorkflowSession(): void;
   assertWorkflowExtensionCommand(message: string, inputMode?: unknown, mode?: ReturnType<typeof import("../../workflow-runtime").readWorkflowSnapshot>["mode"]): void;

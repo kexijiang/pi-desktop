@@ -10,6 +10,8 @@ import {
   type RuntimePromptSettings,
   type RuntimePromptSettingsPatch,
 } from "@/lib/prompt-runtime/types";
+import { normalizePromptBudgetConfig } from "@/lib/prompt-runtime/budget";
+import { PromptBudgetSettings } from "./runtime-prompt/PromptBudgetSettings";
 import { ModelErrorText } from "./ModelErrorText";
 import { SettingsDisclosure, SettingsRow, SettingsSection, SettingsSwitch } from "./settings/SettingsPrimitives";
 import primitiveStyles from "./settings/SettingsPrimitives.module.css";
@@ -22,6 +24,7 @@ function mergeSettings(base: RuntimePromptSettings, data: Partial<RuntimePromptS
     mergeCompact: typeof data.mergeCompact === "boolean" ? data.mergeCompact : base.mergeCompact,
     alignCliCompaction: typeof data.alignCliCompaction === "boolean" ? data.alignCliCompaction : base.alignCliCompaction,
     extensions: { ...base.extensions },
+    budget: normalizePromptBudgetConfig({ ...base.budget, ...(data.budget && typeof data.budget === "object" ? data.budget : {}) }),
   };
   if (data.extensions && typeof data.extensions === "object") {
     for (const key of RUNTIME_PROMPT_EXTENSION_KEYS) {
@@ -167,6 +170,7 @@ export function RuntimePromptSettings({ compact = false }: { compact?: boolean }
               })}
             </div>
           </SettingsDisclosure>
+          <PromptBudgetSettings budget={settings.budget} busy={busy} onPatch={(patch) => void applyPatch(patch)} />
         </SettingsSection>
       </div>
     );
@@ -275,6 +279,7 @@ export function RuntimePromptSettings({ compact = false }: { compact?: boolean }
           );
         })}
       </div>
+      <PromptBudgetSettings budget={settings.budget} busy={busy} onPatch={(patch) => void applyPatch(patch)} />
     </section>
   );
 }

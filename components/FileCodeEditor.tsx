@@ -239,11 +239,16 @@ export const FileCodeEditor = forwardRef<FileCodeEditorHandle, Props>(function F
     });
     const view = new EditorView({ state, parent: host });
     viewRef.current = view;
+    // Root typography preferences can change without resizing the editor.
+    // Re-measure CodeMirror's cached gutter heights when those styles change.
+    const typographyObserver = new MutationObserver(() => view.requestMeasure());
+    typographyObserver.observe(host.ownerDocument.documentElement, { attributes: true, attributeFilter: ["style", "class", "data-theme"] });
     const handleScroll = () => callbacksRef.current.onScrollChange(view.scrollDOM.scrollTop);
     view.scrollDOM.addEventListener("scroll", handleScroll, { passive: true });
     view.scrollDOM.scrollTop = initialRef.current.scrollTop;
     if (intelligenceEnabled) void requestIntelligence("status", view).catch(() => {});
     return () => {
+      typographyObserver.disconnect();
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       if (intelligenceEnabled) void requestIntelligence("close").catch(() => {});
       view.scrollDOM.removeEventListener("scroll", handleScroll);

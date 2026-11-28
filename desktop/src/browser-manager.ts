@@ -126,6 +126,7 @@ interface BrowserAgentBinding {
   agentTabId(sessionId: string): string | null;
   status(sessionId: string): { tabId: string | null; operating: boolean; waiting: boolean; reason?: string; purpose?: "login" | "confirmation" };
   noteUsed(tabId: string): void;
+  noteUserInteraction(sessionId: string, tabId: string): void;
   idleTabIds(): string[];
   closeIdleTabs(): void;
   reclaimIdleTab(): void;
@@ -670,7 +671,14 @@ export class DesktopBrowserManager {
         if (new URL(url).origin === new URL(event.senderFrame.url).origin) event.returnValue = { allowed: this.credentialVault().allowedUrl(url) };
       } catch { /* Invalid renderer input stays denied. */ }
     });
+    const noteWaitInput = () => {
+      if (tab.view.webContents === contents) this.agentControl?.noteUserInteraction(tab.sessionId, tab.id);
+    };
+    contents.on("before-mouse-event", (_event, input) => {
+      if (input.type === "mouseDown" && input.button === "left") noteWaitInput();
+    });
     contents.on("before-input-event", (event, input) => {
+      if (input.type === "keyDown" && !input.isAutoRepeat && !input.control && !input.meta && !input.alt) noteWaitInput();
       if (input.type !== "keyDown" || !(input.control || input.meta) || input.alt) return;
       const key = input.key.toLowerCase();
       if (!["+", "=", "-", "0"].includes(key)) return;
@@ -848,10 +856,6 @@ export class DesktopBrowserManager {
       ?? this.tabs.find((tab) => tab.sessionId === sessionId);
   }
 
-  private ensureSession(sessionId: string): BrowserTab {
-    return this.activeTab(sessionId) ?? this.createTab("about:blank", false, sessionId);
-  }
-
   private getState(sessionId = this.displayedSessionId): DesktopBrowserState {
     const active = this.activeTab(sessionId);
     const contents = active ? this.liveContents(active) : undefined;
@@ -965,7 +969,8 @@ export class DesktopBrowserManager {
     const input = value as DesktopBrowserAction;
     if (input.action === "set_session") {
       this.displayedSessionId = normalizeBrowserSessionId(input.sessionId);
-      if (this.tabs.length < MAX_TABS) this.ensureSession(this.displayedSessionId);
+      // Selecting a conversation is read-only. Only explicit navigation or
+      // an agent browser action may create a tab for that conversation.
       this.updateVisibility();
       this.sendState();
       return;

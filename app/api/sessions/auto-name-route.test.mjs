@@ -242,8 +242,11 @@ test("automatic session naming names a live unpersisted session immediately from
 
   // Manual live rename while a subsequent generation is in flight is preserved.
   const renameRace = Promise.withResolvers();
+  const raceGenerationStarted = Promise.withResolvers();
+  t.after(renameRace.resolve);
   const streamRace = t.mock.fn(async (model) => {
     const stream = createAssistantMessageEventStream();
+    raceGenerationStarted.resolve();
     await renameRace.promise;
     const { total, ...tokens } = usage;
     stream.end({
@@ -265,11 +268,52 @@ test("automatic session naming names a live unpersisted session immediately from
     headers,
     body: JSON.stringify({ onlyIfUnnamed: true, apply: true, seedQuery: "另一条查询" }),
   }), context);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await Promise.race([
+    raceGenerationStarted.promise,
+    racePending.then((result) => assert.fail(`Title request returned HTTP ${result.status} before generation started`)),
+  ]);
   manager.appendSessionInfo("用户手动命名");
   renameRace.resolve();
   const raceResponse = await racePending;
   assert.equal(raceResponse.status, 200);
   assert.deepEqual(await raceResponse.json(), { title: "用户手动命名", applied: false, skipped: true, usage });
   assert.equal(manager.getSessionName(), "用户手动命名");
+});
+
+test("cold-session auto-name does not start a live RPC session or spawn MCP servers", { timeout: 10_000 }, async (t) => {
+  const tempRoot = await realpath(tmpdir());
+  const directory = await mkdtemp(join(tempRoot, "piora-auto-name-cold-"));
+  const previousSessions = globalThis.__piSessions;
+  let sessionId;
+  t.after(async () => {
+    globalThis.__piSessions = previousSessions;
+    if (sessionId) invalidateSessionPathCache(sessionId);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const manager = SessionManager.create(directory, join(directory, "sessions"));
+  manager.appendMessage({ role: "user", content: "Inspect cold auto-name path", timestamp: Date.now() });
+  manager.appendSessionInfo("Already Named Cold Session");
+  sessionId = manager.getSessionId();
+  const file = persistLazySessionManager(manager);
+  assert.ok(file);
+  cacheSessionPath(sessionId, file);
+
+  globalThis.__piSessions = new Map();
+  const response = await POST(
+    new Request(`http://localhost/api/sessions/${sessionId}/auto-name`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onlyIfUnnamed: true, apply: true }),
+    }),
+    { params: Promise.resolve({ id: sessionId }) },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    title: "Already Named Cold Session",
+    applied: false,
+    skipped: true,
+    usage: null,
+  });
+  assert.equal(globalThis.__piSessions.size, 0, "cold session auto-name must not create an AgentSessionWrapper");
 });

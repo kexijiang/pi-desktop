@@ -8,7 +8,7 @@ import { readBoundedRegularFile } from "./bounded-file";
 import { assertUnredirectedPathSync } from "./path-safety";
 
 type Run = (args: readonly string[], operation: string, signal?: AbortSignal, timeout?: number) => Promise<CommandResult>;
-interface Record {
+interface OwnershipRecord {
   version: 1;
   serial: string;
   hostPid: number;
@@ -22,7 +22,12 @@ export const VIDEO_EXTENSION_NAME = /^piora_video_[a-f0-9]{32}\.so$/;
 export const VIDEO_SOCKET = "localabstract:scrcpy_grpc_socket";
 export interface VideoDaemonProcess { pid: number; name: string; isShellWrapper: boolean }
 export const videoOwnershipDirectory = () => join(dirname(sharedDeviceLockDirectory()), "video");
-const activeVideoNames = new Set<string>();
+const ACTIVE_VIDEO_NAMES_KEY = Symbol.for("piora.harmony.activeVideoNames");
+const SHELL_WRAPPER_TOKEN = /(?:^|\/)(?:mk|a|da|ba)?sh$/;
+const activeVideoNames: Set<string> = (() => {
+  const host = globalThis as typeof globalThis & { [ACTIVE_VIDEO_NAMES_KEY]?: Set<string> };
+  return host[ACTIVE_VIDEO_NAMES_KEY] ??= new Set<string>();
+})();
 
 export function parseVideoDaemonProcesses(psOutput: string, expectedName?: string): VideoDaemonProcess[] {
   const seen = new Set<number>();
@@ -38,7 +43,8 @@ export function parseVideoDaemonProcesses(psOutput: string, expectedName?: strin
     if (!VIDEO_EXTENSION_NAME.test(name) || (expectedName && name !== expectedName)) continue;
     const uitestIndex = fields.findIndex(token => token === "uitest" || token.endsWith("/uitest"));
     if (uitestIndex < 0) continue;
-    const isShellWrapper = fields.slice(0, uitestIndex).some(token => token === "sh" || token.endsWith("/sh"));
+    const isShellWrapper = fields.slice(0, uitestIndex).some(token => SHELL_WRAPPER_TOKEN.test(token))
+      || (uitestIndex > 0 && fields[uitestIndex - 1] === "-c");
     seen.add(pid);
     matches.push({ pid, name, isShellWrapper });
   }
@@ -53,7 +59,7 @@ function orderDaemonsForTermination(daemons: readonly VideoDaemonProcess[]): Vid
 export class VideoOwnership {
   private readonly directory: string;
   private readonly lock: ReturnType<typeof acquireDeviceLock>;
-  private readonly record: Record;
+  private readonly record: OwnershipRecord;
   private released = false;
 
   constructor(serial: string, name: string, port: number, private readonly run: Run, root = videoOwnershipDirectory()) {
@@ -74,20 +80,20 @@ export class VideoOwnership {
     activeVideoNames.add(this.record.name);
   }
 
-  private path(record: Record) { return join(this.directory, `${record.name}.json`); }
+  private path(record: OwnershipRecord) { return join(this.directory, `${record.name}.json`); }
   private async shell(serial: string, command: string, operation: string) {
     const result = await this.run(["-t", serial, "shell", command], operation, undefined, 8000);
     return result.stdout.toString("utf8").replace(/\0/g, "");
   }
 
-  private unlinkRecord(record: Record): void {
+  private unlinkRecord(record: OwnershipRecord): void {
     try { unlinkSync(this.path(record)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
 
-  private async readRecord(fileName: string): Promise<Record | undefined> {
+  private async readRecord(fileName: string): Promise<OwnershipRecord | undefined> {
     if (!fileName.endsWith(".json") || !VIDEO_EXTENSION_NAME.test(fileName.slice(0, -5))) return undefined;
     try {
-      const record = JSON.parse((await readBoundedRegularFile(join(this.directory, fileName), 2048)).toString("utf8")) as Record;
+      const record = JSON.parse((await readBoundedRegularFile(join(this.directory, fileName), 2048)).toString("utf8")) as OwnershipRecord;
       if (
         record.version !== 1
         || typeof record.serial !== "string"
@@ -110,7 +116,7 @@ export class VideoOwnership {
     }
   }
 
-  private isOwnedByAnotherLiveHost(record: Record): boolean {
+  private isOwnedByAnotherLiveHost(record: OwnershipRecord): boolean {
     if (activeVideoNames.has(record.name)) return true;
     if (record.hostPid === process.pid) return false;
     return isHostProcessAlive(record.hostPid, {
@@ -138,7 +144,7 @@ export class VideoOwnership {
   }
 
   async prepare(): Promise<void> {
-    const recoverable: Record[] = [];
+    const recoverable: OwnershipRecord[] = [];
     for (const name of readdirSync(this.directory).filter(entry => entry.endsWith(".json") && VIDEO_EXTENSION_NAME.test(entry.slice(0, -5)))) {
       const record = await this.readRecord(name);
       if (!record || record.serial !== this.record.serial) continue;
@@ -167,11 +173,16 @@ export class VideoOwnership {
           killedAny = true;
         }
       }
-      // Phase 2: Wait for @scrcpy_grpc_socket to be released. Never remove
-      // forwards or records while a foreign service owns the global socket.
+      // Phase 2: Wait for @scrcpy_grpc_socket to be released. If an unrecorded
+      // or cross-serial Piora orphan holds the socket, reclaim it before failing.
+      // Never remove forwards or records while a foreign service owns the global socket.
       const cleared = await this.pollSocketCleared(this.record.serial, killedAny);
       if (!cleared) {
-        throw new HarmonyError("DEVICE_BUSY", "The debug video channel is still owned by another tool", { details: { reason: "debug-video-busy" } });
+        const handledNames = new Set(ownedRecords.map(record => record.name));
+        const reclaimed = await this.reclaimOrphanedDaemons(handledNames);
+        if (!reclaimed) {
+          throw new HarmonyError("DEVICE_BUSY", "The debug video channel is still owned by another tool", { details: { reason: "debug-video-busy" } });
+        }
       }
       // Phase 3: Clean forwards, device temp files, and local records.
       for (const record of ownedRecords) {
@@ -190,12 +201,14 @@ export class VideoOwnership {
    * serial changed (e.g. Wi-Fi port change or USB/Wi-Fi switch) or local records
    * were lost. Foreign tools' sockets are never touched.
    */
-  async reclaimOrphanedDaemons(): Promise<boolean> {
+  async reclaimOrphanedDaemons(excludeNames?: ReadonlySet<string>): Promise<boolean> {
     const processes = await this.shell(this.record.serial, "ps -ef", "debug_video_recovery_owner");
-    const daemons = parseVideoDaemonProcesses(processes).filter(proc => proc.name !== this.record.name);
+    const daemons = parseVideoDaemonProcesses(processes).filter(
+      proc => proc.name !== this.record.name && !excludeNames?.has(proc.name),
+    );
     if (daemons.length === 0) return false;
 
-    const grouped = new Map<string, { procs: VideoDaemonProcess[]; record?: Record }>();
+    const grouped = new Map<string, { procs: VideoDaemonProcess[]; record?: OwnershipRecord }>();
     for (const proc of daemons) {
       let group = grouped.get(proc.name);
       if (!group) {
@@ -216,10 +229,20 @@ export class VideoOwnership {
       group.procs.push(proc);
     }
 
-    for (const [name, { procs, record }] of grouped) {
+    // Phase 1: Terminate all verified unowned Piora daemons before cleaning state.
+    for (const { procs } of grouped.values()) {
       for (const proc of orderDaemonsForTermination(procs)) {
         await this.shell(this.record.serial, `kill -9 ${proc.pid}`, "debug_video_recovery_stop");
       }
+    }
+
+    // Phase 2: Wait for @scrcpy_grpc_socket to be released. Never remove
+    // forwards or local records while the global socket remains occupied.
+    const cleared = await this.pollSocketCleared(this.record.serial, true);
+    if (!cleared) return false;
+
+    // Phase 3: Clean device temp files, forwards, and local records.
+    for (const [name, { record }] of grouped) {
       await this.shell(this.record.serial, `rm -f /data/local/tmp/${name} /data/local/tmp/${name}.log`, "debug_video_recovery_file_cleanup");
       if (record) {
         await this.cleanForward(this.record.serial, record.port).catch(() => undefined);
@@ -230,7 +253,7 @@ export class VideoOwnership {
       }
     }
 
-    return await this.pollSocketCleared(this.record.serial, true);
+    return true;
   }
 
   markShared(): void {

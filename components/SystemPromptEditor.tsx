@@ -9,7 +9,7 @@ import {
   writePromptOptimizerModel,
   type PromptOptimizerModelPreference,
 } from "@/lib/prompt-optimizer-settings";
-import type { SystemPromptCatalog, SystemPromptTemplate } from "@/lib/system-prompt-types";
+import type { SystemPromptApplyMode, SystemPromptCatalog, SystemPromptTemplate } from "@/lib/system-prompt-types";
 import { publishSystemPromptCatalog } from "@/lib/system-prompt-client";
 import { AliIcon } from "./AliIcon";
 import { requestConfirmation } from "./ConfirmDialog";
@@ -63,6 +63,7 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [applyMode, setApplyMode] = useState<SystemPromptApplyMode>("append");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
@@ -105,6 +106,7 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
     setCreating(false);
     setName(template.name);
     setPrompt(template.prompt);
+    setApplyMode(template.applyMode === "append" ? "append" : "replace");
     setOptimizationPreview(null);
     setStatus(null);
     setError(null);
@@ -163,8 +165,8 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
     setStatus(null);
     try {
       const next = creating
-        ? await requestCatalog("POST", { name, prompt })
-        : await requestCatalog("PATCH", { id: selectedId, name, prompt });
+        ? await requestCatalog("POST", { name, prompt, applyMode })
+        : await requestCatalog("PATCH", { id: selectedId, name, prompt, applyMode });
       const preferred = creating
         ? next.templates.find((template) => template.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase())?.id
         : selectedId;
@@ -175,7 +177,7 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
     } finally {
       setSaving(false);
     }
-  }, [creating, name, prompt, publish, selectedId, t]);
+  }, [applyMode, creating, name, prompt, publish, selectedId, t]);
 
   const setDefault = useCallback(async (id: string | null) => {
     setSaving(true);
@@ -273,7 +275,8 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
 
   const dirty = creating
     ? Boolean(name.trim() || prompt)
-    : Boolean(selectedTemplate && (name !== selectedTemplate.name || prompt !== selectedTemplate.prompt));
+    : Boolean(selectedTemplate && (name !== selectedTemplate.name || prompt !== selectedTemplate.prompt
+      || applyMode !== (selectedTemplate.applyMode === "append" ? "append" : "replace")));
 
   return (
     <div className={`${styles.editor}${compact ? ` ${styles.compact}` : ""}`}>
@@ -308,6 +311,7 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
               setSelectedId(null);
               setName("");
               setPrompt("");
+              setApplyMode("append");
               setOptimizationPreview(null);
               setStatus(null);
               setError(null);
@@ -339,7 +343,7 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
               onClick={() => chooseTemplate(template)}
             >
               <AliIcon name="file" size={14} />
-              <span><strong>{template.name}</strong><small>{template.prompt || t("system.emptyTemplate")}</small></span>
+              <span><strong>{template.name}</strong><small>[{t(template.applyMode === "append" ? "system.applyMode.badgeAppend" : "system.applyMode.badgeReplace")}] {template.prompt || t("system.emptyTemplate")}</small></span>
               {template.id === catalog.defaultTemplateId ? <em>{t("system.defaultBadgeShort")}</em> : null}
             </button>
           ))}
@@ -387,6 +391,20 @@ export function SystemPromptEditor({ effectivePrompt, compact = false, onSaved }
                 onChange={(event) => { setName(event.target.value); setStatus(null); setError(null); }}
               />
             </label>
+            <fieldset className={styles.applyMode} disabled={loading || saving} data-apply-mode={applyMode}>
+              <legend className={styles.fieldLabel}>{t("system.applyMode.label")}</legend>
+              <label>
+                <input type="radio" name={`${promptFieldId}-apply-mode`} checked={applyMode === "append"} onChange={() => { setApplyMode("append"); setStatus(null); }} />
+                <span>{t("system.applyMode.append")}</span>
+              </label>
+              <label>
+                <input type="radio" name={`${promptFieldId}-apply-mode`} checked={applyMode === "replace"} onChange={() => { setApplyMode("replace"); setStatus(null); }} />
+                <span>{t("system.applyMode.replace")}</span>
+              </label>
+              {applyMode === "replace"
+                ? <p className={styles.applyModeWarning} role="note">{t("system.applyMode.replaceWarning")}</p>
+                : <p className={styles.fieldDescription}>{t("system.applyMode.appendHint")}</p>}
+            </fieldset>
             <div className={styles.field}>
               <span className={styles.aiFieldHeading}>
                 <label className={styles.fieldLabel} htmlFor={promptFieldId}>{t("system.customLabel")}</label>

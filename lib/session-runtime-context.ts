@@ -8,11 +8,11 @@ export function parseRuntimeStateView(requested: unknown): SessionRuntimeStateVi
 }
 
 export function projectRuntimeContext(
-  session: Pick<AgentSessionLike, "agent" | "getContextUsage">,
+  session: Pick<AgentSessionLike, "agent" | "getContextUsage"> & { readonly systemPrompt?: string },
   forceEmptySystemPrompt: boolean,
 ): { systemPrompt: string; contextUsage: ContextUsage | null } {
   const state = session.agent.state;
-  const systemPrompt = forceEmptySystemPrompt ? "" : state?.systemPrompt ?? "";
+  const systemPrompt = forceEmptySystemPrompt ? "" : (session.systemPrompt ?? state?.systemPrompt ?? "");
   const usage = session.getContextUsage();
   if (!usage) return { systemPrompt, contextUsage: null };
   const breakdown = estimateContextUsageBreakdown({

@@ -5,18 +5,10 @@ import { parseWorkflowAction, parseWorkflowPromptOptions } from "../workflow-inp
 import type {
   SessionCommandStatus,
   SessionMessageInput,
-  SessionMessageSourceKind,
 } from "../session-message-types";
-
-export interface SessionRoutePrincipal {
-  kind?: SessionMessageSourceKind;
-  allowedSessionIds?: ReadonlySet<string>;
-  scopes?: ReadonlySet<string>;
-}
 
 export type SessionMessageRouterErrorCode =
   | "SESSION_NOT_FOUND"
-  | "SESSION_NOT_ALLOWED"
   | "SESSION_PROFILE_MISMATCH"
   | "SESSION_FILE_INVALID"
   | "INVALID_SESSION_ID"
@@ -30,13 +22,20 @@ export type SessionMessageRouterErrorCode =
   | "INVALID_SESSION_MESSAGE"
   | "RUNTIME_START_FAILED"
   | "RUN_INTERRUPTED"
+  | "MODEL_IMAGE_UNSUPPORTED"
   | "TEAM_INVALID_CONTEXT"
   | "TEAM_LEASE_INVALID";
 
 export class SessionMessageRouterError extends Error {
-  constructor(readonly code: SessionMessageRouterErrorCode, message: string, options?: { cause?: unknown }) {
+  readonly details?: Record<string, unknown>;
+  constructor(
+    readonly code: SessionMessageRouterErrorCode,
+    message: string,
+    options?: { cause?: unknown; details?: Record<string, unknown> },
+  ) {
     super(message, options);
     this.name = "SessionMessageRouterError";
+    this.details = options?.details;
   }
 }
 
@@ -58,7 +57,7 @@ export function resolveRouterErrorCode(error: unknown): SessionMessageRouterErro
     return error.code === "RUNTIME_START_FAILED" ? "RUNTIME_START_FAILED" : error.code;
   }
   const stableCode = (error as { code?: unknown } | null)?.code;
-  if (stableCode === "TEAM_INVALID_CONTEXT" || stableCode === "TEAM_LEASE_INVALID") return stableCode;
+  if (stableCode === "MODEL_IMAGE_UNSUPPORTED" || stableCode === "TEAM_INVALID_CONTEXT" || stableCode === "TEAM_LEASE_INVALID") return stableCode;
   const message = safeErrorMessage(error);
   if (/busy|starting another prompt/i.test(message)) return "SESSION_BUSY";
   if (/queue full/i.test(message)) return "SESSION_QUEUE_FULL";
@@ -152,11 +151,5 @@ export function validateSessionMessageInput(input: SessionMessageInput, maxMessa
     )
   ) {
     throw new SessionMessageRouterError("INVALID_SESSION_MESSAGE", "Prompt material references are invalid.");
-  }
-}
-
-export function assertPrincipal(input: SessionMessageInput, principal?: SessionRoutePrincipal): void {
-  if (principal?.allowedSessionIds && !principal.allowedSessionIds.has(input.targetSessionId)) {
-    throw new SessionMessageRouterError("SESSION_NOT_ALLOWED", "The caller is not allowed to control this Session.");
   }
 }

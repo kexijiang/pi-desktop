@@ -36,7 +36,10 @@ export async function GET(
       const sendFrame = (data: unknown) => {
         if (closed) return;
         try {
-          if (!enqueueStreamFrame(controller, encoder.encode(`id: ${++eventSeq}\ndata: ${JSON.stringify(data)}\n\n`))) cleanup();
+          if (!enqueueStreamFrame(controller, encoder.encode(`id: ${++eventSeq}\ndata: ${JSON.stringify(data)}\n\n`))) {
+            console.warn(`[pi-web:sse] closing event stream due to backpressure session=${id} eventSeq=${eventSeq}`);
+            cleanup();
+          }
         }
         catch { cleanup(); }
       };

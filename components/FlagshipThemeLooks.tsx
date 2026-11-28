@@ -15,7 +15,8 @@ import {
   type FlagshipPerformanceId,
 } from "@/lib/appearance/flagship-performance-bus";
 import {
-  FLAGSHIP_THEMES,
+  ENABLED_FLAGSHIP_THEMES,
+  FLAGSHIP_THEMES_ENABLED,
   isFlagshipTheme,
 } from "@/lib/appearance/flagship-themes";
 import styles from "./FlagshipThemeLooks.module.css";
@@ -36,6 +37,11 @@ const PERFORMANCE_TRIGGERS: readonly FlagshipPerformanceId[] = [
 ];
 
 export function FlagshipThemeLooks() {
+  if (!FLAGSHIP_THEMES_ENABLED || ENABLED_FLAGSHIP_THEMES.length === 0) return null;
+  return <FlagshipThemeLooksContent />;
+}
+
+function FlagshipThemeLooksContent() {
   const titleId = useId();
   const { t } = useI18n();
   const { theme, setThemeWithAction } = useTheme();
@@ -69,7 +75,7 @@ export function FlagshipThemeLooks() {
       </div>
 
       <div className={styles.grid} role="group" aria-label={t("appearance.flagship.title")}>
-        {FLAGSHIP_THEMES.map((look) => {
+        {ENABLED_FLAGSHIP_THEMES.map((look) => {
           const selected = theme === look.id
             && preference.source === "builtin"
             && preference.presetId === look.id

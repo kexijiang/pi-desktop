@@ -730,6 +730,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
   padding: 6px 10px;
@@ -738,6 +739,17 @@
   background: color-mix(in srgb, var(--status-failed, #dc2626) 8%, var(--bg-panel));
   color: var(--status-failed, #dc2626);
   font-size: var(--text-xs);
+}
+.goalRailError > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goalRailErrorActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
 }
 
 /* ── Proposed Plan Card (In Transcript) ──────────────────────────────────── */

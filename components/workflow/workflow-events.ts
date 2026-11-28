@@ -4,6 +4,10 @@ import type { WorkflowSnapshot } from "@/lib/workflow-types";
 
 export type WorkflowSidePanelTab = "plan" | "goal";
 
+export function isWorkflowSidePanelTab(tab: unknown): tab is WorkflowSidePanelTab {
+  return tab === "plan" || tab === "goal";
+}
+
 export interface OpenWorkflowPanelDetail {
   tab: WorkflowSidePanelTab;
   sessionId?: string | null;

@@ -1,4 +1,6 @@
 import { companionScaling } from "./desktop-e2e/scenarios/companion-scaling.mjs";
+import { sendPredictionNavigation } from "./desktop-e2e/scenarios/send-prediction-navigation.mjs";
+import { browserSessionNavigation } from "./desktop-e2e/scenarios/browser-session-navigation.mjs";
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runDesktopScenario } from './desktop-e2e/harness.mjs';
@@ -23,7 +25,9 @@ import { chatHistoryFull } from './desktop-e2e/scenarios/chat-history-full.mjs';
 import { workspaceIssueFixes } from './desktop-e2e/scenarios/workspace-issue-fixes.mjs';
 import { worktreeChatLayout } from './desktop-e2e/scenarios/worktree-chat-layout.mjs';
 
-const scenarios = [companionScaling, settingsTheme, stopShell, stopBash, desktopExtensions, browserHome, browserPersistence, browserMenu, browserMenuNative, browserMenuAppearance, browserLogin, browserUpload, browserSettings, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard, subagents, subagentsReal, chatContextMenu, chatHistoryFull, workspaceIssueFixes, worktreeChatLayout];
+const scenarios = [sendPredictionNavigation, companionScaling, settingsTheme, stopShell, stopBash, desktopExtensions, browserHome, browserPersistence, browserMenu, browserMenuNative, browserMenuAppearance, browserLogin, browserUpload, browserSettings, harmonyMirror, companionPanel, harmonyLogs, planGoal, usageDashboard, subagents, subagentsReal, chatContextMenu, chatHistoryFull, workspaceIssueFixes, worktreeChatLayout];
+
+scenarios.push(browserSessionNavigation);
 
 export function parseOptions(args) {
   const options = { scenario: 'settings-theme' };

@@ -98,6 +98,7 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
 
   { id: "conversation", section: "conversation", labelKey: "settings.conversation", descriptionKey: "settings.conversationDescription", keywords: ["chat", "session", "聊天", "会话"] },
   { id: "conversation.answerLinks", section: "conversation", labelKey: "settings.answerLinks", descriptionKey: "settings.answerLinksHelp", keywords: ["link", "browser", "链接", "浏览器", "打开方式"] },
+  { id: "conversation.inputPrediction", section: "conversation", labelKey: "prediction.title", descriptionKey: "prediction.description", keywords: ["predict", "ghost text", "Tab", "输入预测", "回复预测"] },
   { id: "conversation.replySuggestions", section: "conversation", labelKey: "reply.title", descriptionKey: "reply.description", keywords: ["chips", "quick replies", "提取", "快捷回复", "选项", "提示词"] },
   { id: "conversation.sendShortcut", section: "shortcuts", labelKey: "settings.sendShortcut", descriptionKey: "settings.sendShortcutDescription", keywords: ["enter", "ctrl enter", "发送", "换行"] },
   { id: "conversation.newlineShortcut", section: "shortcuts", labelKey: "settings.newlineShortcut", descriptionKey: "settings.newlineShortcutDescription", keywords: ["newline", "shift enter", "换行", "快捷键"] },
@@ -112,7 +113,14 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     section: "prompts",
     labelKey: "runtimePrompt.title",
     descriptionKey: "runtimePrompt.description",
-    keywords: ["extension", "prompt", "cli", "merge", "compact", "compaction", "guidance", "rules", "扩展", "说明", "合并", "压缩", "对齐", "冲突", "提示词"],
+    keywords: ["extension", "prompt", "cli", "merge", "compact", "compaction", "guidance", "rules", "budget", "agents", "skills", "truncate", "扩展", "说明", "合并", "压缩", "对齐", "冲突", "提示词", "预算", "截断", "技能", "项目指令"],
+  },
+  {
+    id: "conversation.promptBudget",
+    section: "prompts",
+    labelKey: "runtimePrompt.budget.title",
+    descriptionKey: "runtimePrompt.budget.description",
+    keywords: ["budget", "agents", "AGENTS.md", "skills", "system prompt", "truncate", "limit", "预算", "上限", "精简", "截断", "项目指令", "技能列表", "系统提示词"],
   },
 
   { id: "shortcuts", section: "shortcuts", labelKey: "settings.shortcuts", descriptionKey: "settings.shortcutsDescription", keywords: ["keyboard", "hotkey", "键盘", "快捷键"] },

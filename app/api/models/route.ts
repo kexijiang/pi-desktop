@@ -2,6 +2,7 @@ import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { invalidateModelsCache, loadModelsWithCache, withModelRuntimeError, type ModelsData } from "@/lib/models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
+import { modelSupportsImages } from "@/lib/model-capabilities";
 import { resolveDefaultModelPreference } from "@/lib/model-policy";
 import { readDefaultModel } from "@/lib/default-model-store";
 import {
@@ -66,6 +67,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     name: m.name,
     provider: m.provider,
     contextWindow: m.contextWindow,
+    supportsImages: modelSupportsImages(m),
   }));
   for (const m of orderedVisible) {
     const key = `${m.provider}:${m.id}`;

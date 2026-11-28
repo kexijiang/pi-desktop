@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { parseJsonWithinLimit } from "@/lib/bounded-json";
 import { getAutomationStore } from "@/lib/automation-store";
 import type { UpdateAutomationInput } from "@/lib/automation-types";
-import type { resolveOrStartRpcSession } from "@/lib/session-runtime-resolver";
 
 export const dynamic = "force-dynamic";
 
@@ -27,17 +26,37 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!current) throw new Error("Automation not found.");
     const nextKind = patch.kind ?? current.kind;
     const nextTarget = patch.target ?? current.target;
-    let targetSession: Awaited<ReturnType<typeof resolveOrStartRpcSession>> | undefined;
+    const { getRpcSession } = await import("@/lib/rpc-manager");
+    const { resolveSessionPath, invalidateSessionListCache } = await import("@/lib/session-reader");
+    const { resolveSessionAgentRuntimeProfile } = await import("@/lib/agent-profile-store");
+    const { getAgentRuntimeProfile } = await import("@/lib/agent-runtime-profile");
+    const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+    let targetLive: ReturnType<typeof getRpcSession> | undefined;
+    let targetFilePath: string | null = null;
     if (nextKind === "heartbeat" && nextTarget.type === "session") {
-      const { resolveOrStartRpcSession } = await import("@/lib/session-runtime-resolver");
-      targetSession = await resolveOrStartRpcSession(nextTarget.sessionId);
+      const live = getRpcSession(nextTarget.sessionId);
+      if (live?.isAlive()) {
+        await resolveSessionAgentRuntimeProfile(nextTarget.sessionId, getAgentRuntimeProfile());
+        targetLive = live;
+        targetFilePath = live.sessionFile;
+      } else {
+        targetFilePath = await resolveSessionPath(nextTarget.sessionId);
+        if (!targetFilePath) throw new Error("Session not found.");
+        await resolveSessionAgentRuntimeProfile(nextTarget.sessionId, getAgentRuntimeProfile());
+      }
     }
     const automation = await store.update(id, patch);
     const movedIntoChat = automation.target.type === "session"
       && (current.target.type !== "session" || current.target.sessionId !== automation.target.sessionId);
     if (movedIntoChat) {
       try {
-        targetSession?.session.appendAutomationCard({ automationId: automation.id, name: automation.name, rrule: automation.rrule });
+        const card = { automationId: automation.id, name: automation.name, rrule: automation.rrule };
+        if (targetLive?.isAlive()) {
+          targetLive.appendAutomationCard(card);
+        } else if (targetFilePath) {
+          SessionManager.open(targetFilePath).appendCustomMessageEntry("piora-automation", "", true, card);
+          invalidateSessionListCache();
+        }
       } catch (error) {
         await store.update(id, {
           kind: current.kind,
