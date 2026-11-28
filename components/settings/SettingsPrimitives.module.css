@@ -307,21 +307,28 @@
 
 .disclosureLabel {
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .disclosureRight {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .disclosureMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-dim);
   font-weight: 450;
 }
 
 .disclosureChevron {
+  flex-shrink: 0;
   transition: transform 140ms ease;
 }
 

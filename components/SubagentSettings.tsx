@@ -13,8 +13,9 @@ import {
 } from "@/lib/subagent-types";
 import { READONLY_SUBAGENT_TOOLS, SUBAGENT_PROFILE_TEMPLATES, type SubagentProfileTemplate } from "@/lib/subagents/profile-templates";
 import { AliIcon } from "./AliIcon";
+import { SettingsDisclosure, SettingsRow, SettingsSwitch } from "./settings/SettingsPrimitives";
+import primitiveStyles from "./settings/SettingsPrimitives.module.css";
 import { SubagentProfileEditor, type ProfileEditorSubmitPayload } from "./subagents/SubagentProfileEditor";
-import styles from "./SettingsDialog.module.css";
 import css from "./SubagentSettings.module.css";
 
 const LIMIT_SPECS = [
@@ -180,57 +181,37 @@ export function SubagentSettings({ cwd }: { cwd?: string }) {
     : undefined;
 
   return (
-    <section className={`${styles.sectionCard} ${css.card}`} data-settings-id="laboratory.subagents">
-      <div className={css.header}>
-        <div className={css.headerLead}>
-          <span className={css.headerIcon} data-enabled={settings?.enabled ?? false} aria-hidden="true">
-            <AliIcon name="robot" size={18} />
-          </span>
-          <span className={css.headerCopy}>
-            <span className={css.headerTitleRow}>
-              <strong className={styles.rowTitle}>{t("subagent.title")}</strong>
-              {settings && (
-                <span className={css.statusPill} data-enabled={settings.enabled}>
-                  <span className={css.statusPillDot} aria-hidden="true" />
-                  <span>{t(settings.enabled ? "subagent.enabledBadge" : "subagent.disabledBadge")}</span>
-                </span>
-              )}
-            </span>
-            <span id={descriptionId} className={styles.rowDescription}>{t("subagent.description")}</span>
-          </span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          className={styles.switch}
-          data-testid="subagent-toggle"
-          aria-checked={settings?.enabled ?? false}
-          aria-label={t("subagent.title")}
-          aria-describedby={descriptionId}
+    <section className={`${primitiveStyles.sectionCard} ${css.card}`} data-settings-id="laboratory.subagents">
+      <SettingsRow
+        title={t("subagent.title")}
+        description={t("subagent.description")}
+        descriptionId={descriptionId}
+      >
+        <SettingsSwitch
+          checked={settings?.enabled ?? false}
+          label={t("subagent.title")}
+          describedBy={descriptionId}
+          busy={saving}
+          testId="subagent-toggle"
           disabled={!settings || saving}
-          onClick={() => { if (settings) void save({ ...settings, enabled: !settings.enabled }); }}
-        >
-          <span aria-hidden="true" />
-        </button>
-      </div>
+          onToggle={() => { if (settings) void save({ ...settings, enabled: !settings.enabled }); }}
+        />
+      </SettingsRow>
 
       {settings && (
-        <details className={css.options}>
-          <summary className={css.summary}>
-            <span>{t("subagent.options")}</span>
-            <span className={css.summaryHint}>
-              {profiles.length > 0
-                ? t("subagent.optionsSummary", {
-                  enabled: enabledCount,
-                  total: profiles.length,
-                  concurrency: settings.maxConcurrency,
-                  timeout: settings.timeoutSeconds > 0 ? `${settings.timeoutSeconds}s` : t("subagent.unlimited"),
-                })
-                : t("subagent.optionsHint")}
-            </span>
-            <span className={css.chevron} aria-hidden="true" />
-          </summary>
-
+        <SettingsDisclosure
+          summary={t("subagent.options")}
+          meta={
+            profiles.length > 0
+              ? t("subagent.optionsSummary", {
+                enabled: enabledCount,
+                total: profiles.length,
+                concurrency: settings.maxConcurrency,
+                timeout: settings.timeoutSeconds > 0 ? `${settings.timeoutSeconds}s` : t("subagent.unlimited"),
+              })
+              : t("subagent.optionsHint")
+          }
+        >
           <div className={css.body}>
             <section className={css.group} aria-labelledby={`${descriptionId}-profiles`}>
               <div className={css.groupHeader}>
@@ -542,7 +523,7 @@ export function SubagentSettings({ cwd }: { cwd?: string }) {
               </div>
             </section>
           </div>
-        </details>
+        </SettingsDisclosure>
       )}
 
       {error && <p className={css.error} role="alert">{error}</p>}

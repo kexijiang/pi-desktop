@@ -160,10 +160,10 @@
 .popover .heading { margin-bottom: 6px; }
 .popover .heading h3 { font-size: var(--text-base); }
 .popover .download { padding: 7px 0; }
-.home { color: var(--text); background: var(--bg); container-type: inline-size; }
-.pageBody { width: min(100%, 720px); padding: 12px clamp(10px, 3vw, 26px) 36px; margin-inline: auto; box-sizing: border-box; }
+.home { color: var(--text); background: transparent; container-type: inline-size; }
+.pageBody { width: 100%; padding: 0; margin-inline: auto; box-sizing: border-box; }
 .pageBody > .navList { margin-block: 14px; }
-.crumbs { margin-bottom: 12px; }
+.crumbs { margin-bottom: 14px; }
 .crumb { display: inline-flex; align-items: center; gap: 9px; }
 .crumbs button:disabled { opacity: .4; cursor: default; }
 .crumbs .crumb button { padding: 0; }

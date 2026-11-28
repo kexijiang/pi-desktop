@@ -85,7 +85,7 @@ function BrowserPreferences() {
             <label className={styles.rowTitle} htmlFor="browser-download-ask">{t("browserPreferences.ask")}</label>
             <button
               id="browser-download-ask"
-              className={styles.switch}
+              className={settingsStyles.switch}
               type="button"
               role="switch"
               aria-checked={askEachTime}

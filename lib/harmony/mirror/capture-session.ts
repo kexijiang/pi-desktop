@@ -198,7 +198,7 @@ export class MirrorCaptureSession {
     this.lastFrameAt = performance.now();
     this.idleFrameTimer = setInterval(() => {
       if (this.viewers.size && performance.now() - this.lastFrameAt >= MIRROR_PROFILE.idleKeyframeIntervalMs) this.requestKeyframe();
-    }, MIRROR_PROFILE.idleKeyframeIntervalMs);
+    }, MIRROR_PROFILE.idleKeyframeCheckIntervalMs);
     this.idleFrameTimer.unref?.();
     this.firstFrameTimer = setTimeout(() => this.end(fail("The native debug video channel produced no frames. Reconnect the device and update Piora.")), 8000);
     this.source.on("data", (reply: Reply) => {

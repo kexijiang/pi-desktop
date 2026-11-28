@@ -40,12 +40,19 @@ export class HarmonyMediaStreamController {
   private readonly videoConnections = new Map<string, Set<HarmonyVideoConnection>>();
   private readonly videoConnectionCurrent = new WeakMap<HarmonyVideoConnection, () => boolean>();
   private readonly videoConnectionFrames = new WeakMap<HarmonyVideoConnection, { capturedAt: number; generation: number; width?: number; height?: number }>();
+  private readonly videoFrameWaiters = new Map<string, Set<() => void>>();
   private readonly liveFrameRevisions = new Map<string, number>();
   private readonly frameDimensions = new Map<string, { width: number; height: number }>();
-  private readonly frameCapturedAt = new Map<string, { capturedAt: number; generation: number }>();
+  private readonly frameCapturedAt = new Map<string, { capturedAt: number; generation: number; width?: number; height?: number }>();
   private readonly geometries = new Map<string, HarmonyGeometry>();
 
   constructor(private readonly host: MediaStreamControllerHost) {}
+
+  private notifyVideoFrame(serial: string): void {
+    const waiters = this.videoFrameWaiters.get(serial);
+    if (!waiters?.size) return;
+    for (const wake of [...waiters]) wake();
+  }
 
   forgetDeviceFrameState(serial: string): void {
     this.geometries.delete(`${serial}:video`);
@@ -54,6 +61,7 @@ export class HarmonyMediaStreamController {
     this.frameCapturedAt.delete(`${serial}:screenshot`);
     this.frameDimensions.delete(`${serial}:video`);
     this.frameDimensions.delete(`${serial}:screenshot`);
+    this.notifyVideoFrame(serial);
   }
 
   hasFreshVideoFrame(serial: string, generation: number | undefined): boolean {
@@ -215,7 +223,10 @@ export class HarmonyMediaStreamController {
     const observed = connection.stream.pipeThrough(videoMetadataTransform((width, height) => {
       if (!current()) return;
       // A new SPS/PPS can change the codec without changing pixel dimensions.
+      const previousTracked = this.videoConnectionFrames.get(tracked);
       this.videoConnectionFrames.delete(tracked);
+      const sameShape = dimensions?.width === width && dimensions?.height === height;
+      const previousFrame = this.frameCapturedAt.get(`${options.serial}:video`);
       dimensions = { width, height };
       this.recordFrameDimensions(options.serial, "video", width, height);
       const remaining = [...(this.videoConnections.get(options.serial) ?? [])]
@@ -223,7 +234,12 @@ export class HarmonyMediaStreamController {
         .map(viewer => this.videoConnectionFrames.get(viewer))
         .filter(observation => observation?.width === width && observation?.height === height)
         .sort((left, right) => right!.capturedAt - left!.capturedAt)[0];
-      if (remaining) this.frameCapturedAt.set(`${options.serial}:video`, remaining);
+      if (sameShape && previousFrame?.generation === device.generation && previousFrame.width === width && previousFrame.height === height) {
+        if (previousTracked?.generation === device.generation && previousTracked.width === width && previousTracked.height === height) {
+          this.videoConnectionFrames.set(tracked, previousTracked);
+        }
+        this.frameCapturedAt.set(`${options.serial}:video`, previousFrame);
+      } else if (remaining) this.frameCapturedAt.set(`${options.serial}:video`, remaining);
       else {
         this.frameCapturedAt.delete(`${options.serial}:video`);
         this.geometries.delete(`${options.serial}:video`);
@@ -234,6 +250,7 @@ export class HarmonyMediaStreamController {
       this.recordFrameDimensions(options.serial, "video", dimensions?.width ?? 0, dimensions?.height ?? 0);
       this.videoConnectionFrames.set(tracked, observation);
       this.frameCapturedAt.set(`${options.serial}:video`, observation);
+      this.notifyVideoFrame(options.serial);
     }));
     const reader = observed.getReader();
     let downstream: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -280,6 +297,7 @@ export class HarmonyMediaStreamController {
             this.geometries.delete(`${options.serial}:video`);
             this.frameDimensions.delete(`${options.serial}:video`);
           }
+          this.notifyVideoFrame(options.serial);
         }
         // A backend close may itself wait for reader cancellation. Start both
         // before awaiting either; invoke backend close first for EOF-only sources.
@@ -334,9 +352,59 @@ export class HarmonyMediaStreamController {
     this.recordFrameDimensions(serial, "screenshot", screenshot.width ?? 0, screenshot.height ?? 0);
   }
 
+  private async refreshPointerFrame(serial: string, generation: number, signal?: AbortSignal): Promise<void> {
+    const hasActiveKeyframeConnection = () => {
+      const connections = this.videoConnections.get(serial);
+      return Boolean(connections && [...connections].some(
+        connection => connection.requestKeyframe && this.videoConnectionCurrent.get(connection)?.(),
+      ));
+    };
+    if (!hasActiveKeyframeConnection()) return;
+    const fresh = () => {
+      const frame = this.frameCapturedAt.get(`${serial}:video`);
+      const age = frame ? this.host.now() - frame.capturedAt : Number.NaN;
+      return frame?.generation === generation && Number.isFinite(age) && age >= 0 && age <= 650;
+    };
+    if (fresh()) return;
+    this.requestVideoKeyframe(serial, generation);
+    const startedAt = performance.now();
+    const deadline = startedAt + 800;
+    let retried = false;
+    while (!fresh()) {
+      const now = performance.now();
+      if (signal?.aborted || this.host.getGeneration(serial) !== generation || !hasActiveKeyframeConnection() || now >= deadline) {
+        throw new HarmonyError("STALE_SNAPSHOT", "Wait for a fresh live frame before controlling the phone", { details: { dispatchState: "not-sent" } });
+      }
+      if (!retried && now - startedAt >= 300) {
+        retried = true;
+        try { this.requestVideoKeyframe(serial, generation); } catch { /* Connection closed or epoch changed; rechecked on next iteration. */ }
+      }
+      const waitMs = Math.min(10, Math.max(1, Math.ceil(deadline - now)));
+      await new Promise<void>(resolve => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", done);
+          const waiters = this.videoFrameWaiters.get(serial);
+          waiters?.delete(done);
+          if (waiters && waiters.size === 0) this.videoFrameWaiters.delete(serial);
+          resolve();
+        };
+        const waiters = this.videoFrameWaiters.get(serial) ?? new Set<() => void>();
+        waiters.add(done);
+        this.videoFrameWaiters.set(serial, waiters);
+        signal?.addEventListener("abort", done, { once: true });
+        const timer = setTimeout(done, waitMs);
+      });
+    }
+  }
+
   async getFrameGeometry(serial: string, space: "video" | "screenshot", signal?: AbortSignal): Promise<HarmonyGeometry> {
     const device = await this.host.onlineDevice(serial, signal);
     const backend = this.host.requireBackend();
+    if (space === "video") await this.refreshPointerFrame(serial, device.generation, signal);
     if (!backend.displayGeometry) throw new HarmonyError("CAPABILITY_UNAVAILABLE", "Native display geometry is unavailable");
     const key = `${serial}:${space}`;
     const frame = this.frameDimensions.get(key);
@@ -347,6 +415,7 @@ export class HarmonyMediaStreamController {
       throw new HarmonyError("STALE_SNAPSHOT", "The frame is stale; wait for live video or a new screenshot");
     }
     const native = await backend.displayGeometry(serial, signal);
+    if (space === "video") await this.refreshPointerFrame(serial, device.generation, signal);
     const currentObservation = this.frameCapturedAt.get(key);
     const currentAge = currentObservation ? this.host.now() - currentObservation.capturedAt : Number.NaN;
     if (

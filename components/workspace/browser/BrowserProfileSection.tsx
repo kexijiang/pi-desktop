@@ -116,41 +116,44 @@ export function ProfileSettingsHome({
       ))}
     </div>
   );
+  const showCrumbs = route.length > 1 || forward.length > 0;
   return (
     <div className={styles.home}>
-      <nav className={styles.crumbs} aria-label={copy("浏览器设置路径", "Browser settings path")}>
-        <button
-          type="button"
-          disabled={route.length < 2}
-          onClick={() => backTo(route.length - 2)}
-          aria-label={copy("后退", "Go back")}
-        >
-          <AliIcon name="arrowleft" size={15} />
-        </button>
-        <button
-          type="button"
-          disabled={!forward.length}
-          onClick={() => {
-            setRoute([...route, forward[0]!]);
-            setForward(forward.slice(1));
-          }}
-          aria-label={copy("前进", "Go forward")}
-        >
-          <AliIcon name="arrowright" size={15} />
-        </button>
-        {route.map((key, index) => (
-          <span key={key} className={styles.crumb}>
-            {index > 0 && <AliIcon name="chevron-right" size={12} />}
-            {index === route.length - 1 ? (
-              <span aria-current="page">{labels[key]}</span>
-            ) : (
-              <button type="button" onClick={() => backTo(index)}>
-                {labels[key]}
-              </button>
-            )}
-          </span>
-        ))}
-      </nav>
+      {showCrumbs ? (
+        <nav className={styles.crumbs} aria-label={copy("浏览器设置路径", "Browser settings path")}>
+          <button
+            type="button"
+            disabled={route.length < 2}
+            onClick={() => backTo(route.length - 2)}
+            aria-label={copy("后退", "Go back")}
+          >
+            <AliIcon name="arrowleft" size={15} />
+          </button>
+          <button
+            type="button"
+            disabled={!forward.length}
+            onClick={() => {
+              setRoute([...route, forward[0]!]);
+              setForward(forward.slice(1));
+            }}
+            aria-label={copy("前进", "Go forward")}
+          >
+            <AliIcon name="arrowright" size={15} />
+          </button>
+          {route.map((key, index) => (
+            <span key={key} className={styles.crumb}>
+              {index > 0 && <AliIcon name="chevron-right" size={12} />}
+              {index === route.length - 1 ? (
+                <span aria-current="page">{labels[key]}</span>
+              ) : (
+                <button type="button" onClick={() => backTo(index)}>
+                  {labels[key]}
+                </button>
+              )}
+            </span>
+          ))}
+        </nav>
+      ) : null}
       <section className={styles.pageBody} data-profile-section={page} aria-label={labels[page]}>
         {page === "browser" ? (
           <>

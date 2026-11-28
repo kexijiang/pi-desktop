@@ -20,7 +20,7 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
   const manual = useHarmonyManualControl({ active: enabled, serial, online: Boolean(frame), chinese });
   const [error, setError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
-  const epoch = useRef(0), tail = useRef(Promise.resolve()), pending = useRef(0), stopped = useRef(false);
+  const epoch = useRef(0), tail = useRef(Promise.resolve()), pending = useRef(0), disposed = useRef(false);
   const gesture = useRef<{ touch: LiveTouch; pointer: number } | null>(null);
   const wheelAt = useRef(0);
   const abort = useRef(new AbortController());
@@ -29,15 +29,30 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
   const geometryReady = useRef<number | null>(null);
   const identity = `${enabled}:${serial}:${frame?.generation}:${frame?.width}:${frame?.height}`;
   useEffect(() => {
-    const controller = new AbortController();
-    abort.current = controller;
-    const currentEpoch = ++epoch.current; stopped.current = false; gesture.current = null; prepared.current = null; geometryReady.current = null; setError(null); setPreparing(false);
+    abort.current = new AbortController();
+    epoch.current += 1; disposed.current = false; gesture.current = null; prepared.current = null; geometryReady.current = null; setError(null); setPreparing(false);
     return () => {
       const active = gesture.current; gesture.current = null;
-      controller.abort(); epoch.current = currentEpoch + 1; stopped.current = true;
+      abort.current.abort(); epoch.current += 1; disposed.current = true;
       void active?.touch.up().catch(() => undefined);
     };
   }, [identity]);
+
+  const resetFailedAttempt = useCallback((expectedEpoch: number, cause: unknown) => {
+    if (expectedEpoch !== epoch.current || disposed.current) return false;
+    // Fence all queued/in-flight requests from the failed attempt without
+    // permanently locking out subsequent intentional user input.
+    abort.current.abort();
+    abort.current = new AbortController();
+    epoch.current = expectedEpoch + 1;
+    gesture.current = null;
+    prepared.current = null;
+    geometryReady.current = null;
+    setPreparing(false);
+    setError(cause instanceof Error ? cause.message : String(cause));
+    manual.clearControl();
+    return true;
+  }, [manual]);
 
   const prepareGeometry = () => {
     const cached = prepared.current;
@@ -66,13 +81,13 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
   }, [releasePointer]);
 
   const send = useCallback((body: Record<string, unknown>, coordinates = false) => {
-    if (!enabled || !frame || !manual.canControl || preparing || stopped.current) return Promise.resolve(false);
+    if (!enabled || !frame || !manual.canControl || preparing || disposed.current) return Promise.resolve(false);
     if (pending.current >= 4) { setError(chinese ? "请等待当前操作完成" : "Wait for the current input to finish"); return Promise.resolve(false); }
     const expected = epoch.current, expectedFrame = frame;
     const scopeSignal = abort.current.signal;
     pending.current++;
     const run = async () => {
-      const current = () => expected === epoch.current && !stopped.current;
+      const current = () => expected === epoch.current && !disposed.current;
       // The device worker can spend 20 seconds establishing its first connection
       // and has a 45-second execution deadline. Include lease/geometry overhead,
       // and start this budget when the queued operation actually begins.
@@ -98,25 +113,24 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
         return current();
       } catch (cause) {
         if (!current()) return false;
-        // Never replay a queued gesture after an ambiguous input result.
-        stopped.current = true; gesture.current = null;
-        setError(cause instanceof Error ? cause.message : String(cause));
-        manual.clearControl();
+        // Never replay a queued gesture after an ambiguous input result, while
+        // allowing subsequent fresh user actions to recover cleanly.
+        resetFailedAttempt(expected, cause);
         return false;
       } finally { pending.current--; }
     };
     const task = tail.current.then(run, run);
     tail.current = task.then(() => undefined, () => undefined);
     return task;
-  }, [enabled, frame, manual, preparing, serial, chinese]);
+  }, [enabled, frame, manual, preparing, serial, chinese, resetFailedAttempt]);
 
   const point = (event: { clientX: number; clientY: number; currentTarget: HTMLElement }) => frame
     ? mirrorPoint(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), frame) : undefined;
   return { error, preparing, send, canControl: enabled && manual.canControl && !preparing,
     handlers: {
-      onPointerEnter() { if (enabled && frame && manual.canControl && !stopped.current) void prepareGeometry().catch(() => undefined); },
+      onPointerEnter() { if (enabled && frame && manual.canControl && !disposed.current) void prepareGeometry().catch(() => undefined); },
       onPointerDown(event: PointerEvent<HTMLDivElement>) {
-        if (!enabled || !frame || !manual.canControl || stopped.current || gesture.current || event.button !== 0 || !event.isPrimary) return;
+        if (!enabled || !frame || !manual.canControl || disposed.current || gesture.current || event.button !== 0 || !event.isPrimary) return;
         const start = point(event); if (!start) return;
         // Warm-up may establish the read-only control transport. Do not claim a
         // lease or admit a gesture while it is pending: a mouse-up during cold
@@ -134,10 +148,9 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
         const startup = AbortSignal.any([abort.current.signal, AbortSignal.timeout(3000)]);
         let leaseToken: string | undefined, gestureId: string | undefined, releaseFailure: unknown;
         const fail = (cause: unknown) => {
-          if (expected !== epoch.current) return;
-          stopped.current = true; setError(cause instanceof Error ? cause.message : String(cause)); manual.clearControl();
+          resetFailedAttempt(expected, cause);
         };
-        const current = () => { if (expected !== epoch.current || stopped.current) throw new Error(chinese ? "设备状态已改变" : "Device state changed"); };
+        const current = () => { if (expected !== epoch.current || disposed.current) throw new Error(chinese ? "设备状态已改变" : "Device state changed"); };
         const touch = new LiveTouch({ touch: async (phase, x, y) => {
           if (phase === "down") {
             await beforeAbort(previous, startup); current();
@@ -150,6 +163,7 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
             if (geometry.frameWidth !== expectedFrame.width || geometry.frameHeight !== expectedFrame.height) throw new Error(chinese ? "屏幕方向已变化" : "Screen orientation changed");
             const result = await harmonyJson<{ gestureId: string }>("/api/harmony/pointer", { phase, serial, leaseToken, x, y, geometryId: geometry.geometryId, generation: expectedFrame.generation }, startup);
             gestureId = result.gestureId;
+            if (expected === epoch.current && !disposed.current) setError(null);
           } else if (gestureId && leaseToken) {
             if (phase !== "up") current();
             const response = await fetch("/api/harmony/pointer", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -163,7 +177,7 @@ export function useMirrorInput({ enabled, frame, chinese }: { enabled: boolean; 
       },
       onPointerMove(event: PointerEvent<HTMLDivElement>) {
         const active = gesture.current;
-        if (!active) { if (enabled && frame && manual.canControl && !stopped.current) void prepareGeometry().catch(() => undefined); return; }
+        if (!active) { if (enabled && frame && manual.canControl && !disposed.current) void prepareGeometry().catch(() => undefined); return; }
         if (active.pointer !== event.pointerId) return;
         const next = point(event); if (!next) return;
         void active.touch.move(next).catch(cause => { setError(cause instanceof Error ? cause.message : String(cause)); releasePointer(); });
