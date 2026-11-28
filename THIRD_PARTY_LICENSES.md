@@ -2,7 +2,7 @@
 
 > Deterministically generated from the committed npm lockfile. Do not edit by hand; run `npm run licenses:generate`.
 
-Lockfile SHA-256: `7f5a867d17491c21a0e0eb08a0206118156d0eefe8738703f281c5020cae13b5`
+Lockfile SHA-256: `719cefc204f41ab783df3049dc1ab480ec3d9c4d3d08ea4437c668679d532fe0`
 
 Unique locked packages: **1273**. Runtime packages: **773**. Build/development-only packages: **500**.
 
@@ -87,7 +87,7 @@ Every locked package declares a license.
 | `@google/genai` | `2.21.0` | Apache-2.0 | No |
 | `@grpc/grpc-js` | `1.14.7` | Apache-2.0 | No |
 | `@grpc/proto-loader` | `0.8.1` | Apache-2.0 | No |
-| `@hono/node-server` | `2.1.5` | MIT | No |
+| `@hono/node-server` | `2.1.8` | MIT | No |
 | `@iconify/types` | `2.0.0` | MIT | No |
 | `@iconify/utils` | `3.1.1` | MIT | No |
 | `@img/colour` | `1.1.0` | MIT | No |
