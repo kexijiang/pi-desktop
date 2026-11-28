@@ -12,8 +12,8 @@ import { createSharedCommandStreamChannel } from "@/lib/shared-command-stream";
 import { savePendingPrompt, dismissPendingPrompt, readPendingPrompts, mergePendingPrompts, replaceFailedPromptMessage, confirmPendingPrompts, type PendingPrompt } from "@/lib/prompt-recovery";
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useReducer } from "react";
-import { cancelPendingSessionPrefetch, invalidatePrefetchedSession, peekPrefetchedSession, takePrefetchedSession } from "@/lib/session-prefetch";
-import { chatHistoryUrl, restoreChatHistory } from "@/lib/chat-history-client";
+import { cancelPendingSessionPrefetch, forgetSessionHistory, invalidatePrefetchedSession, peekSessionHistory, retainSessionHistory, takePrefetchedSession } from "@/lib/session-prefetch";
+import { chatHistoryUrl, isSessionChatHistory, readChatHistorySnapshot, restoreChatHistory, type SessionData } from "@/lib/chat-history-client";
 import type {
   AgentMessage,
   ExtensionStatusItem,
@@ -64,24 +64,6 @@ import type {
 } from "@/lib/system-prompt-types";
 
 export type { AgentPhase } from "@/lib/agent-phase";
-
-export interface SessionData {
-  stats?: SessionStatsInfo;
-  persistedPromptIds?: string[];
-  sessionId: string;
-  filePath: string;
-  info?: SessionInfo | null;
-  tree: SessionTreeNode[];
-  leafId: string | null;
-  systemPromptBinding?: SessionSystemPromptBinding | null;
-  context: {
-    modelChanges?: ModelChangeNotice[];
-    messages: AgentMessage[];
-    entryIds: string[];
-    thinkingLevel: string;
-    model: { provider: string; modelId: string } | null;
-  };
-}
 
 interface StreamingState {
   isStreaming: boolean;
@@ -473,11 +455,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const isNew = session === null && newSessionCwd !== null;
   const { enabled: liveOutputAutoScrollEnabled } = useLiveOutputAutoScrollPreference();
 
-  // Task rows prefetch on hover/pointer-down. Seed the remounted chat from a
-  // completed snapshot so a normal switch never paints the full loading shell
-  // before showing content that is already available in memory.
+  // Paint the last history immediately while the selected session catches up.
   const [initialSessionData] = useState<SessionData | null>(() => (
-    session ? peekPrefetchedSession(session) as SessionData | null : null
+    session ? peekSessionHistory(session) : null
   ));
   const initiallyRunning = Boolean(opts.initialRunning);
 
@@ -772,7 +752,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
-      invalidatePrefetchedSession(sid);
+      cancelPendingSessionPrefetch(sid);
     }, 30_000);
     const fetchState = () => fetch(`/api/sessions/${encodeURIComponent(sid)}/state?view=chat`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
@@ -784,36 +764,30 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Start both reads at the same time. Cold history can paint while the
       // runtime lookup is pending, and cached history is already on screen.
       const stateRequest = initialSession && includeState ? fetchState() : null;
-      const showingCachedHistory = initialSession && !showLoading && Boolean(peekPrefetchedSession(initialSession));
-      let d = initialSession ? await wait(takePrefetchedSession(initialSession)) as SessionData | null : null;
-      if (initialSession && showingCachedHistory && (await wait(stateRequest))?.running) {
-        // The live session may have advanced since the cached projection.
-        invalidatePrefetchedSession(sid);
-        d = await wait(takePrefetchedSession(initialSession)) as SessionData | null;
-      }
+      let history = initialSession ? await wait(takePrefetchedSession(initialSession)) : null;
       if (controller.signal.aborted) return null;
-      if (!d) {
+      if (!history) {
         const res = await wait(fetch(chatHistoryUrl(sid), {
           signal: controller.signal,
         }));
         if (res.status === 404) {
+          forgetSessionHistory(sid);
           const recovered = mergePendingPrompts([], [], await wait(readPendingPrompts(sid)));
           if (controller.signal.aborted || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
-          if (recovered.messages.length) { setMessages(recovered.messages); setEntryIds(recovered.entryIds); }
-          if (showLoading) {
-            setModelChanges([]);
-            setData(null);
-            setActiveLeafId(null);
-            if (!recovered.messages.length) { setMessages([]); setEntryIds([]); }
-          }
+          setModelChanges([]);
+          setData(null);
+          setActiveLeafId(null);
+          setMessages(recovered.messages);
+          setEntryIds(recovered.entryIds);
           if (initialSession) setError(recovered.messages.length ? null : translateRef.current("chat.sessionSwitchFailed"));
           return null;
         }
         if (!res.ok) throw await sessionResponseError(res);
-        d = await wait(res.json()) as SessionData;
+        history = await wait(readChatHistorySnapshot(res, controller.signal));
       }
       if (controller.signal.aborted || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
-      if (!Array.isArray(d?.context?.messages) || d.info?.id && d.info.id !== sid || d.sessionId && d.sessionId !== sid) {
+      let d = history.data;
+      if (!isSessionChatHistory(d, sid)) {
         throw new Error(translateRef.current("chat.sessionSwitchFailed"));
       }
       const editedBranch = editedBranchRef.current;
@@ -827,6 +801,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       const recovered = await wait(restoreChatHistory(sid, d, controller.signal));
       if (controller.signal.aborted || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
+      if (d === history.data) retainSessionHistory(sid, history);
       nestedCallsStore.reset();
       setData(d);
       setModelChanges(d.context.modelChanges ?? []);
@@ -915,7 +890,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [nestedCallsStore, acceptToolPermission]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
-    invalidatePrefetchedSession(sid);
+    forgetSessionHistory(sid);
     const runId = promptRunIdRef.current;
     const revision = ++historyRevisionRef.current;
     try {
@@ -2600,7 +2575,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       setMessages(retainedMessages);
       setEntryIds(retainedEntryIds);
-      if (sid) invalidatePrefetchedSession(sid);
+      if (sid) forgetSessionHistory(sid);
       if (entryId && sid) {
         await loadSession(sid);
         if (activeLeafId) { setActiveLeafId(activeLeafId); await loadContext(sid, activeLeafId); }
@@ -3197,7 +3172,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         if (agentState?.running) {
           if (agentState.state && agentState.state.runtime !== "idle") restoreStatusClock(agentState.state);
-          invalidatePrefetchedSession(session.id);
           if (agentState.state?.isCompacting) void connectEvents(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning || agentState.state?.runtime === "running" || agentState.state?.runtime === "stopping") {
             agentRunningRef.current = true;
@@ -3258,13 +3232,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionLoadAttempt]);
-
-  useEffect(() => {
-    const sid = sessionIdRef.current;
-    if (sid && !sessionHydrating && (agentRunning || bashRunning || streamState.isStreaming || isCompacting)) {
-      invalidatePrefetchedSession(sid);
-    }
-  }, [agentRunning, bashRunning, streamState.isStreaming, isCompacting, sessionHydrating]);
 
   useEffect(() => {
     onSystemPromptChange?.(systemPrompt);

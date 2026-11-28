@@ -18,6 +18,8 @@ assert.ok(selection);
 test("session selection and drafting stay responsive with slow history, running tasks and long Markdown",{timeout:180000},async t=>{
   const root=await mkdtemp(path.join(tmpdir(),"piora-session-switch-"));let browser, server;
   const gates=new Map(),requests=[];
+  const recentIds = ["a", "b", "c", ...Array.from({ length: 7 }, (_, index) => `recent-${index + 4}`)];
+  let checkpoint = "compile client";
   let broken=true, backgroundReply="b";
   const longReply = [
     "# Start of the long reply",
@@ -35,8 +37,7 @@ test("session selection and drafting stay responsive with slow history, running 
     await writeFile(path.join(root,"entry.tsx"),`
 import{useRef,useState}from"react";import{createRoot}from"react-dom/client";
 import{ChatWindow}from"@/components/ChatWindow";import{I18nProvider}from"@/hooks/useI18n";
-import{prefetchSession}from"@/lib/session-prefetch";
-const noop=()=>{},sessions=Object.fromEntries(["a","b","c","broken","long"].map(id=>[id,{id,path:"",cwd:"C:/"+id,created:"",modified:"sidebar-"+id,messageCount:2,firstMessage:id,name:"Chat "+id}]));
+const noop=()=>{},sessions=Object.fromEntries(${JSON.stringify([...recentIds, "broken", "long"])}.map(id=>[id,{id,path:"",cwd:"C:/"+id,created:"",modified:"sidebar-"+id,messageCount:2,firstMessage:id,name:"Chat "+id}]));
 window.sources=[];window.EventSource=class{static OPEN=1;static CLOSED=2;readyState=1;constructor(url){this.url=location.origin+url;window.sources.push(this);setTimeout(()=>this.onmessage?.({data:JSON.stringify({type:"connected"})}),0)}close(){this.readyState=2}};
 window.stream=text=>window.sources.filter(source=>source.readyState===1&&source.url.includes("/api/agent/b/events")).forEach(source=>source.onmessage?.({data:JSON.stringify({type:"message_update",message:{role:"assistant",content:[{type:"text",text}],timestamp:Date.now()}})}));
 function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[sessionKey,setSessionKey]=useState(0),[focused,setFocusedEntryId]=useState(null);
@@ -45,7 +46,6 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
   const isMobile=false,setSettingsDialogOpen=noop,setHistoryDialogOpen=noop,setHistoryLocation=noop,setSelectedRoom=noop,setActiveTopPanel=noop,setNewSessionCwd=noop,setNewSessionInitialModel=noop,setNewSessionInitialPrompt=noop,setSystemPrompt=noop,setInitialSessionRestored=noop,setSidebarOpen=noop;
   const replaceUrlWithoutNextNavigation=url=>history.replaceState(null,"",url);
   const select=${selection};
-  window.prefetch=id=>prefetchSession(sessions[id]);
   return <><nav>{Object.keys(sessions).map(id=><button key={id} data-target={id} onClick={()=>void select(sessions[id])}>Chat {id}</button>)}</nav>
     <h1>Chat {selectedSession.id}</h1><div id="view">
       <ChatWindow key={sessionKey} session={selectedSession} initialRunning={selectedSession.id==="b"} newSessionCwd={null} focusEntryId={focused} chatInputRef={chatInputRef}/>
@@ -118,17 +118,19 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
         }
       };
     });
-    const runtime=id=>({running:id==="b",state:{runtime:id==="b"?"running":"idle",isStreaming:id==="b",isPromptRunning:id==="b"}});
+    const runtime=id=>({running:id==="a"||id==="b",state:{runtime:id==="b"?"running":"idle",isStreaming:id==="b",isPromptRunning:id==="b"}});
     await page.route(origin + "/api/**",async route=>{
       const request=route.request(),url=new URL(request.url()),pathname=url.pathname;requests.push(pathname);
-      const match=pathname.match(/^\/api\/sessions\/(a|b|c|broken|long)$/);
+      const match=pathname.match(/^\/api\/sessions\/(a|b|c|broken|long|recent-\d+)$/);
       if(match){
         const id=match[1];
         await gates.get(id)?.promise;
         if(id==="broken"&&broken)return route.fulfill({status:503,json:{error:"fixture offline"}});
+        const etag = id === "a" ? '"history-a"' : null;
+        if (etag && request.headers()["if-none-match"] === etag) return route.fulfill({ status: 304, headers: { etag } });
         const reply=id==="long"?longReply:Array.from({length:24},(_,i)=>"ANSWER_"+(id==="b"?backgroundReply:id)+" · paragraph "+i).join("\n\n");
         const now=Date.now(),messages=[{role:"user",content:"QUESTION_"+id,timestamp:now-5000},{role:"assistant",content:[{type:"thinking",thinking:"THINKING_"+id},{type:"text",text:reply}],timestamp:now-4000}];
-        return route.fulfill({json:{sessionId:id,info:{id,cwd:"C:/"+id,modified:"server-"+id},context:{messages,entryIds:[id+"-user",id+"-assistant"],model:{provider:"fixture",modelId:"fixture-model"},thinkingLevel:"auto"},tree:[],leafId:id+"-assistant",persistedPromptIds:[]}});
+        return route.fulfill({headers:etag?{etag,"cache-control":"private, no-cache"}:{},json:{sessionId:id,info:{id,cwd:"C:/"+id,modified:"server-"+id},context:{messages,entryIds:[id+"-user",id+"-assistant"],model:{provider:"fixture",modelId:"fixture-model"},thinkingLevel:"auto"},tree:[],leafId:id+"-assistant",persistedPromptIds:[]}});
       }
       const state=pathname.match(/^\/api\/(?:sessions\/([^/]+)\/state|agent\/([^/]+))$/);
       if(state&&request.method()==="GET"){
@@ -157,6 +159,8 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     const loading = page.locator(".session-loading-indicator");
     const lastReply = id => page.getByText(`ANSWER_${id} · paragraph 23`, { exact: true });
     const processToggle = page.locator(".compact-process-toggle");
+    page.setDefaultTimeout(22_000);
+    checkpoint = "initial history";
     await page.goto(origin);
     await lastReply("a").waitFor();
     await composer.fill("DRAFT_A_PRESERVED");
@@ -187,6 +191,7 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
       requestAnimationFrame(sample);
     });
 
+    checkpoint = "cancel obsolete history and keep drafts";
     hold("b");
     hold("state:b");
     await select("b");
@@ -218,25 +223,36 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     await lastReply("b").waitFor();
     assert.equal(await processToggle.getAttribute("aria-expanded"), "true", "active process starts expanded");
     assert.equal(await composer.inputValue(), "DRAFT_B_WHILE_LOADING");
+    checkpoint = "warm idle session and conditional request";
     const aRequests = requests.filter(url => url === "/api/sessions/a").length;
+    await page.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 60_000; });
+    hold("a");
+    hold("state:a");
+    const aRefresh = page.waitForRequest(request => new URL(request.url()).pathname === "/api/sessions/a");
+    const aResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sessions/a");
     await select("a");
     await lastReply("a").waitFor();
     assert.equal(await loading.count(), 0);
-    assert.equal(requests.filter(url => url === "/api/sessions/a").length, aRequests);
+    assert.equal((await aRefresh).headers()["if-none-match"], '"history-a"');
     assert.equal(await composer.inputValue(), "DRAFT_A_PRESERVED");
+    release("a");
+    release("state:a");
+    assert.equal((await aResponse).status(), 304);
+    assert.equal(requests.filter(url => url === "/api/sessions/a").length, aRequests + 1);
 
-    const prefetch = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sessions/b");
-    await page.evaluate(() => window.prefetch("b"));
-    await (await prefetch).finished();
+    checkpoint = "warm running session and fresh reply";
+    hold("b");
     hold("state:b");
+    backgroundReply = "b_updated";
     await select("b");
     await lastReply("b").waitFor();
     assert.equal(await loading.count(), 0);
     assert.equal(await processToggle.getAttribute("aria-expanded"), "true");
-    backgroundReply = "b_updated";
-    release("state:b");
+    release("b");
     await lastReply("b_updated").waitFor();
+    release("state:b");
 
+    checkpoint = "retry failed history";
     await select("broken");
     await page.getByRole("alert").filter({ hasText: "会话加载失败" }).waitFor();
     assert.equal(await composer.inputValue(), "");
@@ -248,6 +264,7 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     assert.equal(await page.evaluate(() => window.pendingComposer === document.querySelector("#view textarea")), true);
     assert.equal(await composer.inputValue(), "RETRY_DRAFT");
 
+    checkpoint = "long Markdown";
     await select("long");
     await page.waitForFunction(() => window.markdownStarted === 1);
     await composer.fill("DRAFT_DURING_LONG_MARKDOWN");
@@ -278,6 +295,7 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     await select("a");
     assert.equal(await composer.inputValue(), "DRAFT_A_PRESERVED");
 
+    checkpoint = "restore streaming session";
     await select("b");
     await page.waitForFunction(() => window.sources.some(source => source.readyState === 1 && source.url.includes("/api/agent/b/events")));
     const streamed = "# Streaming reply\n\n" + "A still-running reply. ".repeat(3100);
@@ -292,6 +310,27 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     await select("c");
     assert.equal(await composer.inputValue(), "DRAFT_C_WHILE_LOADING");
 
+    checkpoint = "warm ten sessions";
+    for (const id of recentIds) {
+      await select(id);
+      await lastReply(id === "b" ? "b_updated" : id).waitFor();
+    }
+    checkpoint = "revisit ten sessions with stalled requests";
+    for (const id of recentIds) hold(id);
+    const firstWarmFrame = await page.evaluate(() => window.switchFrames.length);
+    for (const id of recentIds) {
+      await select(id);
+      await lastReply(id === "b" ? "b_updated" : id).waitFor({ timeout: 3_000 });
+      assert.equal(await loading.count(), 0, `${id} stays visible while its history refresh is held`);
+    }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const warmFrames = await page.evaluate(start => window.switchFrames.slice(start), firstWarmFrame);
+    for (const id of recentIds) {
+      const frames = warmFrames.filter(frame => frame.id === id);
+      assert.ok(frames.length && frames.every(frame => !frame.loading && frame.rows > 0), `blank or loading frame for ${id}`);
+      release(id);
+    }
+
     const evidence = await page.evaluate(() => {
       window.sampleSwitch = false;
       return { frames: window.switchFrames, timings: window.switchTimings, workersCompleted: window.markdownFinished };
@@ -304,9 +343,12 @@ function App(){const[selectedSession,setSelectedSession]=useState(sessions.a),[s
     const maxFrameGapMs = Math.max(...evidence.frames.slice(1).map((frame, index) => frame.at - evidence.frames[index].at));
     t.diagnostic(JSON.stringify({ frames: evidence.frames.length, switches: evidence.timings, markdownBytes: Buffer.byteLength(longReply), workersCompleted: evidence.workersCompleted, maxFrameGapMs }));
     assert.deepEqual(errors, []);
-    const output = path.join(repo, ".verification/session-switch");
+    const output = process.env.PIORA_SESSION_SWITCH_REPORT_DIR ?? path.join(repo, ".verification/session-switch");
     await mkdir(output, { recursive: true });
     await writeFile(path.join(output, "frames.json"), JSON.stringify(evidence, null, 2));
+  } catch (error) {
+    t.diagnostic(JSON.stringify({ checkpoint, recentRequests: requests.slice(-12) }));
+    throw error;
   } finally {
     for (const gate of gates.values()) gate.resolve();
     await browser?.close();

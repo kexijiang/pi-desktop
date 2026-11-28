@@ -7,6 +7,7 @@ const review = fs.readFileSync(new URL("./ReviewPanel.tsx", import.meta.url), "u
 const pushDialog = fs.readFileSync(new URL("./GitPushDialog.tsx", import.meta.url), "utf8");
 const changeList = fs.readFileSync(new URL("./ChangeList.tsx", import.meta.url), "utf8");
 const shell = fs.readFileSync(new URL("../AppShell.tsx", import.meta.url), "utf8");
+const panelLayout = fs.readFileSync(new URL("../../hooks/useRightPanelLayout.ts", import.meta.url), "utf8");
 const sidebar = fs.readFileSync(new URL("../SessionSidebar.tsx", import.meta.url), "utf8");
 
 test("moves files and review into a Codex-style launcher and tool-tab workspace", () => {
@@ -15,12 +16,12 @@ test("moves files and review into a Codex-style launcher and tool-tab workspace"
   assert.match(rightPanel, /role="tabpanel"/);
   assert.match(rightPanel, /className=\{styles\.toolLauncher\}/);
   assert.match(rightPanel, /className=\{styles\.toolMenu\} role="menu"/);
-  assert.match(rightPanel, /const \[openTools, setOpenTools\]/);
-  assert.match(rightPanel, /current\.includes\(tab\) \? current : \[\.\.\.current, tab\]/);
-  assert.match(rightPanel, /shownTools\.map\(/);
+  assert.match(rightPanel, /const \{ openTools, onOpenToolsChange: setOpenTools \} = props/);
+  assert.match(panelLayout, /!current\.openTools\.includes\(tab\) \? \[\.\.\.current\.openTools, tab\]/);
+  assert.match(rightPanel, /shownTools\.map/);
   assert.match(rightPanel, /draggable/);
   assert.match(rightPanel, /text\/piora-tool-tab/);
-  assert.match(rightPanel, /moveTool\(source, tool\.id\)/);
+  assert.match(rightPanel, /moveTool\(source, toolId\)/);
   assert.match(rightPanel, /createPortal/);
   assert.match(rightPanel, /window\.innerWidth - width - inset/);
   assert.match(rightPanel, /closeTool\(tool\.id\)/);
@@ -44,11 +45,12 @@ test("moves files and review into a Codex-style launcher and tool-tab workspace"
   assert.match(rightPanel, /id: "harmony"/);
   assert.match(rightPanel, /id: "files"/);
   assert.doesNotMatch(rightPanel, /workspace-search/);
-  assert.match(shell, /piora-right-panel-tab/);
-  assert.match(shell, /useState<RightPanelTab>\("home"\)/);
   assert.match(shell, /rightPanelMaximized/);
-  assert.match(shell, /rightPanelTabRestored/);
-  assert.doesNotMatch(shell, /useState<RightPanelTab>\(\(\) =>/);
+  assert.match(shell, /rightPanelLayoutScope\(selectedSession\?\.id, selectedRoom\?\.id\)/);
+  assert.match(shell, /openTools=\{openRightPanelTools\}/);
+  assert.match(panelLayout, /open: false, maximized: false, activeTab: "home", openTools: \[\]/);
+  assert.match(panelLayout, /window\.localStorage\.getItem\("piora-right-panel-tab"\)/);
+  assert.match(panelLayout, /layouts\?\.\[scope\] \?\? emptyLayout/);
   assert.doesNotMatch(sidebar, /<FileExplorer|<SidebarFileArea/);
 });
 

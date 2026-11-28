@@ -16,7 +16,8 @@ import { ChatWindow, type TaskControls } from "./ChatWindow";
 import { NewSessionProjectPicker } from "./NewSessionProjectPicker";
 import type { NewSessionInitialPrompt, NewSessionLaunch } from "./new-session-types";
 import type { Tab } from "./TabBar";
-import type { RightPanelHandle, RightPanelTab } from "./workspace/RightPanel";
+import type { RightPanelHandle } from "./workspace/RightPanel";
+import { rightPanelLayoutScope, useRightPanelLayout } from "@/hooks/useRightPanelLayout";
 import { RunChangesSummary } from "./workspace/RunChangesSummary";
 import { useRunFileChanges } from "./workspace/useRunFileChanges";
 import { AnswerLinkProvider } from "./AnswerLinkProvider";
@@ -73,7 +74,7 @@ import { useSideChatSettings } from "@/hooks/useSideChatSettings";
 import { useSideChatController } from "./side-chat/useSideChatController";
 import { SideChatSwitcherPopover } from "./side-chat/SideChatSwitcherPopover";
 import { SideChatCloseConfirmDialog } from "./side-chat/SideChatCloseConfirmDialog";
-import { dispatchFocusSideChatComposer, parseSideChatTabId, type SideChatTabId } from "./side-chat/side-chat-events";
+import { dispatchFocusSideChatComposer, isSideChatTab } from "./side-chat/side-chat-events";
 import sideChatStyles from "./side-chat/SideChat.module.css";
 import { extractEarlySessionTitleQuery } from "@/lib/session-title-prompt";
 import { readSessionTitleModel, readSessionTitlePrompt } from "@/lib/session-title-settings";
@@ -179,6 +180,7 @@ const FirstRunOnboarding = dynamic(() => import("./FirstRunOnboarding").then((mo
 export function AppShell() {
   const searchParams = useSearchParams();
   const [initialNavigation] = useState(() => getInitialNavigation(searchParams ?? new URLSearchParams()));
+  const [initialRoomId] = useState(() => searchParams?.get("room") ?? null);
   const [appHydrated, setAppHydrated] = useState(false);
   useEffect(() => setAppHydrated(true), []);
   useTheme();
@@ -297,7 +299,17 @@ export function AppShell() {
   const [historyControls, setHistoryControls] = useState<HistoryChatControls | null>(null);
   const historyReturnFocus = useRef<HTMLElement | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const rightPanelLayout = rightPanelLayoutScope(selectedSession?.id, selectedRoom?.id);
+  const rightPanelSessionId = selectedRoom ? roomPanelMember?.binding.sessionId ?? null : selectedSession?.id ?? null;
+  const {
+    rightPanelOpen, rightPanelTab, rightPanelMaximized, openRightPanelTools, restoredSideChatTab,
+    setRightPanelOpen, setRightPanelTab, setRightPanelMaximized, setOpenRightPanelTools, promoteDraftRightPanel, clearLegacySideChatTab,
+    closeWorkflowTab,
+  } = useRightPanelLayout(
+    rightPanelLayout,
+    rightPanelLayoutScope(initialNavigation.sessionId, initialRoomId),
+    rightPanelSessionId,
+  );
   const [subagentSelection, setSubagentSelection] = useState<SubagentSelection>();
   const subagentFocus = useRef<{ openerId: string; restore: boolean } | null>(null);
   const shownSubagent = !selectedRoom && !settingsDialogOpen && !historyDialogOpen && subagentSelection?.parentSessionId === selectedSession?.id ? subagentSelection : undefined;
@@ -305,30 +317,15 @@ export function AppShell() {
   const effectiveRightPanelOpen = (rightPanelOpen || subagentPanelOpen) && !settingsDialogOpen;
   const [subagentInspectorWide, setSubagentInspectorWide] = useState(false);
   const [rightPanelHasOpened, setRightPanelHasOpened] = useState(false);
-  const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
-  // Keep the server and first client render identical. The persisted tab is
-  // restored after hydration so React never has to replace this subtree.
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("home");
-  const rightPanelSessionId = selectedRoom ? roomPanelMember?.binding.sessionId : selectedSession?.id;
   const rightPanelScope = selectedRoom ? `room:${selectedRoom.id}:${rightPanelSessionId ?? ""}` : `chat:${rightPanelSessionId ?? `new:${sessionKey}`}`;
-  useBrowserPanelNavigation(rightPanelScope, rightPanelTab, setRightPanelOpen);
-  const previousRightPanelScope = useRef(rightPanelScope);
-  useEffect(() => {
-    const scopeChanged = previousRightPanelScope.current !== rightPanelScope;
-    previousRightPanelScope.current = rightPanelScope;
-    if (scopeChanged || !rightPanelOpen) {
-      setRightPanelTab(tab => isWorkflowSidePanelTab(tab) ? "home" : tab);
-    }
-  }, [rightPanelOpen, rightPanelScope]);
+  useBrowserPanelNavigation(rightPanelScope, rightPanelTab, setRightPanelOpen, rightPanelLayout);
   const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
-  const [restoredSideChatTab, setRestoredSideChatTab] = useState<SideChatTabId | null>(null);
-  const showAnswerBrowser = useCallback(() => { setRightPanelTab("browser"); setRightPanelOpen(true); }, []);
+  const showAnswerBrowser = useCallback(() => { setRightPanelTab("browser"); setRightPanelOpen(true); }, [setRightPanelTab, setRightPanelOpen]);
   const answerNavigation = useAnswerLinkNavigation(
     selectedRoom ? `room:${selectedRoom.id}:${roomPanelMember?.binding.sessionId ?? ""}` : `chat:${selectedSession?.id ?? "new"}`,
     showAnswerBrowser,
   );
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
-  const [rightPanelTabRestored, setRightPanelTabRestored] = useState(false);
   const [rightPanelOverlayMode, setRightPanelOverlayMode] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [piSlashCommands, setPiSlashCommands] = useState<PiSlashCommand[]>([]);
@@ -441,37 +438,6 @@ export function AppShell() {
   const chatInputRef = useRef<ChatInputHandle | null>(null);
   const sessionSidebarRef = useRef<SessionSidebarHandle>(null);
   const rightPanelRef = useRef<RightPanelHandle>(null);
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem("piora-right-panel-tab");
-    const parsedSideChat = stored ? parseSideChatTabId(stored) : null;
-    setRightPanelOpen(window.localStorage.getItem("piora-right-panel-open") === "true");
-    setRightPanelTab(stored === "automation" || stored === "review" || stored === "files" || stored === "commands" || stored === "ssh" || stored === "browser" || stored === "harmony" ? stored : "home");
-    setRestoredSideChatTab(parsedSideChat?.kind === "live" ? (stored as SideChatTabId) : null);
-    setRightPanelTabRestored(true);
-  }, []);
-
-  useEffect(() => {
-    if (restoredSideChatTab && rightPanelTab !== "home") {
-      setRestoredSideChatTab(null);
-    }
-  }, [restoredSideChatTab, rightPanelTab]);
-
-  useEffect(() => {
-    if (!rightPanelTabRestored) return;
-    if (rightPanelTab === "home" && restoredSideChatTab !== null) return;
-    if (parseSideChatTabId(rightPanelTab)?.kind === "loading") return;
-    if (isWorkflowSidePanelTab(rightPanelTab)) return;
-    window.localStorage.setItem("piora-right-panel-tab", rightPanelTab);
-  }, [restoredSideChatTab, rightPanelTab, rightPanelTabRestored]);
-
-  useEffect(() => {
-    if (rightPanelTabRestored) window.localStorage.setItem("piora-right-panel-open", String(rightPanelOpen));
-  }, [rightPanelOpen, rightPanelTabRestored]);
-
-  useEffect(() => {
-    if (!rightPanelOpen) setRightPanelMaximized(false);
-  }, [rightPanelOpen]);
 
   useEffect(() => {
     if (rightPanelOpen) setRightPanelHasOpened(true);
@@ -664,7 +630,7 @@ export function AppShell() {
     const nextOpen = !sidebarOpen;
     if (rightPanelOverlayMode && nextOpen) setRightPanelOpen(false);
     setSidebarOpen(nextOpen);
-  }, [isMobile, rightPanelOverlayMode, sidebarOpen]);
+  }, [isMobile, rightPanelOverlayMode, sidebarOpen, setRightPanelOpen]);
 
   const handleOpenProjectPicker = useCallback(() => {
     setActiveTopPanel(null);
@@ -675,7 +641,7 @@ export function AppShell() {
     setSelectedAutomationId(automationId);
     setRightPanelTab("automation");
     setRightPanelOpen(true);
-  }, []);
+  }, [setRightPanelOpen, setRightPanelTab]);
 
   useEffect(() => {
     if (!rightPanelOpen || rightPanelTab !== "automation") setSelectedAutomationId(null);
@@ -865,7 +831,6 @@ export function AppShell() {
   }, []);
 
   const initialSessionId = initialNavigation.sessionId;
-  const initialRoomId = searchParams?.get("room") ?? null;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
   const [activeProjectRoot, setActiveProjectRoot] = useState<string | null>(null);
   const activeProjectRootRef = useRef<string | null>(null);
@@ -1266,7 +1231,7 @@ export function AppShell() {
     setRoomBrowser({ roomId: selectedRoom.id, sessionId, manual: !options?.automatic });
     setRightPanelTab("browser");
     setRightPanelOpen(true);
-  }, [rightPanelOpen, roomBrowser, selectedRoom]);
+  }, [rightPanelOpen, roomBrowser, selectedRoom, setRightPanelOpen, setRightPanelTab]);
 
   const handleOpenDesktopUpdate = useCallback(() => {
     if (desktopUpdateInstallPendingRef.current) return;
@@ -1373,7 +1338,7 @@ export function AppShell() {
       }
     });
     return unsubscribe;
-  }, [handleOpenDesktopUpdate, handleOpenProjectPicker, handleRequestNewSession, handleSidebarToggle, openSettings, setCompanionOpen, toggleCompanion]);
+  }, [handleOpenDesktopUpdate, handleOpenProjectPicker, handleRequestNewSession, handleSidebarToggle, openSettings, setCompanionOpen, setRightPanelOpen, setRightPanelTab, toggleCompanion]);
 
   // Electron's titleBarOverlay does not make the browser-only
   // `(display-mode: window-controls-overlay)` media query true. Use the
@@ -1505,6 +1470,7 @@ export function AppShell() {
 
   // Called by ChatWindow when a new session gets its real id from pi
   const handleSessionCreated = useCallback((session: SessionInfo) => {
+    promoteDraftRightPanel(session.id);
     setNewSessionCwd(null);
     setNewSessionInitialModel(null);
     setNewSessionInitialPrompt(null);
@@ -1516,7 +1482,7 @@ export function AppShell() {
       const seedQuery = extractEarlySessionTitleQuery(session.firstMessage);
       if (seedQuery) void optimizeUnnamedSessionTitle(session.id, { seedQuery });
     }
-  }, [hydrateSelectedSession, optimizeUnnamedSessionTitle]);
+  }, [hydrateSelectedSession, optimizeUnnamedSessionTitle, promoteDraftRightPanel]);
 
   useEffect(() => {
     const running = new Set(runningTaskSnapshots.filter((snapshot) => snapshot.runtime !== "idle").map((snapshot) => snapshot.id));
@@ -1572,7 +1538,7 @@ export function AppShell() {
 
   const handleCloseRightPanel = useCallback(() => {
     setRightPanelOpen(false);
-  }, []);
+  }, [setRightPanelOpen]);
 
   const handleOpenShellSettings = useCallback(() => {
     setSettingsKey("shell");
@@ -1587,7 +1553,7 @@ export function AppShell() {
     }
     if (prompt?.trim()) chatInputRef.current?.prependText(prompt);
     window.requestAnimationFrame(() => chatInputRef.current?.focus());
-  }, [selectedRoom, roomPanelMember?.binding.sessionId]);
+  }, [selectedRoom, roomPanelMember?.binding.sessionId, setRightPanelMaximized]);
 
   const handleAutomationChanged = useCallback(() => {
     setSessionKey((key) => key + 1);
@@ -1675,7 +1641,7 @@ export function AppShell() {
     setRightPanelOpen(true);
     // On mobile the file panel is full-screen; close the drawer so it shows.
     if (isMobile) setSidebarOpen(false);
-  }, [workspaceCwd, isMobile]);
+  }, [workspaceCwd, isMobile, setRightPanelOpen, setRightPanelTab]);
 
   const handleOpenLinkedFile = useCallback((filePath: string) => {
     const cwd = selectedSession?.cwd ?? newSessionCwd ?? activeCwd ?? undefined;
@@ -1705,7 +1671,7 @@ export function AppShell() {
       const nextIndex = Math.min(closingIndex, remaining.length - 1);
       setActiveFileTabId(nextIndex >= 0 ? remaining[nextIndex].id : null);
     }
-  }, [activeFileTabId, confirmDiscardFileTabs, fileTabs]);
+  }, [activeFileTabId, confirmDiscardFileTabs, fileTabs, setRightPanelOpen]);
 
   const handleCloseOtherFileTabs = useCallback(async (tabId: string) => {
     const target = fileTabs.find((tab) => tab.id === tabId);
@@ -1741,7 +1707,7 @@ export function AppShell() {
     setActiveFileTabId(reopenableClosedFileTab.id);
     setRightPanelTab("files");
     setRightPanelOpen(true);
-  }, [reopenableClosedFileTab]);
+  }, [reopenableClosedFileTab, setRightPanelOpen, setRightPanelTab]);
 
   useEffect(() => {
     const handleReopenShortcut = (event: KeyboardEvent) => {
@@ -1813,7 +1779,7 @@ export function AppShell() {
     if (rightPanelOverlayMode) setSidebarOpen(false);
     setRightPanelTab("review");
     setRightPanelOpen(true);
-  }, [rightPanelOverlayMode]);
+  }, [rightPanelOverlayMode, setRightPanelOpen, setRightPanelTab]);
 
   const runFileSessionId = selectedRoom ? roomPanelMember?.binding.sessionId ?? null : selectedSession?.id ?? null;
   const runFileSessionRunning = runningTaskSnapshots.some(snapshot => snapshot.id === runFileSessionId
@@ -1830,7 +1796,7 @@ export function AppShell() {
     setFileNavMode("run");
     setRightPanelTab("files");
     setRightPanelOpen(true);
-  }, [rightPanelOverlayMode, runFilesOpen]);
+  }, [rightPanelOverlayMode, runFilesOpen, setRightPanelOpen, setRightPanelTab]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
   const effectiveNewSessionCwd = newSessionCwd;
@@ -2016,10 +1982,11 @@ export function AppShell() {
       window.removeEventListener("piora:open-agent-browser", onOpenAgentBrowser);
       window.removeEventListener(OPEN_WORKFLOW_PANEL_EVENT, onOpenWorkflowPanel);
     };
-  }, [rightPanelSessionId]);
+  }, [rightPanelSessionId, setRightPanelOpen, setRightPanelTab]);
 
   const sideChatSettings = useSideChatSettings();
   const sideChatEnabled = sideChatSettings.enabled && !selectedRoom;
+  const visibleRightPanelTab = !sideChatSettings.ready && isSideChatTab(rightPanelTab) ? "home" : rightPanelTab;
   const sideChatButtonRef = useRef<HTMLButtonElement | null>(null);
   const [sideChatSwitcherOpen, setSideChatSwitcherOpen] = useState(false);
   const parentSideChatSnapshot = useMemo(
@@ -2033,20 +2000,17 @@ export function AppShell() {
     setRefreshKey((key) => key + 1);
     void handleSelectSession(promotedSession);
   }, [handleSelectSession]);
-  const handleRestoredSideChatTabHandled = useCallback(() => {
-    setRestoredSideChatTab(null);
-  }, []);
   const sideChat = useSideChatController({
     enabled: sideChatEnabled,
     parentSession: selectedRoom ? null : selectedSession,
     parentSnapshot: parentSideChatSnapshot,
     parentRunning: Boolean(taskControls?.disabled),
     rightPanelOpen: rightPanelOpen && !subagentSelection && !settingsDialogOpen,
-    rightPanelTab,
+    rightPanelTab: visibleRightPanelTab,
     setRightPanelOpen,
     setRightPanelTab,
-    restoredSideChatTab,
-    onRestoredSideChatTabHandled: handleRestoredSideChatTabHandled,
+    restoredSideChatTab: sideChatSettings.ready ? restoredSideChatTab : null,
+    onRestoredSideChatTabHandled: clearLegacySideChatTab,
     onPromotedSession: handlePromotedSideChat,
     onJumpToParent: handleJumpToMainChat,
     onOpenFile: handleOpenLinkedFile,
@@ -2100,7 +2064,7 @@ export function AppShell() {
       }, 0);
     },
     "git.refresh": handleExplorerRefresh,
-  }), [currentProjectCwd, handleExplorerRefresh, handleNewSessionInCurrentProject, handleOpenProjectPicker, handleTaskExport, handleTaskRename, handleViewFullHistory, openSettings, sideChat]);
+  }), [currentProjectCwd, handleExplorerRefresh, handleNewSessionInCurrentProject, handleOpenProjectPicker, handleTaskExport, handleTaskRename, handleViewFullHistory, openSettings, setRightPanelOpen, setRightPanelTab, sideChat]);
   const commandContext = useMemo<CommandContext>(() => ({
     hasProject: Boolean(currentProjectCwd),
     hasSession: Boolean(selectedSession),
@@ -3319,15 +3283,18 @@ export function AppShell() {
             />
           </ContinueSubagentContext.Provider>
         )}
-        {rightPanelHasOpened ? <div hidden={Boolean(shownSubagent)} style={{ height: "100%", minHeight: 0 }}><RightPanel
+        {rightPanelHasOpened || rightPanelOpen ? <div hidden={Boolean(shownSubagent)} style={{ height: "100%", minHeight: 0 }}><RightPanel
           ref={rightPanelRef}
           answerNavigation={answerNavigation.request}
           onAnswerNavigationConsumed={answerNavigation.consume}
-          activeTab={rightPanelTab}
+          activeTab={visibleRightPanelTab}
           onActiveTabChange={setRightPanelTab}
           fileNavMode={fileNavMode}
           onFileNavModeChange={setFileNavMode}
           runFileChanges={runFileChanges}
+          openTools={openRightPanelTools}
+          onOpenToolsChange={setOpenRightPanelTools}
+          onCloseWorkflowTab={closeWorkflowTab}
           maximized={rightPanelMaximized}
           onMaximizedChange={setRightPanelMaximized}
           onClosePanel={handleCloseRightPanel}
@@ -3358,7 +3325,7 @@ export function AppShell() {
               {selectedRoom.members.map((member) => <option key={member.memberId} value={member.binding.sessionId}>{member.profile.name}</option>)}
             </select>
           </div> : undefined}
-          sessionId={rightPanelSessionId ?? null}
+          sessionId={rightPanelSessionId}
           sessionName={selectedRoom ? roomPanelMember?.profile.name : selectedSession?.name}
           sessionRunning={Boolean(taskControls?.disabled)}
           onOpenShellSettings={handleOpenShellSettings}

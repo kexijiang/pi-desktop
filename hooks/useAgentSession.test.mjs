@@ -11,7 +11,7 @@ const { NestedToolCallsStore } = await createJiti(import.meta.url).import("../li
 const { buildLocalFilePrompt } = await createJiti(import.meta.url).import("../lib/file-attachments.ts");
 const { normalizeToolCalls } = await createJiti(import.meta.url).import("../lib/normalize.ts");
 const { replaceFailedPromptMessage } = await createJiti(import.meta.url).import("../lib/prompt-recovery.ts");
-const { chatHistoryUrl } = await createJiti(import.meta.url).import("../lib/chat-history-client.ts");
+const { chatHistoryUrl, isSessionChatHistory, readChatHistorySnapshot } = await createJiti(import.meta.url).import("../lib/chat-history-client.ts");
 const { persistentChatInputOptions } = await createJiti(import.meta.url).import("../lib/chat-command-input.ts");
 const { PromptErrorNotices } = await createJiti(import.meta.url).import("../lib/prompt-error-notices.ts");
 const { getAssistantErrorMessage } = await createJiti(import.meta.url).import("../lib/message-display.ts");
@@ -487,7 +487,8 @@ test("old prompt settlement responses cannot close a new prompt run", async () =
 
 function sessionMountHarness(response) {
   const h = promptSettlementHarness();
-  const mount = source.slice(source.indexOf("  // Load session on mount"), source.indexOf("  useEffect(() => {\n    const sid = sessionIdRef.current;", source.indexOf("  // Load session on mount")));
+  const mountEnd = "}, [sessionLoadAttempt]);";
+  const mount = source.slice(source.indexOf("  // Load session on mount"), source.indexOf(mountEnd) + mountEnd.length);
   for (const name of new Set(mount.match(/\b\w+Ref\b/g))) {
     if (!(name in h.env)) h.env[name] = { current: null };
   }
@@ -498,7 +499,7 @@ function sessionMountHarness(response) {
   Object.assign(h.env, {
     session: { id: "session-a" }, initialSessionData: null, initiallyRunning: false, sessionLoadAttempt: 0, response,
     useEffect: callback => { h.cleanup = callback(); }, cancelPendingSessionPrefetch() {},
-    invalidatePrefetchedSession() {}, connectEvents: async sid => h.calls.push(["connect", sid]),
+    connectEvents: async sid => h.calls.push(["connect", sid]),
     loadSession: async sid => { h.calls.push(["load", sid]); return h.env.response; },
   });
   const js = ts.transpileModule(mount, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
@@ -1155,8 +1156,9 @@ function sessionLoadHarness(overrides = {}) {
     acceptToolPermission: value => { env.permission = value; },
     sessionLoadAbortRef: { current: null }, sessionIdRef: { current: "session" }, promptRunIdRef: { current: 0 },
     failedPromptErrorsRef: { current: new Map() },
-    translateRef: { current: key => key }, invalidatePrefetchedSession() {},
-    peekPrefetchedSession: () => null, takePrefetchedSession: () => env.history,
+    translateRef: { current: key => key }, invalidatePrefetchedSession() {}, cancelPendingSessionPrefetch() {}, forgetSessionHistory() {}, retainSessionHistory() {},
+    isSessionChatHistory, readChatHistorySnapshot,
+    takePrefetchedSession: async () => { const data = await env.history; return data ? { data, byteLength: 100, etag: null } : null; },
     setTimeout: callback => { env.expire = callback; return 1; }, clearTimeout() {},
     readPendingPrompts: async () => [], mergePendingPrompts: messages => ({ messages, entryIds: [], confirmedIds: [] }),
     restoreChatHistory: async (sid, data) => env.mergePendingPrompts(data.context.messages, data.context.entryIds, await env.readPendingPrompts(sid), data.persistedPromptIds),
@@ -1672,7 +1674,7 @@ test("historical context excludes unconfirmed recovery copies without deleting t
   const js = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const pending = [{ id: "pending" }];
   const env = { editedBranchRef: { current: null }, activeLeafId: null, data: null, entryIds: [], useCallback: fn => fn, promptRunIdRef: { current: 1 }, historyRevisionRef: { current: 0 }, sessionIdRef: { current: "session" }, URLSearchParams,
-    chatHistoryUrl, invalidatePrefetchedSession() {},
+    chatHistoryUrl, forgetSessionHistory() {},
     fetch: async () => ({ ok: true, json: async () => ({ context: { messages: ["ancestor"], entryIds: ["parent"] } }) }),
     readPendingPrompts: async () => pending, mergePendingPrompts: () => ({ messages: ["ancestor", "later failure"], entryIds: ["parent", ""], confirmedIds: [] }),
     setMessages: value => { env.messages = value; }, setEntryIds: value => { env.ids = value; }, setModelChanges: value => { env.modelChanges = value; }, confirmPendingPrompts: async ids => { assert.deepEqual(ids, []); } };

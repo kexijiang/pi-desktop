@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import { useI18n } from "@/hooks/useI18n";
@@ -18,7 +18,7 @@ import { AutomationPanel } from "../AutomationPanel";
 import { SSHPanel } from "./SSHPanel";
 import { PlanSidePanelTab } from "../workflow/PlanSidePanelTab";
 import { GoalSidePanelTab } from "../workflow/GoalSidePanelTab";
-import { isWorkflowSidePanelTab } from "../workflow/workflow-events";
+import { isWorkflowSidePanelTab, type WorkflowSidePanelTab } from "../workflow/workflow-events";
 import { RunChangesPane } from "./RunChangesPane";
 import { RunChangesDetail } from "./RunChangesDetail";
 import {
@@ -27,7 +27,6 @@ import {
   parseSideChatTabId,
   toSideChatLoadingTabId,
   toSideChatTabId,
-  type SideChatTabId,
 } from "../side-chat/side-chat-events";
 import {
   SideChatMenuEntries,
@@ -38,9 +37,9 @@ import {
 import type { SessionCapabilitiesState } from "@/lib/session-capabilities";
 import type { BrowserNavigationRequest } from "@/lib/answer-links";
 import type { PromptFileChanges } from "@/lib/prompt-file-changes";
+import type { RightPanelTab, RightPanelToolTab } from "@/hooks/useRightPanelLayout";
 
-type StaticToolTab = "automation" | "review" | "files" | "commands" | "ssh" | "browser" | "design" | "harmony" | "plan" | "goal";
-export type RightPanelTab = "home" | StaticToolTab | SideChatTabId;
+export type { RightPanelTab } from "@/hooks/useRightPanelLayout";
 export interface RightPanelHandle { focusActiveTab: () => void; focusFileSearch: () => void; }
 
 interface Props {
@@ -51,6 +50,9 @@ interface Props {
   contextHeader?: ReactNode;
   activeTab: RightPanelTab;
   onActiveTabChange: (tab: RightPanelTab) => void;
+  openTools: RightPanelToolTab[];
+  onOpenToolsChange: Dispatch<SetStateAction<RightPanelToolTab[]>>;
+  onCloseWorkflowTab: () => void;
   cwd: string | null;
   refreshKey: number;
   active: boolean;
@@ -86,7 +88,7 @@ interface Props {
   capabilities: SessionCapabilitiesState | null;
 }
 
-const TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; shortcut?: string; labelKey?: string }> = [
+const TOOLS: Array<{ id: RightPanelToolTab; icon: AliIconName; shortcut?: string; labelKey?: string }> = [
   { id: "automation", icon: "calendar" },
   { id: "review", icon: "diff", shortcut: "Ctrl+Shift+G" },
   { id: "commands", icon: "code" },
@@ -98,7 +100,7 @@ const TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; shortcut?: string; la
   { id: "files", icon: "folder-open", shortcut: "Ctrl+P" },
 ];
 
-const DYNAMIC_TOOLS: Array<{ id: StaticToolTab; icon: AliIconName; labelKey: string }> = [
+const DYNAMIC_TOOLS: Array<{ id: WorkflowSidePanelTab; icon: AliIconName; labelKey: string }> = [
   { id: "plan", icon: "list-check", labelKey: "workflow.plan.panelTitle" },
   { id: "goal", icon: "target", labelKey: "workflow.goal.panelTitle" },
 ];
@@ -110,7 +112,7 @@ const DesignToHarmonyPanel = dynamic(
   { ssr: false },
 );
 
-type ToolTab = StaticToolTab;
+type ToolTab = RightPanelToolTab;
 const TREE_SPLIT_KEY = "piora-file-tree-share";
 const TREE_HANDLE_WIDTH = 6;
 
@@ -186,7 +188,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
   const browsingRunFiles = fileNavMode === "run";
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [addMenuPosition, setAddMenuPosition] = useState({ left: 8, top: 48, width: 278 });
-  const [openTools, setOpenTools] = useState<ToolTab[]>(() => activeTab === "home" || isSideChatTab(activeTab) || isWorkflowSidePanelTab(activeTab) ? [] : [activeTab]);
+  const { openTools, onOpenToolsChange: setOpenTools } = props;
   const [filesHasOpened, setFilesHasOpened] = useState(activeTab === "files");
   const [draggedTool, setDraggedTool] = useState<ToolTab | null>(null);
   const [dropTargetTool, setDropTargetTool] = useState<ToolTab | null>(null);
@@ -329,13 +331,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     if (activeTab === "files") setFilesHasOpened(true);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (activeTab === "home" || isSideChatTab(activeTab) || isWorkflowSidePanelTab(activeTab)) return;
-    setOpenTools((current) => current.includes(activeTab) ? current : [...current, activeTab]);
-  }, [activeTab]);
-
   const selectTool = (tab: ToolTab) => {
-    setOpenTools((current) => current.includes(tab) ? current : [...current, tab]);
     onActiveTabChange(tab);
     setAddMenuOpen(false);
   };
@@ -344,9 +340,9 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
     activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTab, openTools]);
 
-  const closeTool = (tab: ToolTab) => {
+  const closeTool = (tab: ToolTab | WorkflowSidePanelTab) => {
     if (isWorkflowSidePanelTab(tab)) {
-      onActiveTabChange(openTools.at(-1) ?? "home");
+      props.onCloseWorkflowTab();
       return;
     }
     const closingIndex = openTools.indexOf(tab);
@@ -405,7 +401,7 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
           const tool = ALL_TOOLS.find((candidate) => candidate.id === toolId);
           if (!tool) return null;
           const selected = activeTab === tool.id;
-          const contextual = isWorkflowSidePanelTab(tool.id);
+          const contextual = isWorkflowSidePanelTab(toolId);
           return <div
             key={tool.id}
             className={styles.activeToolTab}
@@ -414,20 +410,22 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
             data-drop-target={dropTargetTool === tool.id ? "true" : undefined}
             draggable={!contextual}
             onDragStart={(event) => {
-              setDraggedTool(tool.id);
+              if (contextual) return;
+              setDraggedTool(toolId);
               event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/piora-tool-tab", tool.id);
+              event.dataTransfer.setData("text/piora-tool-tab", toolId);
             }}
             onDragOver={(event) => {
-              if (contextual || !draggedTool || draggedTool === tool.id) return;
+              if (contextual || !draggedTool || draggedTool === toolId) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
-              setDropTargetTool(tool.id);
+              setDropTargetTool(toolId);
             }}
             onDrop={(event) => {
+              if (contextual) return;
               event.preventDefault();
-              const source = (draggedTool ?? event.dataTransfer.getData("text/piora-tool-tab")) as ToolTab;
-              if (ALL_TOOLS.some((candidate) => candidate.id === source)) moveTool(source, tool.id);
+              const source = draggedTool ?? openTools.find((id) => id === event.dataTransfer.getData("text/piora-tool-tab"));
+              if (source) moveTool(source, toolId);
               setDraggedTool(null);
               setDropTargetTool(null);
             }}
