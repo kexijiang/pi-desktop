@@ -17,9 +17,14 @@ const { PromptErrorNotices } = await createJiti(import.meta.url).import("../lib/
 const { getAssistantErrorMessage } = await createJiti(import.meta.url).import("../lib/message-display.ts");
 const { interruptionFromCommandState } = await createJiti(import.meta.url).import("../lib/prompt-interruption.ts");
 const { classifyWorkflowLoadException, parseWorkflowLoadResponseError } = await createJiti(import.meta.url).import("../lib/workflow-client-error.ts");
+const { clearWorkflowSnapshotCache, mergeWorkflowSnapshot } = await createJiti(import.meta.url).import("../lib/workflow/client-cache.ts");
 
 const source = (await readFile(new URL("./useAgentSession.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const commandSource = (await readFile(new URL("./useChatCommandOperations.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const inlineWorkflowCallback = source.slice(
+  source.indexOf("  const applyInlineWorkflow = useCallback"),
+  source.indexOf("  const viewMountedRef = useRef"),
+);
 
 function historyHarness(overrides = {}) {
   const callbacks = source.slice(source.indexOf("  const switchHistoryBranch = useCallback"), source.indexOf("  const handleModelChange = useCallback"));
@@ -534,7 +539,8 @@ function promptSubmissionHarness(overrides = {}) {
     for (const [name, value] of Object.entries(extra)) if (!(name in h.env)) h.env[name] = value;
   }
   const reviewCallback = source.slice(source.indexOf("  const acceptToolReviews = useCallback"), source.indexOf("  useEffect(() => {", source.indexOf("  const acceptToolReviews = useCallback")));
-  const callbacks = reviewCallback + source.slice(source.indexOf("  const handleAgentEvent = useCallback"), source.indexOf("  handleAgentEventRef.current = handleAgentEvent;"))
+  const callbacks = inlineWorkflowCallback + reviewCallback
+    + source.slice(source.indexOf("  const handleAgentEvent = useCallback"), source.indexOf("  handleAgentEventRef.current = handleAgentEvent;"))
     + source.slice(source.indexOf("  const resumeQueuedInput = useCallback"), source.indexOf("  const timingPromptIds = useMemo"))
     + source.slice(source.indexOf("  const handleSend = useCallback"), source.indexOf("  const executeBash = useCallback"))
     + source.slice(source.indexOf("  const handleAbort = useCallback"), source.indexOf("  const handleDeleteMessage = useCallback"));
@@ -548,6 +554,7 @@ function promptSubmissionHarness(overrides = {}) {
     reviews: [], setToolReviews: update => { h.env.reviews = typeof update === "function" ? update(h.env.reviews) : update; },
     reduceAgentPhase: (_phase, event) => ({ kind: event.type }), isRunProgressEvent: () => true,
     handleExtensionUiRequest() {}, refreshContextUsage() {},
+    clearWorkflowSnapshotCache, mergeWorkflowSnapshot,
     onPromptStarted: undefined,
     userMessageHasPromptMaterialMarker: () => false,
     normalizeToolCalls,
@@ -1147,7 +1154,8 @@ test("cancels stale session loads when switching tasks", () => {
 });
 
 function sessionLoadHarness(overrides = {}) {
-  const load = source.slice(source.indexOf("  const loadSession = useCallback"), source.indexOf("  const loadContext = useCallback"));
+  const load = inlineWorkflowCallback
+    + source.slice(source.indexOf("  const loadSession = useCallback"), source.indexOf("  const loadContext = useCallback"));
   const env = {
     nestedCallsStore: new NestedToolCallsStore(), statsRefreshSequence: { current: 0 },
     chatHistoryUrl,
@@ -1158,6 +1166,11 @@ function sessionLoadHarness(overrides = {}) {
     failedPromptErrorsRef: { current: new Map() },
     translateRef: { current: key => key }, invalidatePrefetchedSession() {}, cancelPendingSessionPrefetch() {}, forgetSessionHistory() {}, retainSessionHistory() {},
     isSessionChatHistory, readChatHistorySnapshot,
+    clearWorkflowSnapshotCache, mergeWorkflowSnapshot, workflowSnapshot: null, workflowCorrupt: false,
+    setLiveWorkflowSnapshot: update => {
+      env.workflowSnapshot = typeof update === "function" ? update(env.workflowSnapshot) : update;
+    },
+    setLiveWorkflowCorrupt: value => { env.workflowCorrupt = value; },
     takePrefetchedSession: async () => { const data = await env.history; return data ? { data, byteLength: 100, etag: null } : null; },
     setTimeout: callback => { env.expire = callback; return 1; }, clearTimeout() {},
     readPendingPrompts: async () => [], mergePendingPrompts: messages => ({ messages, entryIds: [], confirmedIds: [] }),
@@ -1183,6 +1196,24 @@ test("session hydration restores model-change metadata and clears it for an olde
   env.history = Promise.resolve({ context: { messages: [], entryIds: [] }, leafId: "reply" });
   await run("session", false, false, selected);
   assert.deepEqual(env.setModelChangesValue, []);
+});
+
+test("session history seeds the current workflow and reports corruption without dropping the chat", async () => {
+  const { env, run } = sessionLoadHarness();
+  const selected = { id: "session", modified: "one" };
+  const chat = { context: { messages: [], entryIds: [] }, leafId: null };
+  const snapshot = { sessionId: "session", revision: 4, mode: "goal", turnBudget: 8, current: null, history: [] };
+  env.history = Promise.resolve({ ...chat, workflowSnapshot: snapshot, workflowStateStatus: "ok" });
+  await run("session", false, false, selected);
+  assert.deepEqual(env.workflowSnapshot, snapshot);
+  assert.equal(env.workflowCorrupt, false);
+
+  env.history = Promise.resolve({ ...chat, workflowStateStatus: "corrupt" });
+  await run("session", false, false, selected);
+  assert.equal(env.workflowSnapshot, null);
+  assert.equal(env.workflowCorrupt, true);
+  assert.deepEqual(env.setMessagesValue, []);
+  assert.equal(env.setErrorValue, null);
 });
 
 test("model selection refreshes saved notices after success and keeps the reply visible", async () => {
