@@ -1,1 +1,0 @@
-- 修复历史会话频繁冷启动与 MCP stdio 子进程堆积：移除切换会话时的无条件 `loadSlashCommands()` 冷拉起，为冷会话 `get_commands` 提供轻量只读路径并对冷会话 `abort*`/`restart_extensions` 短路，改造 `auto-name` 与自动化卡片写入不再启动完整会话，非 MCP 子代理跳过 `NativeMcpController`；新增闲置会话 LRU 淘汰与满额先淘汰再限流的 MCP 连接保护，在 `destroy()` 起始即关闭 MCP 传输并阻断迟到 `session_start`，同时在 Windows 桌面与非桌面环境补齐 Job Object / 退出清理兜底（#555）。
