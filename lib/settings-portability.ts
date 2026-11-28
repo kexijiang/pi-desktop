@@ -1,12 +1,14 @@
 import {
   BACKGROUND_PREFERENCE_STORAGE_KEY,
   BACKGROUND_PRESETS,
+  normalizeBackgroundPreference,
   parseStoredBackgroundPreference,
   serializeBackgroundPreference,
   type BackgroundPreference,
 } from "./backgrounds.ts";
 import {
   FONT_PREFERENCE_STORAGE_KEY,
+  isCodeFontSize,
   isUiFontId,
   isUiFontSize,
   isUiFontWeight,
@@ -95,8 +97,20 @@ const PREFERENCE_KEYS = new Set<PortableSettingKey>([
   "completionNotifications",
   "globalShortcut",
 ]);
-const BACKGROUND_KEYS = new Set(["schemaVersion", "source", "presetId", "overlay", "blur"]);
-const FONT_KEYS = new Set(["schemaVersion", "family", "size", "weight"]);
+const BACKGROUND_KEYS = new Set([
+  "schemaVersion",
+  "source",
+  "presetId",
+  "overlay",
+  "blur",
+  "sidebarOverlay",
+  "filePanelOverlay",
+  "motionEnabled",
+  "live2dEnabled",
+  "agentReactiveEnabled",
+  "performanceEnabled",
+]);
+const FONT_KEYS = new Set(["schemaVersion", "family", "size", "codeSize", "weight"]);
 const BACKGROUND_IDS = new Set(BACKGROUND_PRESETS.map((preset) => preset.id));
 const DIFF_ORDER: PortableSettingKey[] = ["theme", "background", "font", "interfaceTransparency", "locale", "completionNotifications", "globalShortcut"];
 
@@ -112,20 +126,38 @@ function isLocale(value: unknown): value is Locale {
   return value === "en" || value === "zh-CN";
 }
 
+function isOptionalOverlay(value: unknown): boolean {
+  return value === undefined || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 90);
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
 function isPortableBackground(value: unknown): value is BackgroundPreference {
   if (!isRecord(value) || !hasOnlyKeys(value, BACKGROUND_KEYS) || value.schemaVersion !== 1) return false;
   if (!Number.isInteger(value.overlay) || (value.overlay as number) < 0 || (value.overlay as number) > 90) return false;
   if (!Number.isInteger(value.blur) || (value.blur as number) < 0 || (value.blur as number) > 24) return false;
+  if (!isOptionalOverlay(value.sidebarOverlay) || !isOptionalOverlay(value.filePanelOverlay)) return false;
+  if (!isOptionalBoolean(value.motionEnabled)
+    || !isOptionalBoolean(value.live2dEnabled)
+    || !isOptionalBoolean(value.agentReactiveEnabled)
+    || !isOptionalBoolean(value.performanceEnabled)) {
+    return false;
+  }
   if (value.source === "none") return value.presetId === null;
   return value.source === "builtin" && typeof value.presetId === "string" && BACKGROUND_IDS.has(value.presetId);
 }
 
-function isPortableFont(value: unknown): value is Omit<FontPreference, "weight"> & Partial<Pick<FontPreference, "weight">> {
+function isPortableFont(
+  value: unknown,
+): value is Omit<FontPreference, "weight" | "codeSize"> & Partial<Pick<FontPreference, "weight" | "codeSize">> {
   return isRecord(value)
     && hasOnlyKeys(value, FONT_KEYS)
     && value.schemaVersion === 1
     && isUiFontId(value.family)
     && isUiFontSize(value.size)
+    && (value.codeSize === undefined || isCodeFontSize(value.codeSize))
     && (value.weight === undefined || isUiFontWeight(value.weight));
 }
 
@@ -214,7 +246,7 @@ export function parsePortableSettings(text: string): PortableSettingsBundle {
     excluded: [...new Set(value.excluded)] as PortableSettingsExclusion[],
     preferences: {
       theme: preferences.theme,
-      ...(preferences.background ? { background: preferences.background } : {}),
+      ...(preferences.background ? { background: normalizeBackgroundPreference(preferences.background) } : {}),
       font: normalizeFontPreference(preferences.font),
       ...(preferences.interfaceTransparency !== undefined ? { interfaceTransparency: preferences.interfaceTransparency as number } : {}),
       locale: preferences.locale,

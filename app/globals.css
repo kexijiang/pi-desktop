@@ -3740,6 +3740,7 @@ select:focus-visible,
 .file-change-additions { color: var(--diff-added-text, #3fb950); }
 .file-change-deletions { color: var(--diff-removed-text, #f85149); }
 .file-change-diff {
+  --diff-code-font-size: max(13px, calc(var(--code-font-size) - 1px));
   max-height: min(520px, 55vh);
   overflow: auto;
   /* Chain the wheel to the conversation when this diff has nothing left to
@@ -4243,7 +4244,7 @@ select:focus-visible,
 }
 
 :root {
-  --font-code-family: var(--font-noto-mono), 'JetBrains Mono', 'Fira Code', 'Consolas', ui-monospace, 'PingFang SC', 'Microsoft YaHei', monospace;
+  --font-code-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', var(--font-noto-mono), ui-monospace, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', monospace;
   /* Legacy component references now mean interface text, so one font choice
      reaches every panel. Code-specific surfaces use --font-code-family. */
   --font-mono: var(--ui-font-family);

@@ -130,6 +130,8 @@ const assets = [
     ["scheduled-task recurrence runtime helpers", "tslib"],
     // ConPTY DLLs and native bindings are loaded by computed paths.
     ["interactive terminal runtime", "node-pty"],
+    ["workspace file handle runtime", "koffi"],
+    ["workspace file handle native binding", join("@koromix", "koffi-" + process.platform + "-" + process.arch)],
     // Code intelligence loads TypeScript from a worker by computed path.
     ["TypeScript language service", "typescript"],
     ["TypeScript language service implementation", "@typescript/old"],

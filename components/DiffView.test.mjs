@@ -30,8 +30,13 @@ test("degrades empty, binary, and very large patches", () => {
   assert.doesNotMatch(source, /setShowAll\(true\)/);
 });
 
-test("uses syntax highlighting and exposes copy and open-file actions", () => {
+test("uses IDEA-aligned code font tokens, inline word diff, and exposes copy and open-file actions", () => {
   assert.match(source, /react-syntax-highlighter/);
+  assert.match(source, /buildInlineDiffMap/);
+  assert.match(source, /intellijDarkDiffTheme/);
+  assert.match(source, /intellijLightDiffTheme/);
+  assert.match(styles, /font-family:\s*var\(--font-code-family\)/);
+  assert.match(styles, /font-size:\s*var\(--diff-code-font-size,\s*var\(--code-font-size\)\)/);
   assert.match(source, /navigator\.clipboard\.writeText/);
   assert.match(source, /onOpenFile\(displayPath, firstLine\(file\)\)/);
 });
@@ -63,4 +68,13 @@ test("long code lines stay intact and scroll inside both bounded diff surfaces",
   assert.doesNotMatch(globalStyles, /\.file-change-diff\s*\{[^}]*overscroll-behavior:\s*contain;/s);
   assert.match(reviewPanel, /className=\{styles\.reviewDiff\}/);
   assert.match(workspaceStyles, /\.reviewDiff\s*\{[^}]*height:\s*100%;[^}]*max-width:\s*100%;/s);
+});
+
+test("propagates wrap to syntax highlighter, overlays inline diff over whole-line tokens, and keeps wallpaper backdrop stable", () => {
+  assert.match(source, /wrapLongLines=\{wrap\}/);
+  assert.match(source, /codeTagProps=\{wrap \? CODE_TAG_WRAP_PROPS : CODE_TAG_NOWRAP_PROPS\}/);
+  assert.match(source, /buildInlineDiffMapForFiles\(parsed\.files\)/);
+  assert.match(source, /renderHastWithInlineRanges/);
+  assert.match(styles, /\.root\[data-wrap="true"\]\s+\.code,\s*\.root\[data-wrap="true"\]\s+\.splitCode\s*\{[^}]*white-space:\s*pre-wrap;/s);
+  assert.match(styles, /data-app-background-active="true".*\.root/s);
 });

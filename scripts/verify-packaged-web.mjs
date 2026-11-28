@@ -971,6 +971,11 @@ async function main() {
     throw new Error(`Packaged web container must contain the launcher, runtime archive and native sidecar: ${packagedWebEntries.join(", ")}`);
   }
   await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "node_modules", "node-pty", "package.json"));
+  await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "node_modules", "koffi", "index.cjs"));
+  if (process.platform === "win32") {
+    await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "node_modules", "@koromix",
+      "koffi-" + process.platform + "-" + process.arch, process.platform + "_" + process.arch, "koffi.node"));
+  }
   for (const name of ["store-worker.cjs", "history-import.cjs", "integration.ps1", "integration.bash", "integration.zsh"]) {
     await assertFile(join(`${packagedRuntimeArchive}.unpacked`, "lib", "shell", "runtime", name));
   }

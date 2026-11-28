@@ -93,6 +93,7 @@ const nextConfig: NextConfig = {
   },
   serverExternalPackages: [
     "@modelcontextprotocol/sdk",
+    "koffi",
     "node-pty",
     "undici",
     "@earendil-works/pi-coding-agent",
@@ -134,6 +135,7 @@ const nextConfig: NextConfig = {
     // from its mock tooling and breaks the dev compiler.
     if (isServer && Array.isArray(config.externals)) {
       config.externals.push(
+        "koffi",
         "node-pty",
         /^node:/,
         "undici",

@@ -5,6 +5,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useLaboratorySettings } from "@/hooks/useLaboratorySettings";
 import { formatStatusDuration } from "@/lib/status-duration";
 import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
+import { cacheWorkflowSnapshot, clearWorkflowSnapshotCache, peekWorkflowSnapshot } from "@/lib/workflow/client-cache";
 import {
   MAX_WORKFLOW_TURN_BUDGET,
   type WorkflowActionName,
@@ -51,7 +52,7 @@ export function GoalSidePanelTab({
   const { t } = useI18n();
   const laboratory = useLaboratorySettings();
   const enabled = laboratory.planGoalEnabled;
-  const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(() => peekWorkflowSnapshot(sessionId));
   const [objectiveDraft, setObjectiveDraft] = useState<string | null>(null);
   const [budgetDraft, setBudgetDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,12 +72,17 @@ export function GoalSidePanelTab({
       if (!response.ok) throw await parseWorkflowLoadResponseError(response, t);
       const next = await response.json() as WorkflowSnapshot;
       if (!signal?.aborted) {
-        setSnapshot(next);
+        const stored = cacheWorkflowSnapshot(next);
+        setSnapshot(stored);
         setError(null);
       }
     } catch (cause) {
       if (!signal?.aborted) {
         const failure = classifyWorkflowLoadException(cause, t);
+        if (failure.code === "WORKFLOW_STATE_CORRUPT") {
+          clearWorkflowSnapshotCache(sessionId);
+          setSnapshot(null);
+        }
         console.warn("[workflow:goal-panel] load failed", { sessionId, status: failure.status, code: failure.code, message: failure.rawMessage ?? failure.message });
         setError(failure.message);
       }
@@ -85,6 +91,7 @@ export function GoalSidePanelTab({
 
   useEffect(() => {
     const controller = new AbortController();
+    setSnapshot(peekWorkflowSnapshot(sessionId));
     setObjectiveDraft(null);
     setBudgetDraft(null);
     void loadSnapshot(controller.signal);
@@ -95,7 +102,7 @@ export function GoalSidePanelTab({
     if (!sessionId) return;
     const onUpdated = (event: Event) => {
       const next = (event as CustomEvent<WorkflowSnapshot>).detail;
-      if (next?.sessionId === sessionId) setSnapshot(next);
+      if (next?.sessionId === sessionId) setSnapshot(cacheWorkflowSnapshot(next));
     };
     window.addEventListener(WORKFLOW_UPDATED_EVENT, onUpdated);
     return () => window.removeEventListener(WORKFLOW_UPDATED_EVENT, onUpdated);
@@ -132,8 +139,9 @@ export function GoalSidePanelTab({
       if (!response.ok || !result.snapshot) {
         throw new Error(result.error ?? t("workflow.actionError"));
       }
-      setSnapshot(result.snapshot);
-      dispatchWorkflowUpdated(result.snapshot);
+      const stored = cacheWorkflowSnapshot(result.snapshot);
+      setSnapshot(stored);
+      dispatchWorkflowUpdated(stored);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("workflow.actionError"));

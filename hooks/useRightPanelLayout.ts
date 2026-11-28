@@ -46,20 +46,45 @@ function readStoredLayout(value: unknown): RightPanelLayout {
   return { open: stored.open === true, maximized: stored.open === true && stored.maximized === true, activeTab, openTools };
 }
 
-export function useRightPanelLayout(scope: string, initialScope: string, workflowSessionId?: string | null) {
+function withoutDraft(layouts: LayoutsByScope): LayoutsByScope {
+  if (!("draft" in layouts)) return layouts;
+  const next = { ...layouts };
+  delete next.draft;
+  return next;
+}
+
+export function useRightPanelLayout(
+  scope: string,
+  initialScope: string,
+  workflowSessionId?: string | null,
+  conversationScope?: string,
+) {
   const [layouts, setLayouts] = useState<LayoutsByScope | null>(null);
   const [legacySideChatTab, setLegacySideChatTab] = useState<SideChatTabId | null>(null);
   const scopeRef = useRef(scope);
+  const conversationScopeRef = useRef(conversationScope);
   useLayoutEffect(() => {
     const previousScope = scopeRef.current;
+    const previousConversationScope = conversationScopeRef.current;
     scopeRef.current = scope;
+    conversationScopeRef.current = conversationScope;
     setLayouts((current) => {
-      const before = current?.[previousScope];
+      if (!current) return current;
+      // Leaving an unpromoted draft, or starting a fresh draft conversation,
+      // discards the ephemeral draft layout so a new session never inherits a
+      // previously opened browser or tool tab.
+      if (
+        (previousScope === "draft" && scope !== "draft")
+        || (scope === "draft" && conversationScope !== undefined && previousConversationScope !== conversationScope)
+      ) {
+        return withoutDraft(current);
+      }
+      const before = current[previousScope];
       if (!before) return current;
       const after = dismissWorkflowTab(before);
       return before === after ? current : { ...current, [previousScope]: after };
     });
-  }, [scope, workflowSessionId]);
+  }, [scope, workflowSessionId, conversationScope]);
 
   useEffect(() => {
     const restored: LayoutsByScope = {};
@@ -68,14 +93,19 @@ export function useRightPanelLayout(scope: string, initialScope: string, workflo
       if (raw) {
         const saved = JSON.parse(raw) as LayoutsByScope;
         for (const [key, value] of Object.entries(saved)) {
-          if (key === "draft" || key.startsWith("session:") || key.startsWith("room:")) restored[key] = readStoredLayout(value);
+          // Never restore ephemeral "draft" layouts across reloads or new sessions.
+          if (key.startsWith("session:") || key.startsWith("room:")) restored[key] = readStoredLayout(value);
         }
       } else {
         const tab = window.localStorage.getItem("piora-right-panel-tab");
         const open = window.localStorage.getItem("piora-right-panel-open");
         if (tab || open !== null) {
-          restored[initialScope] = readStoredLayout({ open: open === "true", activeTab: isToolTab(tab) ? tab : "home" });
-          if (tab && parseSideChatTabId(tab)?.kind === "live") setLegacySideChatTab(tab as SideChatTabId);
+          if (initialScope !== "draft") {
+            restored[initialScope] = readStoredLayout({ open: open === "true", activeTab: isToolTab(tab) ? tab : "home" });
+            if (tab && parseSideChatTabId(tab)?.kind === "live") setLegacySideChatTab(tab as SideChatTabId);
+          } else if (tab !== "browser" && open === "true" && isToolTab(tab)) {
+            restored[initialScope] = readStoredLayout({ open: true, activeTab: tab });
+          }
         }
       }
     } catch { /* Panel layout remains usable when browser storage is unavailable. */ }
@@ -85,7 +115,8 @@ export function useRightPanelLayout(scope: string, initialScope: string, workflo
   useEffect(() => {
     if (!layouts) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(layouts, (key, value) => key === "pendingTab" ? undefined : value));
+      const persistent = withoutDraft(layouts);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistent, (key, value) => key === "pendingTab" ? undefined : value));
     } catch { /* Keep the layout in memory if storage is unavailable. */ }
   }, [layouts]);
 
@@ -120,7 +151,16 @@ export function useRightPanelLayout(scope: string, initialScope: string, workflo
   const promoteDraftRightPanel = useCallback((sessionId: string) => {
     if (scopeRef.current !== "draft") return;
     const target = rightPanelLayoutScope(sessionId);
-    setLayouts((current) => current?.[target] || !current?.draft ? current : { ...current, [target]: dismissWorkflowTab(current.draft) });
+    setLayouts((current) => {
+      if (!current?.draft) return current;
+      const promoted = dismissWorkflowTab(current.draft);
+      const next = withoutDraft(current);
+      if (!next[target]) next[target] = promoted;
+      return next;
+    });
+  }, []);
+  const resetDraftRightPanel = useCallback(() => {
+    setLayouts((current) => (current ? withoutDraft(current) : current));
   }, []);
   const clearLegacySideChatTab = useCallback(() => setLegacySideChatTab(null), []);
   const closeWorkflowTab = useCallback(() => updateLayout(dismissWorkflowTab), [updateLayout]);
@@ -132,6 +172,13 @@ export function useRightPanelLayout(scope: string, initialScope: string, workflo
     rightPanelMaximized: layout.maximized,
     openRightPanelTools: layout.openTools,
     restoredSideChatTab: scope === initialScope && layout.activeTab === "home" && !layout.pendingTab ? legacySideChatTab : null,
-    setRightPanelOpen, setRightPanelTab, setRightPanelMaximized, setOpenRightPanelTools, promoteDraftRightPanel, clearLegacySideChatTab, closeWorkflowTab,
+    setRightPanelOpen,
+    setRightPanelTab,
+    setRightPanelMaximized,
+    setOpenRightPanelTools,
+    promoteDraftRightPanel,
+    resetDraftRightPanel,
+    clearLegacySideChatTab,
+    closeWorkflowTab,
   };
 }

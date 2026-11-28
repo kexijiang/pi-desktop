@@ -301,6 +301,7 @@ export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const rightPanelLayout = rightPanelLayoutScope(selectedSession?.id, selectedRoom?.id);
   const rightPanelSessionId = selectedRoom ? roomPanelMember?.binding.sessionId ?? null : selectedSession?.id ?? null;
+  const rightPanelScope = selectedRoom ? `room:${selectedRoom.id}:${rightPanelSessionId ?? ""}` : `chat:${rightPanelSessionId ?? `new:${sessionKey}`}`;
   const {
     rightPanelOpen, rightPanelTab, rightPanelMaximized, openRightPanelTools, restoredSideChatTab,
     setRightPanelOpen, setRightPanelTab, setRightPanelMaximized, setOpenRightPanelTools, promoteDraftRightPanel, clearLegacySideChatTab,
@@ -309,6 +310,7 @@ export function AppShell() {
     rightPanelLayout,
     rightPanelLayoutScope(initialNavigation.sessionId, initialRoomId),
     rightPanelSessionId,
+    rightPanelScope,
   );
   const [subagentSelection, setSubagentSelection] = useState<SubagentSelection>();
   const subagentFocus = useRef<{ openerId: string; restore: boolean } | null>(null);
@@ -317,7 +319,6 @@ export function AppShell() {
   const effectiveRightPanelOpen = (rightPanelOpen || subagentPanelOpen) && !settingsDialogOpen;
   const [subagentInspectorWide, setSubagentInspectorWide] = useState(false);
   const [rightPanelHasOpened, setRightPanelHasOpened] = useState(false);
-  const rightPanelScope = selectedRoom ? `room:${selectedRoom.id}:${rightPanelSessionId ?? ""}` : `chat:${rightPanelSessionId ?? `new:${sessionKey}`}`;
   useBrowserPanelNavigation(rightPanelScope, rightPanelTab, setRightPanelOpen, rightPanelLayout);
   const [fileNavMode, setFileNavMode] = useState<"tree" | "run">("tree");
   const showAnswerBrowser = useCallback(() => { setRightPanelTab("browser"); setRightPanelOpen(true); }, [setRightPanelTab, setRightPanelOpen]);
@@ -1784,7 +1785,7 @@ export function AppShell() {
   const runFileSessionId = selectedRoom ? roomPanelMember?.binding.sessionId ?? null : selectedSession?.id ?? null;
   const runFileSessionRunning = runningTaskSnapshots.some(snapshot => snapshot.id === runFileSessionId
     && (snapshot.runtime === "running" || snapshot.runtime === "stopping"));
-  const { snapshot: runFileChanges, reportStart: reportRunFileStart } = useRunFileChanges(
+  const { snapshot: runFileChanges, reportStart: reportRunFileStart, refresh: refreshRunFileChanges } = useRunFileChanges(
     runFileSessionId, !settingsDialogOpen && (!selectedRoom || rightPanelOpen && rightPanelTab === "files"),
     runFileSessionRunning, explorerRefreshKey,
   );
@@ -3292,6 +3293,7 @@ export function AppShell() {
           fileNavMode={fileNavMode}
           onFileNavModeChange={setFileNavMode}
           runFileChanges={runFileChanges}
+          onRefreshRunChanges={refreshRunFileChanges}
           openTools={openRightPanelTools}
           onOpenToolsChange={setOpenRightPanelTools}
           onCloseWorkflowTab={closeWorkflowTab}

@@ -65,7 +65,12 @@ export interface WorkflowSnapshot {
   completedGoal?: CompletedGoalBadge | null;
   /** Transient live flag: true between Goal agent_end and the auto-continued next turn start. */
   autoContinuing?: boolean;
+  /** Monotonic generation timestamp bumped on corrupt-state reset so fresh revision-0 supersedes stale caches. */
+  resetAt?: number;
+  /** Transient per-revision sequence bumped when live flags (like autoContinuing) change without bumping revision. */
+  transientSeq?: number;
 }
+export type WorkflowStateStatus = "ok" | "corrupt";
 export type WorkflowActionName =
   | "approve"
   | "revise"

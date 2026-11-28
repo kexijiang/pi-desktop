@@ -62,6 +62,7 @@ interface Props {
   fileNavMode: "tree" | "run";
   onFileNavModeChange: (mode: "tree" | "run") => void;
   runFileChanges: PromptFileChanges | null;
+  onRefreshRunChanges?: () => void;
   fileTabs: Tab[];
   activeFileTabId: string | null;
   canReopenClosedFileTab: boolean;
@@ -507,8 +508,14 @@ export const RightPanel = memo(forwardRef<RightPanelHandle, Props>(function Righ
           onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
           onLostPointerCapture={() => setResizingTree(false)} />
         <div id="piora-file-viewer" className={styles.fileViewer} style={{ gridColumn: compactFiles ? 2 : 3, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          {browsingRunFiles && <RunChangesDetail snapshot={runFileChanges} file={selectedRunFile}
-            active={active && activeTab === "files"} onOpenFile={handleExplorerOpenFile} />}
+          {browsingRunFiles && <RunChangesDetail
+            snapshot={runFileChanges}
+            file={selectedRunFile}
+            active={active && activeTab === "files"}
+            onOpenFile={handleExplorerOpenFile}
+            onOpenReview={handleOpenReview}
+            onRefreshRunChanges={props.onRefreshRunChanges}
+          />}
           <div className={styles.fileTabs} hidden={browsingRunFiles}><TabBar
             tabs={fileTabs}
             activeTabId={activeFileTabId ?? ""}

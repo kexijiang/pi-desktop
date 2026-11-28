@@ -35,8 +35,9 @@ import { markSubagentChanged } from "@/hooks/useTaskStatus";
 import { useChatCommandOperations } from "@/hooks/useChatCommandOperations";
 import { createChatCommandCatalog, persistentChatInputOptions } from "@/lib/chat-command-input";
 import type { ChatCommandCatalog, ChatCommandView, ChatInputOptions } from "@/lib/chat-command-types";
-import type { WorkflowAction, WorkflowPromptOptions, WorkflowSnapshot } from "@/lib/workflow-types";
+import type { WorkflowAction, WorkflowPromptOptions, WorkflowSnapshot, WorkflowStateStatus } from "@/lib/workflow-types";
 import { classifyWorkflowLoadException, parseWorkflowLoadResponseError } from "@/lib/workflow-client-error";
+import { clearWorkflowSnapshotCache, mergeWorkflowSnapshot } from "@/lib/workflow/client-cache";
 import {
   buildInterruptionResumePrompt,
   interruptionFromCommandState,
@@ -550,11 +551,29 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
   const [liveWorkflowSnapshot, setLiveWorkflowSnapshot] = useState<WorkflowSnapshot | null>(null);
+  const [liveWorkflowCorrupt, setLiveWorkflowCorrupt] = useState(false);
   const [capabilities, setCapabilities] = useState<SessionCapabilitiesState>(() => createDefaultSessionCapabilitiesState());
   const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
+  const applyInlineWorkflow = useCallback((
+    sid: string,
+    snapshot?: WorkflowSnapshot | null,
+    status?: WorkflowStateStatus,
+  ) => {
+    if (sessionIdRef.current !== sid) return;
+    if (status === "corrupt") {
+      clearWorkflowSnapshotCache(sid);
+      setLiveWorkflowSnapshot(null);
+      setLiveWorkflowCorrupt(true);
+      return;
+    }
+    if (snapshot && snapshot.sessionId === sid) {
+      setLiveWorkflowCorrupt(false);
+      setLiveWorkflowSnapshot((current) => mergeWorkflowSnapshot(current, snapshot, sid));
+    }
+  }, []);
   // Navigation tears down observation, not an already submitted message.
   const viewMountedRef = useRef(true);
   const [toolReviews, setToolReviews] = useState<ToolReviewRecord[]>([]);
@@ -757,7 +776,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const fetchState = () => fetch(`/api/sessions/${encodeURIComponent(sid)}/state?view=chat`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
       cache: "no-store",
-    }).then(async response => response.ok ? await response.json() as { running: boolean; state?: AgentStateResponse } : null)
+    }).then(async response => response.ok ? await response.json() as {
+      running: boolean;
+      state?: AgentStateResponse;
+      workflowSnapshot?: WorkflowSnapshot | null;
+      workflowStateStatus?: WorkflowStateStatus;
+    } : null)
       .catch(() => null);
     try {
       if (showLoading) setLoading(true);
@@ -804,6 +828,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (d === history.data) retainSessionHistory(sid, history);
       nestedCallsStore.reset();
       setData(d);
+      applyInlineWorkflow(sid, d.workflowSnapshot, d.workflowStateStatus);
       setModelChanges(d.context.modelChanges ?? []);
       if (statsSequence === statsRefreshSequence.current) setSessionStatsOverride(d.stats ?? null);
       setActiveLeafId(d.leafId);
@@ -843,6 +868,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (controller.signal.aborted || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
 
         const liveState = agentState.state;
+        applyInlineWorkflow(sid, agentState.workflowSnapshot, agentState.workflowStateStatus);
         if (liveState) {
           if (liveState.subagentsRunning) {
             backgroundSubagentsRef.current = true;
@@ -887,7 +913,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setLoading(false);
       }
     }
-  }, [nestedCallsStore, acceptToolPermission]);
+  }, [nestedCallsStore, acceptToolPermission, applyInlineWorkflow]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
     forgetSessionHistory(sid);
@@ -1892,7 +1918,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         handleExtensionUiRequest(event as ExtensionUiRequest);
         break;
       case "workflow_update":
-        if (event.snapshot) setLiveWorkflowSnapshot(event.snapshot as WorkflowSnapshot);
+        if (event.snapshot && sessionIdRef.current) {
+          applyInlineWorkflow(sessionIdRef.current, event.snapshot as WorkflowSnapshot, "ok");
+        }
         break;
       case "entry_appended": {
         if (!agentRunningRef.current) break;
@@ -1901,7 +1929,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
     }
-  }, [addNotice, closeEvents, handleExtensionUiRequest, loadSession, nestedCallsStore, onPromptStarted, refreshContextUsage, setExtensionDialog, waitForPromptSettlement, acceptToolPermission, acceptToolReviews]);
+  }, [addNotice, applyInlineWorkflow, closeEvents, handleExtensionUiRequest, loadSession, nestedCallsStore, onPromptStarted, refreshContextUsage, setExtensionDialog, waitForPromptSettlement, acceptToolPermission, acceptToolReviews]);
   handleAgentEventRef.current = handleAgentEvent;
   applyConnectedStateRef.current = (sid, state) => {
     if (!state || sessionIdRef.current !== sid) return;
@@ -3434,7 +3462,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     isCompacting, compactionStartedAt, compactError, compactResult, currentModel, displayModel, sessionStats,
     slashCommands, slashCommandsLoading, slashCommandsError, commandCatalog, chatCommands, queuedMessages, capabilities, capabilitiesSaving,
     liveOutputFollowPaused: liveOutputAutoScrollEnabled && agentRunning && liveOutputFollowPaused,
-    notices: noticeState.visible, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, liveWorkflowSnapshot,
+    notices: noticeState.visible, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, liveWorkflowSnapshot, liveWorkflowCorrupt,
     isAutoModelSelection: isNew && displayModel === null,
     agentPhase,
     interruptedRunId: cancelledPromptRunIdRef.current,
