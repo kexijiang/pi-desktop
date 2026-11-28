@@ -1929,7 +1929,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
     }
-  }, [addNotice, closeEvents, handleExtensionUiRequest, loadSession, nestedCallsStore, onPromptStarted, refreshContextUsage, setExtensionDialog, waitForPromptSettlement, acceptToolPermission, acceptToolReviews]);
+  }, [addNotice, applyInlineWorkflow, closeEvents, handleExtensionUiRequest, loadSession, nestedCallsStore, onPromptStarted, refreshContextUsage, setExtensionDialog, waitForPromptSettlement, acceptToolPermission, acceptToolReviews]);
   handleAgentEventRef.current = handleAgentEvent;
   applyConnectedStateRef.current = (sid, state) => {
     if (!state || sessionIdRef.current !== sid) return;

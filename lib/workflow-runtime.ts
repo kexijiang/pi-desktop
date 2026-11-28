@@ -561,39 +561,42 @@ function buildWorkflowSignature(
   sessionId: string,
   store: WorkflowStore,
   live: WorkflowRuntime | undefined,
-  suffix = "",
 ): string {
   const fileRev = store.fileRevision(sessionId);
   const livePart = live ? `:live:${live.getTransientTag()}` : "";
-  return `${fileRev}${livePart}${suffix}`;
+  return `${fileRev}${livePart}`;
 }
 
 /**
  * Single-sample inline workflow reader for session hydration/state responses.
- * Returns a discriminated state alongside a signature computed from that exact
- * read so response body and ETag always match, and corrupt files are signaled.
+ * A response read across a file change must not validate a subsequent request
+ * for the new state. Keep that sample distinct from the stat-only signature.
  */
 export function readInlineWorkflowState(sessionId: string): InlineWorkflowState {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) return { status: "invalid", signature: "invalid" };
   const store = new WorkflowStore();
   const live = findWorkflowRuntime(sessionId, store);
+  const initial = buildWorkflowSignature(sessionId, store, live);
+  const confirmSignature = () => initial === buildWorkflowSignature(sessionId, store, live)
+    ? initial
+    : initial + ":changed-during-read";
   try {
     const snapshot = live ? live.getSnapshot() : store.read(sessionId).snapshot;
     return {
       status: "ok",
       snapshot,
-      signature: buildWorkflowSignature(sessionId, store, live),
+      signature: confirmSignature(),
     };
   } catch (error) {
     if (error instanceof WorkflowStateCorruptError || (isWorkflowError(error) && error.code === "WORKFLOW_STATE_CORRUPT")) {
       return {
         status: "corrupt",
-        signature: buildWorkflowSignature(sessionId, store, live, ":corrupt"),
+        signature: confirmSignature() + ":corrupt",
       };
     }
     return {
       status: "invalid",
-      signature: buildWorkflowSignature(sessionId, store, live, ":error"),
+      signature: confirmSignature() + ":error",
     };
   }
 }
